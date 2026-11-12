@@ -32,6 +32,8 @@ const MAX_ENTRIES: usize = 32_768; // Includes root and empty directories.
 const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_PATH_BYTES: usize = 65_536;
+const MAX_PRIVATE_FILE_BYTES: usize = 64 * 1024;
+const MAX_PRIVATE_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -610,11 +612,23 @@ impl Inventory {
 /// Bounded private bytes through the same physical, no-follow component walk.
 /// This parses no profile and grants no authority; errors contain no path/data.
 pub(super) fn read_private_file(path: &Path, maximum_bytes: usize) -> AppResult<Vec<u8>> {
-    if maximum_bytes == 0 || maximum_bytes > 64 * 1024 {
+    if maximum_bytes == 0 || maximum_bytes > MAX_PRIVATE_FILE_BYTES {
         return Err(invalid());
     }
     let euid = unsafe { libc::geteuid() };
     let root = Root::open(path, InventoryKind::File, euid)?;
+    read_private_root(root, maximum_bytes, euid)
+}
+
+/// Complete private evidence envelope bytes with a fixed 16 MiB ceiling.
+/// This grants no execution authority and cannot widen profile/approval limits.
+pub(super) fn read_private_envelope(path: &Path) -> AppResult<Vec<u8>> {
+    let euid = unsafe { libc::geteuid() };
+    let root = Root::open(path, InventoryKind::File, euid)?;
+    read_private_root(root, MAX_PRIVATE_ENVELOPE_BYTES, euid)
+}
+
+fn read_private_root(root: Root, maximum_bytes: usize, euid: libc::uid_t) -> AppResult<Vec<u8>> {
     let length = usize::try_from(root.stamp.length).map_err(|_| invalid())?;
     if root.stamp.mode & 0o7777 != 0o600 || length > maximum_bytes {
         return Err(invalid());

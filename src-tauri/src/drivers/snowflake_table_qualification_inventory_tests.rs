@@ -35,6 +35,12 @@ impl Fixture {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
+
+    fn private_file(&self, relative: impl AsRef<Path>, bytes: &[u8]) -> PathBuf {
+        let path = self.file(relative, bytes);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
 }
 
 #[test]
@@ -433,6 +439,132 @@ fn inventory_private_file_is_bounded_exact0600_and_nofollow() {
     let alias = fixture.path.join("ancestor-link");
     std::os::unix::fs::symlink(directory, &alias).unwrap();
     assert!(read_private_file(&alias.join("profile"), 16 * 1024).is_err());
+}
+
+#[test]
+fn inventory_private_envelope_accepts_exact_16mib_and_rejects_one_more_byte() {
+    assert_eq!(MAX_PRIVATE_ENVELOPE_BYTES, 16 * 1024 * 1024);
+    let fixture = Fixture::new();
+    let bytes = vec![b'e'; MAX_PRIVATE_ENVELOPE_BYTES];
+    let file = fixture.private_file("synthetic-envelope", &bytes);
+    assert_eq!(read_private_envelope(&file).unwrap(), bytes);
+    File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_len((MAX_PRIVATE_ENVELOPE_BYTES + 1) as u64)
+        .unwrap();
+    assert!(read_private_envelope(&file).is_err());
+}
+
+#[test]
+fn inventory_private_envelope_does_not_widen_private_file_64kib_limit() {
+    let fixture = Fixture::new();
+    let bytes = vec![b'e'; 64 * 1024 + 1];
+    let file = fixture.private_file("synthetic-envelope", &bytes);
+    // This is the original envelope regression: the existing API must continue
+    // rejecting evidence above its profile/approval ceiling, even with a larger
+    // requested maximum. Only the closed envelope route accepts these bytes.
+    assert!(read_private_file(&file, 64 * 1024).is_err());
+    assert!(read_private_file(&file, bytes.len()).is_err());
+    assert!(read_private_file(&file, MAX_PRIVATE_ENVELOPE_BYTES).is_err());
+    assert_eq!(read_private_envelope(&file).unwrap(), bytes);
+}
+
+#[test]
+fn inventory_private_envelope_requires_exact0600_regular_single_link_file() {
+    let fixture = Fixture::new();
+    let file = fixture.private_file("synthetic-envelope", b"synthetic");
+    for mode in [0o400, 0o644, 0o700, 0o602, 0o620, 0o1600, 0o2600, 0o4600] {
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(read_private_envelope(&file).is_err(), "{mode:o}");
+    }
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    let hardlink = fixture.path.join("hardlink");
+    fs::hard_link(&file, &hardlink).unwrap();
+    assert!(read_private_envelope(&file).is_err());
+    assert!(read_private_envelope(&hardlink).is_err());
+    fs::remove_file(hardlink).unwrap();
+    assert_eq!(read_private_envelope(&file).unwrap(), b"synthetic");
+    assert!(read_private_envelope(&fixture.path).is_err());
+    let socket = fixture.path.join("socket");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    assert!(read_private_envelope(&socket).is_err());
+    let fifo = fixture.path.join("fifo");
+    let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    assert!(read_private_envelope(&fifo).is_err());
+}
+
+#[test]
+fn inventory_private_envelope_rejects_symlinks_and_insecure_ancestors() {
+    let fixture = Fixture::new();
+    let directory = fixture.directory("private");
+    let file = fixture.private_file("private/envelope", b"synthetic");
+    let link = fixture.path.join("envelope-link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+    assert!(read_private_envelope(&link).is_err());
+    let alias = fixture.path.join("ancestor-link");
+    std::os::unix::fs::symlink(&directory, &alias).unwrap();
+    assert!(read_private_envelope(&alias.join("envelope")).is_err());
+    for mode in [0o777, 0o2755] {
+        fs::set_permissions(&directory, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(read_private_envelope(&file).is_err(), "{mode:o}");
+    }
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(read_private_envelope(&file).unwrap(), b"synthetic");
+}
+
+#[test]
+fn inventory_private_envelope_reader_detects_growth_truncation_and_replacement() {
+    let euid = unsafe { libc::geteuid() };
+    for mutation in ["grow", "truncate", "replace", "ancestor", "mode"] {
+        let fixture = Fixture::new();
+        let directory = fixture.directory("private");
+        let file = fixture.private_file("private/envelope", b"synthetic");
+        // The held Root is the existing deterministic seam: mutate only after
+        // its no-follow open/metadata capture, before the shared read/recheck.
+        let root = Root::open(&file, InventoryKind::File, euid).unwrap();
+        match mutation {
+            "grow" => fs::write(&file, b"synthetic-more").unwrap(),
+            "truncate" => fs::write(&file, b"short").unwrap(),
+            "replace" => {
+                fs::remove_file(&file).unwrap();
+                fixture.private_file("private/envelope", b"synthetic");
+            }
+            "ancestor" => {
+                fs::rename(directory, fixture.path.join("moved")).unwrap();
+                fixture.directory("private");
+                fixture.private_file("private/envelope", b"synthetic");
+            }
+            "mode" => fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap(),
+            _ => unreachable!(),
+        }
+        assert!(
+            read_private_root(root, MAX_PRIVATE_ENVELOPE_BYTES, euid).is_err(),
+            "{mutation}"
+        );
+    }
+}
+
+#[test]
+fn inventory_private_envelope_reader_bounds_growth_beyond_16mib() {
+    let fixture = Fixture::new();
+    let file = fixture.private_file("synthetic-envelope", b"");
+    let writable = File::options().write(true).open(&file).unwrap();
+    writable.set_len(MAX_PRIVATE_ENVELOPE_BYTES as u64).unwrap();
+    let euid = unsafe { libc::geteuid() };
+    let root = Root::open(&file, InventoryKind::File, euid).unwrap();
+    writable
+        .set_len((MAX_PRIVATE_ENVELOPE_BYTES + 1) as u64)
+        .unwrap();
+    let error = read_private_root(root, MAX_PRIVATE_ENVELOPE_BYTES, euid).unwrap_err();
+    // Exceeding the ceiling must fail in the bounded loop, before the generic
+    // exact-length/post-read mutation error could hide an unbounded read.
+    assert_eq!(
+        serde_json::to_value(error).unwrap(),
+        serde_json::to_value(invalid()).unwrap()
+    );
 }
 
 #[test]

@@ -1,15 +1,16 @@
 //! Closed, offline identity for one application-core table qualification.
 //!
 //! Capture/restore never spawn or authenticate. Consumption records permanent
-//! local markers but does not launch anything. No account constructor currently
-//! accepts this capability. Hashes bind bytes, not build provenance or immutable
-//! filesystem state; a same-user writer can race between checks. Future entry
-//! and physical admission must call the retained checks outside process locks.
+//! local markers but does not launch anything. The retained runner checks this
+//! capability; fixed account construction remains incomplete. Hashes bind bytes,
+//! not build provenance or immutable filesystem state; a same-user writer can
+//! race between checks. Full checks run outside process locks.
 
 use super::{
     MAX_SCHEMAS, Plan,
     consumption::{ConsumedAttempt, ConsumptionStore},
-    inventory::{Inventory, InventoryKind, read_private_file},
+    inventory::{Inventory, InventoryKind, read_private_envelope, read_private_file},
+    profile::{self, Input as Profile},
     sequence::Sequencer,
 };
 use crate::{
@@ -113,18 +114,6 @@ pub(super) struct Roots {
     pub(super) profile: PathBuf,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Profile {
-    account: String,
-    host: String,
-    username: String,
-    role: String,
-    warehouse: String,
-    database: String,
-    schema: String,
-}
-
 #[derive(Serialize)]
 struct Artifact {
     path: PathBuf,
@@ -152,6 +141,7 @@ struct Manifest {
     plan_sha256: String,
     window: Window,
     profile: Profile,
+    policy: profile::Declaration,
     sources: Vec<Artifact>,
     runtime: Artifact,
     executable: Artifact,
@@ -201,7 +191,8 @@ struct Approval {
 }
 
 /// Non-cloneable. The marker capability and checked envelope stay together.
-/// This is not yet accepted by any account/runner constructor.
+/// The retained runner accepts this capability; fixed account construction is
+/// a separate gate and may not adopt caller-assembled components.
 pub(super) struct ConsumedEnvelope {
     envelope: Envelope,
     consumed: ConsumedAttempt,
@@ -258,6 +249,7 @@ impl Envelope {
             plan_sha256: plan.sha256()?,
             window,
             profile,
+            policy: profile::declaration(),
             sources,
             runtime: Artifact::capture(&roots.runtime, InventoryKind::Tree)?,
             executable: Artifact::capture(&roots.executable, InventoryKind::File)?,
@@ -346,6 +338,17 @@ impl Envelope {
         Ok(envelope)
     }
 
+    /// Closed file route for the fixed entry. This alone allows the larger
+    /// envelope bound; private connection and approval readers stay smaller.
+    pub(super) fn restore_file(
+        roots: &Roots,
+        path: &Path,
+        expected_sha256: &str,
+    ) -> AppResult<Self> {
+        let bytes = read_private_envelope(path)?;
+        Self::restore_snapshot(roots, &bytes, expected_sha256)
+    }
+
     fn verify_artifacts(&self) -> AppResult<()> {
         for artifact in &self.manifest.sources {
             artifact.verify()?;
@@ -363,13 +366,17 @@ impl Envelope {
 
     fn run_key(&self) -> AppResult<String> {
         let profile = &self.manifest.profile;
+        // The driver lowercases the host before deriving the account. Bind its
+        // canonical identity here so a spelling change cannot refund the RUN;
+        // the execution envelope still binds the exact reviewed profile bytes.
+        let host = profile.host.to_ascii_lowercase();
         // An array avoids delimiter ambiguity. Do not include the approval
         // window/source hash: changing either must not permit a second RUN.
         Ok(hash(
             &serde_json::to_vec(&[
                 WORKFLOW,
                 &profile.account,
-                &profile.host,
+                &host,
                 &profile.database,
                 &profile.schema,
                 self.plan.run(),
@@ -522,7 +529,9 @@ fn read_profile(path: &Path) -> AppResult<Profile> {
     if bytes.is_empty() {
         return Err(invalid());
     }
-    serde_json::from_slice(&bytes).map_err(|_| invalid())
+    let profile: Profile = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    profile.validate()?;
+    Ok(profile)
 }
 
 #[cfg(test)]

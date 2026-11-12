@@ -34,14 +34,24 @@ and incomplete.
 
 Read-only integration review identifies the next concrete construction work:
 
+The fixed profile/policy and private envelope input increment passes 223 optimized
+tests, with 4 default ignores. Account/host mismatch and case-only RUN reuse are
+reproduced and corrected. See the [verification ledger](replacement-verification.md).
+Full validation passes 679 frontend / 467 standard Rust tests, with 129 fixture
+ignores, plus formatting/build/check/strict Clippy; all seven source hashes match.
+The next owner must reserve persistent exclusive attempt/workspace/state paths
+and terminal output before consumption, retain them through detached final
+persistence, and preserve them after incomplete shutdown. The current generic
+Studio opener must never receive an existing application workspace.
+
 - Add one dedicated binary and a narrow private entry facade for offline
   emit/verify and separately approved execute. Bind that binary's actual build
   recipe; only emission generates a Plan. Verify/execute restore original
   reviewed bytes and their explicit digest.
-- Add an explicitly bounded 16 MiB envelope reader: the current private reader
-  rejects requested limits above 64 KiB. Retain smaller 16 KiB profile / 4 KiB
-  approval bounds and all descriptor-relative ownership, permission and identity
-  checks. Fix the permanent consumption root independently of output paths.
+- The closed 16 MiB envelope reader and file restoration route are implemented;
+  smaller profile/approval limits and descriptor-relative ownership, permission
+  and identity checks remain intact. Wire this route into the fixed entry and
+  fix the permanent consumption root independently of output paths.
 - Construct Studio, runtime and the new connection attempt only from the consumed
   roots. The current assembled-component runner constructor is suitable for
   fixtures, not proof of runtime provenance. Use fresh exclusive private storage;
@@ -50,11 +60,12 @@ Read-only integration review identifies the next concrete construction work:
   receipt persistence, including dropped waiters and failed launches. Prove
   zero-launch offline commands, cross-process RUN reuse rejection, no profile or
   runtime fallback and truthful original outcomes after local storage failure.
-- Construct a new isolated Staging/Confirm qualification profile. Recompute a
-  fixed policy declaration in the canonical envelope (including opt-ins, verified
-  TLS/443, no SSH/secrets and exact target); it is not a caller-selected policy.
-  Keep the seven-field connection input, use the normal Staging group/save/prepare/
-  authorize route and compare the resulting profile/effective mode before launch.
+- The isolated Staging/Confirm profile and recomputed fixed policy declaration
+  are implemented, including opt-ins, verified TLS/443, no SSH/secrets and exact
+  target. The seven-field input now validates the account against the driver's
+  hostname derivation. The private factory must allocate exclusive fresh storage,
+  inject a keychain-free secret store, save through the normal Staging group and
+  use the normal prepare/authorize route before launch.
   Never adopt, modify or downgrade an existing profile; Production still enforces
   PasswordGated and is a separate qualification scope. Offline mismatch/tamper/
   missing-token/stale-token tests precede account execution. The first closed

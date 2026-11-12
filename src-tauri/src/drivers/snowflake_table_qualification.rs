@@ -130,6 +130,16 @@ mod envelope;
     not(test),
     allow(
         dead_code,
+        reason = "Fixed isolated profile policy; account construction remains closed"
+    )
+)]
+#[path = "snowflake_table_qualification_profile.rs"]
+mod profile;
+
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
         reason = "Consumed runner guard; fixed executable entry remains closed"
     )
 )]

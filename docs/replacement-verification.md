@@ -8,6 +8,94 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Fixed qualification profile and private envelope input (12 November 2026)
+
+The private seven-field connection input now validates the account against the
+external-browser driver's lowercase hostname derivation. A new profile function
+saves a fresh UUID through the ordinary Staging group and checks the returned
+and persisted profile against fixed Confirm, reviewed DML/DDL, external-browser,
+verified TLS/443 and privacy settings. It rejects existing profiles and
+passphrase/temporary-result-storage state. Synthetic SQLite save/reopen tests
+record zero calls to the injected rejecting secret store; Production still
+normalizes to PasswordGated and rejects an unapproved profile change.
+
+The fixed policy is serialized into the execution envelope and recomputed during
+restoration. It cannot be supplied through the connection input. Fifteen
+individually rehashed policy-field mutations preserve canonical ordering and are
+rejected; missing policy is also rejected. The dedicated private envelope reader
+accepts at most 16 MiB, retaining the existing physical-path, owner, exact 0600,
+regular-file, single-link and identity checks. Tests exercise the exact limit,
+one-byte overflow, growth, truncation, replacement, unsafe ancestors and links.
+The smaller 64 KiB general reader ceiling, 16 KiB profile and 4 KiB approval
+bounds remain unchanged. File restoration passes on a valid snapshot larger
+than 64 KiB and rejects an insecure file.
+
+Two defects were reproduced before their fixes. Logs are under
+`.cache/verification/connection-attempts/`:
+
+- `fixed-profile-account-mismatch-reproduction.log`: terminal exit **101**,
+  **0 passed / 1 failed**, **0.01 seconds**. The old envelope accepts a reviewed
+  account inconsistent with the driver's hostname-derived account. Strict input
+  validation now rejects it before consumption.
+- `fixed-profile-host-case-reproduction.log`: terminal exit **101**,
+  **0 passed / 1 failed**, **0.04 seconds**. Changing only hostname case creates
+  another permanent RUN marker for the same Plan/account/target. The key now
+  follows the driver's lowercase host while exact reviewed profile bytes stay
+  bound to the execution envelope. The regression requires a different envelope
+  hash, the same RUN key, rejected second consumption and exactly two markers.
+  This establishes hostname-case consistency, not equivalence of distinct DNS
+  aliases or remote Snowflake account identities.
+
+The first combined run, `fixed-profile-envelope-combined-release.log`, was
+interrupted without a terminal summary; its process/session was confirmed gone.
+It is not counted as a completed pass. The final source is checked with:
+
+```sh
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib snowflake_table_qualification:: -- --test-threads=3
+pnpm validate
+```
+
+`fixed-profile-envelope-final-release.log` has terminal exit **0**:
+**223 passed / 0 failed / 4 default ignores**, **165.93 seconds**. The 19 added
+regressions comprise six reader, nine profile and four envelope cases. Existing
+actual-helper/synthetic-SDK lifecycle and failure cases also pass. The callback
+loss case takes over 60 seconds and completes successfully; it is not a hung or
+restarted test. Use the pinned toolchains and `JOINERY_TEST_NODE` from README.
+The release build reports the existing `rust-objcopy` missing `libLLVM.dylib`
+debug-stripping warning and `ts-rs` serde-attribute warnings; compilation and the
+test command nevertheless complete. No global toolchain/configuration repair is
+performed by this increment.
+
+`fixed-profile-validate-final.log` also has terminal exit **0**: **679 frontend
+tests in 57 files**, **467 standard Rust tests / 0 failed / 129 fixture ignores**
+across 21 Rust summaries. Formatting, regenerated contracts/types, frontend
+production build, Rust format/check and strict all-target/all-feature Clippy pass.
+All seven frozen source hashes still match after both completed commands. The
+changed documentation sections pass scoped Prettier checking; historical sections
+are preserved. `pnpm check:git` passes before the local commit.
+
+Independent bounded reviews cover the reader/profile/envelope and final
+hostname-case correction, with no unresolved material finding. Profile username
+length also matches the sequencer's 1,020-byte boundary. Seven changed source
+hashes are recorded in `fixed-profile-source-freeze.json`.
+
+This is offline qualification integration. The factory must still allocate an
+exclusive fresh workspace and inject a keychain-free secret store; the profile
+function alone does not prove construction provenance. The fixed account binary,
+permanent-store placement, runtime construction, retained output ownership and
+ordinary plan-token integration remain incomplete. Review identifies a concrete
+cleanup constraint: failed Studio shutdown may leave owners unsettled, so the
+future attempt workspace/state must be retained rather than automatically
+deleted. Terminal evidence must be written inside the detached owner, before
+its receipt returns, to survive a dropped waiter.
+
+The four ignored runtime/performance cases are not rerun for this source. Earlier
+full-runtime and normal package results apply only to their recorded source.
+No account activity, SSO, normal application UI, package rebuild, installation,
+push, merge or publication is claimed. Fresh table-only approval for
+`SANDBOX.BILLIE_TESTING`, actual effects, million-row account behavior, all
+applicable DataGrip workflows and hands-on acceptance remain required.
+
 ### Normal macOS package after performance repair (12 November 2026)
 
 `pnpm desktop:snowflake:bundle:mac` exits **0** from clean source

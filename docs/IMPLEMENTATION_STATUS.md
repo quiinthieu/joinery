@@ -1,5 +1,30 @@
 # Implementation and release status
 
+## Fixed qualification inputs (12 November 2026, local integration)
+
+The qualification envelope now recomputes a fixed isolated Staging/Confirm
+profile policy, rejects account/hostname inconsistency, and restores private
+files up to 16 MiB while preserving smaller profile/approval bounds. Profile
+construction uses ordinary save/reload and preserves Production password gates;
+the future factory must prove exclusive storage and supply a keychain-free
+secret store. A reproduced hostname-case RUN-marker bypass is corrected without
+changing exact reviewed profile bytes. The combined optimized module passes
+**223 tests / 4 default ignores**. Full `pnpm validate` passes **679 frontend /
+467 standard Rust tests**, with **129 fixture ignores**, plus formatting/build/
+check/strict Clippy. All seven changed source hashes remain fixed. Independent
+bounded review has no unresolved material finding. See the
+[ledger](replacement-verification.md) for reproductions,
+commands, source hashes and verification scope.
+
+This increment qualifies no new account or normal UI workflow. The fixed binary,
+fresh runtime/Studio construction, permanent-store placement and retained
+terminal-file ownership remain open. Incomplete shutdown must retain private
+workspace/state rather than delete it while work is unsettled. The preceding
+normal bundle and performance results below apply to their recorded sources.
+No package rebuild, installation, account activity or publication occurs here.
+All applicable DataGrip replacement capabilities and owner acceptance remain
+required; the Goal is active and incomplete.
+
 ## Complete-content performance acceptance (12 November 2026, local verification)
 
 The macOS ARM64 hashing acceleration passes the independent million-byte digest

@@ -99,10 +99,14 @@ The qualification profile must satisfy the normal application policy: writable
 Safe Mode, explicit reviewed DDL/DML opt-ins and ordinary plan authorization. The
 reviewed construction decision is a new isolated **Staging/Confirm** profile,
 not an adopted working profile or a classification of the entire remote account.
-The fixed declaration must be recomputed in the canonical envelope, including
+The fixed declaration is now recomputed in the canonical envelope, including
 externalbrowser, verified TLS/443, no SSH/stored secrets and the exact test target.
 It is not a mutable environment/mode selector. Use the normal Staging group and
-`save_profile`, then verify the saved profile/effective mode before launch.
+`save_profile`, then verify the saved profile/effective mode before launch. The
+private profile module implements this normal save/reload verification, rejects
+existing profiles and checks account/host consistency. The future account factory
+must supply the exclusive fresh workspace and keychain-free secret store; the
+module alone does not prove those construction properties.
 
 Existing application profiles are neither read nor changed. Normal Production
 profiles still require PasswordGated; this Confirm-only runner rejects a plan
