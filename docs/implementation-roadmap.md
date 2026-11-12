@@ -23,14 +23,12 @@ families still need explicitly scoped acceptance. Continue broader metadata,
 object search, grid editing/import, multi-statement SQL, performance and million-row
 workflows; displaying a definition closes none of those required gates.
 
-A separate offline preview now binds copied source `103cb45`, the actual binary,
-compiler and zero-link runtime. Its deliberately expired Plan was emitted and
-verified without SSO or account activity. Before execution, create a fresh exact
-window/Plan, review the full SQL and metadata disclosure, and obtain explicit
-account/billing approval for the single generated table under
-`SANDBOX.BILLIE_TESTING` and the broader metadata inventory. This preview does not
-qualify the new definition command.
-No approval question is pending; the earlier CREATE DATABASE approval is spent.
+A separate offline review binds copied source `103cb45`, the actual binary,
+compiler and zero-link runtime. Both the expired preview and fresh Plan were
+emitted and verified without SSO or account activity. The fresh attempt's exact
+account/billing and permanent marker-store approval question is pending; the
+earlier CREATE DATABASE approval is spent. This qualification does not qualify
+the new definition command.
 Normal packaged SSO/recovery, actual database effects, all applicable DataGrip
 capabilities and owner hands-on acceptance remain required. No publication or
 installation is authorized.
