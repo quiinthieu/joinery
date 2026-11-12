@@ -1,5 +1,44 @@
 # Implementation and release status
 
+## Complete-content performance acceptance (12 November 2026, local verification)
+
+The macOS ARM64 hashing acceleration passes the independent million-byte digest
+vector and 15 inventory tests (1 default ignore). The optimized complete-envelope
+test passes in 8.78 seconds on actual source/executable/compiler and the unchanged
+normal packaged runtime: 15,110 entries / 202,538,012 bytes. Three full
+revalidations take 0.85–0.87 seconds, down from 1.24–1.27; the complete runtime
+inventory hash is identical. Independent review finds no blocker. The accelerated
+S=32 workflow passes all 32 phases / 610 SQL requests with 751 successful
+admissions, maximum 1,419 ms, and 703,735 ms consumption-to-persistence. Its
+S=1 rerun also passes 32 phases / 393 requests with 525 successful admissions,
+maximum 1,206 ms, and 495,200 ms consumption-to-persistence. Both finish with
+successful cleanup, final integrity and persistence; all 13 frozen source hashes
+still match. The complete optimized module passes 204 tests with 4 default
+ignores; the three new real-content ignores passed separately. Application
+validation passes 679 frontend and 467 standard Rust tests, with 129 fixture
+cases ignored, plus formatting, contracts/types, production frontend build, Rust
+format/check and strict Clippy. These checks do not run the ignored account/native
+workflows.
+
+On the preceding frozen source, corrected S=1 passes all 32 phases / 393 SQL
+requests with 527 successful admissions, maximum 1,983 ms, and 667,423 ms
+consumption-to-persistence time. S=32 fails at phase ten after one admission
+reaches three seconds: 309 successful admissions / 1 failed, 241 SQL requests,
+422.33 seconds. Cleanup and final failure recording settle. Those results do not
+establish the changed candidate's complete workflow gate. The earlier whole-read
+timeout repair passes a 16-second helper regression and 13 envelope/deadline
+tests. Neither single-check timing nor synthetic results establishes live
+account performance.
+
+Review found and corrected premature disposal of the test timing owner. The
+failure is reproduced; eight optimized Guard tests and one real-helper external
+output regression pass after the fix. The code has independent read-only review
+with no outstanding material findings. The source increments are committed
+locally as `db18e03` (ARM64 hashing) and `a05cfae` (deadlines and full-runtime
+regressions). See the [ledger](replacement-verification.md).
+All replacement, account and owner acceptance gates remain open as previously
+recorded; no normal package build, installation or account activity occurred.
+
 ## Consumed runner guard (12 November 2026, local verification)
 
 The internal runner now consumes the sealed envelope, compares exact Plan/profile

@@ -29,25 +29,21 @@ explicit opt-in before a query runs, has bounded disk use, and preserves the
 memory-only default. Its common-store PostgreSQL qualification does not establish
 Snowflake connector performance or replacement readiness.
 
-The next account lifecycle is being prepared for a fresh table under the
-owner-permitted `SANDBOX.BILLIE_TESTING`. The earlier database-creation approval
-was consumed by its rejected attempt and must not be replayed. The new
-[qualification attachments](snowflake-qualification-attachments.md) are internal
-plumbing, not a runnable user command. The [offline SQL ledger](snowflake-qualification-sql-ledger.md)
-expands the proposed lifecycle using production SQL definitions. Its internal
-policy now enforces those entries in actual Studio/helper routes with a synthetic
-SDK, including bounded drift and interruption cases. Closed-plan restoration
-preserves the original generated table across processes. These are local test
-results, with no account execution authority. The retained 32-phase core is now
-shared by the synthetic route/fault fixtures, with typed durable incomplete-read
-evidence and a conservative qualification-only 32 MiB inbound body cap. Normal
-million-row queries do not use that cap. Offline source/binary/full-runtime/profile
-binding and one-use consumption are implemented. The internal runner now accepts
-the consumed envelope and guards authentication/admission; its latest verification
-state is in the ledger. There is still no account command: the fixed executable,
-exclusive private-file lifecycle and construction exclusively from bound roots
-remain open. Complete optimized scan latency, a fresh concrete plan and fresh
-possible-billing approval remain prerequisites to the account walkthrough.
+The owner permits creating new tables under `SANDBOX.BILLIE_TESTING`; the earlier
+database-creation approval was consumed by the rejected `CREATE DATABASE` attempt
+and must not be replayed. The current internal full-runtime benchmark passes all
+32 synthetic phases at S=1 (393 SQL requests). After a reproduced S=32
+admission timeout, the accelerated-source S=32 rerun passes all 32 phases /
+610 requests. The same-source S=1 rerun also passes all 32 phases / 393 requests;
+the complete module (204 tests) and application validation (679 frontend / 467
+standard Rust tests, strict checks) pass. These are internal results, not product or
+account acceptance. Offline source/binary/full-runtime/profile binding and one-use
+consumption are implemented; the fixed account executable, exclusive private-file
+lifecycle and construction exclusively from bound roots remain open. Before any
+account activity, a fresh exact generated table-only plan and fresh possible-billing
+approval are required. See the [qualification attachments](snowflake-qualification-attachments.md),
+[offline SQL ledger](snowflake-qualification-sql-ledger.md), and current
+[verification ledger](replacement-verification.md).
 
 ## Explicit SDK transaction controls (local acceptance walkthrough)
 
@@ -145,25 +141,40 @@ action. Local synthetic/browser checks are not account or owner acceptance.
 
 ## Reviewed SDK SQL writes (prepared acceptance walkthrough)
 
-Use this only after the [disposable setup](snowflake-disposable-setup.md) and
-the exact account statement/billing scope have been separately approved. These
-steps are a concrete evaluation sequence, not permission to run account SQL.
+Use this only after a fresh exact table-only account plan for the owner-permitted
+`SANDBOX.BILLIE_TESTING` and the exact statement/billing scope have been separately
+approved. The rejected `CREATE DATABASE` setup is consumed and cannot be reused.
+These steps are a concrete evaluation sequence, not permission to run account SQL.
 Local UI fixtures already exercise review, parameters and outcome presentation;
 actual Snowflake data effects and owner acceptance remain open.
+
+The proposed first [table lifecycle](snowflake-existing-schema-qualification.md)
+uses fixed literal SQL. The parameterized example below is a separate follow-up
+walkthrough: its statement and values need their own exact approval and must not
+be substituted into that closed lifecycle.
 
 1. Edit an **External browser SSO** profile, deliberately choose the appropriate
    non-ReadOnly Safe Mode, and check **Allow separately reviewed single INSERT,
    UPDATE, and DELETE statements**. New and existing profiles default this off.
    OAuth and ReadOnly cannot enable it. Production uses Password gated mode.
-2. Connect to the approved disposable database and obtain a coherent context
-   observation. Use a separate console for this test. Begin a transaction with
-   the explicit **Begin transaction** button; its review is independent of DML.
-   Then use **Refresh completion context** to restore normal metadata authority.
-3. Enter a single supported statement against the fully qualified disposable
-   table, for example `INSERT INTO "DB"."SCRATCH"."ROW_CHECKS" ("ID", "NOTE",
-"ACTIVE") VALUES (:id, :note, :active)`. Replace `DB` only with the exact
-   approved new database. Use Integer `9007199254740993`, Text `synthetic note`
-   and Boolean `true` in the parameter dialog. Integer text stays exact.
+2. Connect with current database `SANDBOX` and schema `BILLIE_TESTING`, then
+   obtain a coherent context observation. Use a separate console for this test.
+   Begin a transaction with the explicit **Begin transaction** button; its review
+   is independent of DML. Then use **Refresh completion context** to restore
+   normal metadata authority.
+3. Enter a single supported statement against the new table named by the fresh
+   approved plan. For example:
+
+   ```sql
+   INSERT INTO "SANDBOX"."BILLIE_TESTING"."<TABLE_FROM_FRESH_APPROVED_PLAN>"
+     ("ID", "NOTE", "ACTIVE") VALUES (:id, :note, :active)
+   ```
+
+   `<TABLE_FROM_FRESH_APPROVED_PLAN>` is a documentation placeholder, not a
+   runnable or pre-approved table name; substitute only the exact generated table
+   identifier in the fresh approved plan. Use Integer `9007199254740993`, Text
+   `synthetic note` and Boolean `true` in the parameter dialog. Integer text stays
+   exact.
 4. Inspect the SQL, ordered typed parameters and warnings in **Review this
    operation**. Approve once with the policy's confirmation/passphrase. The review
    closes after approval. Running controls and background metadata pause; prior

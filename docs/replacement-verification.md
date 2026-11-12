@@ -8,6 +8,242 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Complete-content performance acceptance (12 November 2026, local verification)
+
+This increment adds explicitly selected optimized offline measurements. The
+standalone envelope test inventories the unchanged normal packaged runtime,
+actual fixed repository scopes, running optimized executable, resolved pinned
+compiler and synthetic private profile. It captures, restores exact canonical
+bytes, consumes a synthetic offline approval and performs three full
+revalidations. The separate Studio fixtures copy every packaged runtime entry,
+replace only fixture SDK routing/source verification before capture, and execute
+the same captured runtime through the real Node/helper/Studio path. All mutable
+controls, logs, state, workspace and journals live outside the inventory.
+Neither fixture authenticates or imports the genuine account SDK.
+
+Use the pinned toolchains from README and `JOINERY_TEST_NODE` pointing at the
+prepared Node 24 executable. Run these commands serially in this checkout, with
+the existing normal macOS ARM64 bundle present; the explicit ignored fixtures
+fail rather than substitute a minimal runtime when required artifacts are absent:
+
+```sh
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib envelope_real_content_optimized_capture_restore_consume_and_revalidate -- --ignored --test-threads=1 --nocapture
+cargo test --release --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib qualification_studio_runner_consumed_full_runtime_s -- --ignored --test-threads=1 --nocapture
+```
+
+Independent review found premature disposal of the test-only admission timer:
+Rust async field capture retained the success flag rather than the Drop owner.
+The reproduction exits **101**, **7 passed / 1 failed**, **135.24 seconds**, in
+`real-content-guard-reproduction.log`; a successful admission recorded zero
+successes. Explicit whole-value capture fixes the timer lifetime. Existing tests
+now also require zero completed measurements while the scanner is paused and
+before an unpolled future is dropped. The final delta review has no outstanding
+material finding. The timer repair changes no query behavior or production deadline.
+
+Results under `.cache/verification/connection-attempts/`:
+
+- `real-content-guard-fixed-release.log`: exit **0**, **8 passed**, **1.99 seconds**.
+- `real-content-separated-fixture-release.log`: exit **0**, **1 passed**,
+  **1.78 seconds**, actual synthetic SDK helper startup with external output paths.
+- `real-content-envelope-release.log`: exit **0**, **1 passed**, **12.71 seconds**.
+  Full runtime **15,110 entries / 202,538,012 bytes**, inventory SHA-256
+  `4f768186a648e14233d18d31941b96c20818176c2c075c8fdecb5f146df4e699`.
+  Capture **3,774,548 microseconds**, restore **2,527,007**, consumption
+  **2,529,387**; full revalidation **1,272,013 / 1,251,448 / 1,242,941**.
+  Canonical envelope **4,182,125 bytes**; running test executable **32,342,208
+  bytes**. Runtime contents were not executed in this standalone measurement.
+
+The initial full-runtime S=1 workflow exits **101**, **0 passed / 1 failed**,
+**153.88 seconds**, in `real-content-runner-s1-release.log`. It completes four
+phases and 67 SQL requests; **113 admissions / 112 successful / 1 failed**,
+maximum **2,036 ms**, total **141,790 ms**, consumption-to-settlement **144,895
+ms**. Phase five retains its original cancelled read and a separate physical
+sequence failure; helper/transport/scanner settle and final guard evidence is
+recorded, while persistence correctly reports the retained failure. These are
+failed acceptance results, not a successful partial lifecycle.
+
+Investigation identifies the unrelated 15-second read collector cutoff: phase
+five requires 11 SQL requests plus result controls, so complete artifact checks
+can exhaust that cutoff while individual admissions remain within three seconds.
+The reviewed correction now bounds read completion by the consumed attempt
+remaining absolute monotonic/window deadline, without renewing 900 seconds per
+read. The 15-second terminal cleanup drain remains separate; unconsumed synthetic
+fixtures retain their existing 15-second read wait. No sequencing authority is
+relaxed to clear the secondary cancellation error.
+
+Corrected-source focused checks:
+
+- `real-content-slow-read-fixed-release.log`: exit **0**, **1 passed**, **27.04
+  seconds**. The actual helper receives one explicitly logged synthetic ownership
+  read callback delayed **16 seconds**. All five original phase outputs, including
+  the completed read, and the exact closed SQL prefix are retained. Only the
+  deliberate journal-permissions fault after phase five fails the attempt;
+  cleanup settles and no cancellation/retirement is recorded. Artifacts in this
+  focused fixture are synthetic except the actual running executable; it is not
+  full-runtime or account evidence.
+- `real-content-envelope-deadline-fixed-release.log`: exit **0**, **13 passed /
+  1 ignored**, **0.64 seconds**. Includes nonrenewal of the original monotonic
+  deadline, a shorter wall-window bound, sticky expiry and memory-only behavior.
+- `real-content-envelope-deadline-release.log`: exit **0**, **1 passed**, **12.27
+  seconds**. Complete unchanged packaged runtime on the corrected source;
+  capture **3,468,194 microseconds**, restore **2,478,836**, consumption
+  **2,489,122**, and full checks **1,235,120 / 1,264,182 / 1,240,648**.
+
+The corrected S=1 full-runtime workflow passes in
+`real-content-runner-s1-deadline-fixed-release.log`: exit **0**, **1 passed**,
+**676.38 seconds**. It completes all **32 phases / 393 SQL requests** with
+**527 admissions / 527 successful / 0 failed**, maximum **1,983 ms**, total
+**662,413 ms**, consumption-to-final-persistence **667,423 ms**. Original call,
+cleanup, completion recording, final guard revalidation/recording and persistence
+all succeed; scanners and transport settle. The exact copied runtime used by
+Studio has **15,112 entries / 202,526,102 bytes**, including the frozen synthetic
+SDK routing; inventory SHA-256
+`52050a2e9c65f15c696b9bf388d03e21999fa9972597c3524c908e55f5478c1b`.
+No account authentication occurs. This is the complete single-schema synthetic
+workflow result, not actual Snowflake performance or S=32 evidence.
+
+S=32 fails in `real-content-runner-s32-deadline-fixed-release.log`: exit **101**,
+**0 passed / 1 failed**, **422.33 seconds**. Nine phase outputs and **241 SQL
+requests** complete. **310 admissions / 309 successful / 1 failed**, maximum
+**3,000 ms**, total **408,751 ms**; consumption-to-settlement **412,197 ms**.
+The phase-ten original call reports a closed connection after the process
+admission deadline interrupts the guard. Completion recording/persistence retain
+the guard cancellation; final integrity failure is recorded and scanners,
+transport and shutdown settle. This is not a 900-second lifecycle failure and
+does not prove whether the complete S=32 workflow fits that budget. All nine
+source hashes in `real-content-performance-deadline-source-freeze.json` still
+match after both runs.
+
+The diagnostic-only standalone run in `real-content-envelope-profiled-diagnostic.log`
+passes (exit **0**); macOS `sample` also exits **0**. The five-second profile
+`real-content-envelope-sample-diagnostic.txt` reports 3,576 active-worker samples:
+software SHA-256 **1,045**, `openat` **1,081**, reads **835**, `fstatat` **199**
+and directory reads **196**. These sampled proportions locate costs, not exact
+stage durations or the cause of the individual timeout. The pinned
+[sha2 0.10.9 implementation](https://docs.rs/sha2/0.10.9/src/sha2/sha256.rs.html)
+gates its ARM64 acceleration behind `asm`; the current feature set uses software.
+The targeted candidate enables that feature only for macOS ARM64, retaining its
+CPU detection/software fallback and every inventory check. The lockfile adds only
+`sha2-asm` 0.6.4. A standard million-'a' digest vector exercises the actual
+multi-read inventory hash independently of the selected backend. Focused and
+complete performance reruns and final combined validation now pass as recorded
+below. The earlier frozen source results do not establish the changed
+candidate's performance. The initial
+accelerated checks now pass:
+
+- `real-content-accelerated-sha-vector-release.log`: exit **0**, **1 passed**,
+  **0.00 seconds** after the optimized build. The actual file inventory matches
+  the independent SHA-256 million-'a' reference vector.
+- `real-content-accelerated-inventory-release.log`: exit **0**, **15 passed /
+  1 ignored**, **0.01 seconds**. The ignored packaged-runtime measurement is
+  covered separately by the complete-envelope test below.
+- `real-content-envelope-accelerated-release.log`: exit **0**, **1 passed**,
+  **8.78 seconds**. Capture **2,693,193 microseconds**, canonical **3,188**,
+  restore **1,729,561**, consumption **1,707,628**; full checks
+  **851,619 / 851,611 / 865,807**. The normal packaged runtime remains
+  **15,110 entries / 202,538,012 bytes**, with the exact unchanged inventory
+  SHA-256 `4f768186a648e14233d18d31941b96c20818176c2c075c8fdecb5f146df4e699`.
+  This confirms content/digest compatibility, not complete admission latency.
+
+The accelerated S=32 rerun passes in
+`real-content-runner-s32-accelerated-release.log`: exit **0**, **1 passed**,
+**711.52 seconds**. It completes all **32 phases / 610 SQL requests** with
+**751 admissions / 751 successful / 0 failed**, maximum **1,419 ms**, total
+**699,838 ms**, consumption-to-final-persistence **703,735 ms**. Original calls,
+cleanup, completion recording, final guard revalidation/recording and persistence
+all succeed; scanners and transport settle. The exact copied runtime used by
+Studio contains **15,112 entries / 202,526,103 bytes**, inventory SHA-256
+`d7fc41715299496eca56f30aba3a45589d706d64e0536b545f4e6ad66dcf0f4a`.
+The bound optimized test executable is **32,363,152 bytes**, inventory SHA-256
+`7e678271da9bf615c811d69b0f6bcab268df382b1e6515af34ef50552ada7c40`.
+No account authentication or genuine SDK import occurs. All 13 source hashes
+match after this terminal result.
+
+The same-source S=1 rerun passes in
+`real-content-runner-s1-accelerated-release.log`: exit **0**, **1 passed**,
+**502.77 seconds**. It completes all **32 phases / 393 SQL requests** with
+**525 admissions / 525 successful / 0 failed**, maximum **1,206 ms**, total
+**491,414 ms**, consumption-to-final-persistence **495,200 ms**. Original calls,
+cleanup, completion recording, final guard revalidation/recording and persistence
+all succeed; scanners and transport settle. The exact copied runtime used by
+Studio contains **15,112 entries / 202,526,102 bytes**, inventory SHA-256
+`395f28d8db0c8c525fc90b8dc238571a89b9d8df78436a8f219052ab75395bdb`.
+The executable is the same as S=32. All 13 frozen source hashes still match after
+both terminal results. Neither run authenticates or imports the genuine account
+SDK. The complete optimized module now passes in
+`real-content-qualification-combined-release.log`: exit **0**, **204 passed /
+4 default ignores**, **147.36 seconds**. The complete-envelope and full-runtime
+S=1/S=32 cases were explicitly selected and passed separately above; the remaining
+runtime-only ignore is covered by the full-envelope inventory, not claimed as a
+separate current-source execution. Final `pnpm validate` passes in
+`real-content-validate-final.log`: terminal exit **0**, **679 frontend tests /
+57 files**, **467 standard Rust tests / 0 failed / 129 fixture cases ignored**,
+plus formatting, contracts/types, production frontend build, Rust format/check and
+strict all-target/all-feature Clippy. The 13-path frozen source still matches
+after validation. The ignored account/native workflows are not executed by this
+command. Source is committed locally as `db18e03` (ARM64 hashing) and `a05cfae`
+(consumed read deadlines and full-runtime regressions). No source changes follow
+these successful checks; the normal package rebuild is a separate next gate.
+
+Independent bounded review finds no blocker in the target-specific feature or
+new digest vector. Feature unification affects other `sha2` 0.10.9 consumers on
+macOS ARM64, including its CPU-detected SHA-512 path; it is not an inventory-only
+switch. Existing consumers therefore remain covered by final application checks.
+The process writer's three-second bound includes semaphore acquisition,
+blocking-pool scheduling, full scan, policy waiting and journal sync. Queueing
+before writer selection is outside that span. If the changed candidate still
+fails, collect bounded test-only stage timings before altering traversal.
+The candidate's 13-path freeze is
+`real-content-performance-accelerated-source-freeze.json`; it also records the
+unchanged inventory implementation. Independent Python `hashlib` confirms the
+million-byte reference digest, and scoped Rust formatting / `git diff --check`
+pass. These checks alone do not establish the performance gate.
+
+The final cumulative read-only review also finds no material integration issue
+across all 12 changed source/fixture/dependency paths. It confirms the absolute
+consumed read deadline is computed before preparation/execution, preserves the
+original monotonic bound and shorter wall window, and leaves terminal drains
+separate. Fixture capture and execution use the same runtime root; immutable SDK
+routing changes precede capture and mutable controls remain external. Residual
+coverage limitation: no dedicated integration case expires an already-active
+consumed read against a short remaining deadline. Unit expiry/nonrenewal, the
+16-second real-helper read and existing cancellation/drain cases provide
+composed evidence, not that direct scenario. The review does not supply runtime
+or account acceptance. No reviewer edits, tests or builds occurred.
+
+A separate read-only documentation review checks the new product-readiness
+overview against README, acceptance and linked design contracts. No misleading
+readiness/account claim is found. Its scope pointer now explicitly retains
+AI/agents, diagrams, data search/comparison, Git/Local History and other applicable
+baseline capabilities beyond the twelve requested areas. Local matrix links
+resolve and scoped formatting preserves the historical remainder. This review
+adds no execution evidence.
+
+Read-only architecture review resolves the next factory policy decision: create
+a fresh isolated Staging/Confirm profile, with a recomputed fixed policy declaration
+bound in the canonical envelope. Use the ordinary Staging group, profile saving,
+safety preparation and plan authorization; verify the saved policy before launch.
+Read no existing application profile and never downgrade Production/PasswordGated.
+The runner's existing passphrase rejection means this first route cannot qualify
+production password gating. Exact offline policy/tamper/group/opt-in/TLS/target and
+ordinary-token negatives remain implementation work. The reviewed seven-field
+connection input stays unchanged. No new approval ceremony is added; fresh exact
+plan/billing approval is still the existing external gate after concrete review.
+
+A targeted 12 November official-documentation recheck confirms the existing
+grid-editing constraint: Snowflake [object references](https://docs.snowflake.com/en/sql-reference/references#objects-identified-by-name)
+identify names and can authorize a replacement or swapped object when the encoded
+roles retain privileges. This does not establish an atomic original-table pin.
+The existing bounded design finding remains; it is not proof that no supported
+mechanism exists and does not justify enabling grid/CSV writes. No account test
+or broader baseline refresh is implied.
+
+A single revalidation measurement does not establish the complete admission or
+workflow gate. Initial measured source is frozen in
+`real-content-performance-source-freeze-final.json`; deadline corrections require
+a new freeze and rerun. No account activity, normal package rebuild,
+installation or publication is represented by these tests.
+
 ### Consumed runner admission and final evidence (12 November 2026)
 
 The retained internal runner now accepts the non-cloneable consumed envelope by

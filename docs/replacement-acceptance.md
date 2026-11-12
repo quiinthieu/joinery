@@ -192,10 +192,17 @@ a reproduced validator-contract repair, the same-scope live rerun passed context
 session continuity, scalar values and cleanup. [The ledger](replacement-verification.md)
 records both attempts. This does not authorize object reads or writes or qualify
 packaged application sign-in.
+The owner permits creating new test tables under `SANDBOX.BILLIE_TESTING`.
+The earlier disposable-database setup approval was consumed by the privilege
+rejection; no database/schema was created. The existing-schema table lifecycle
+still needs a fresh concrete execution plan and one-attempt possible-billing
+approval before account activity. The provided table scope need not be requested
+again and does not authorize writes to existing application tables.
+
 Remaining details: server version/environment,
 warehouse policy,
-representative sanitized tasks/column widths, CSV import sizes, accessibility/performance expectations,
-and an authorized non-production qualification scope. These refine acceptance;
+representative sanitized tasks/column widths, CSV import sizes, and
+accessibility/performance expectations. These refine acceptance;
 they do not narrow the confirmed all-applicable-DataGrip target.
 
 ## Required acceptance gates

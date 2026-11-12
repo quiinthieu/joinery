@@ -304,6 +304,12 @@ SESSION or PERSISTENT scope does not change this behavior. References can be
 passed to `IDENTIFIER(?)`, but successful name binding does not protect reviewed
 grid or CSV writes against concurrent replacement. No account test was run.
 
+A targeted recheck on 12 November confirms the same documented name binding,
+including replacement and SWAP behavior; it supplies no new atomic generation
+pin. This refresh is limited to the linked reference documentation, not the full
+Snowflake baseline. The grid/CSV design gate remains open; no account access or
+mutation test was performed.
+
 [`ACCOUNT_USAGE.TABLES.TABLE_ID`](https://docs.snowflake.com/en/sql-reference/account-usage/tables)
 has documented metadata latency up to 90 minutes.
 [`SYSTEM$GET_REFERENCED_OBJECT_ID_HASH`](https://docs.snowflake.com/en/sql-reference/functions/system_get_referenced_object_id_hash)

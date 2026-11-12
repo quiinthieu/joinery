@@ -49,11 +49,24 @@ inbound frame bodies, rather than semantic-only accounting; this does not affect
 normal million-row queries. Typed durable incomplete-read evidence preserves
 capture/original/cleanup errors through late completion. Current combined-source
 checks and review corrections are recorded in the verification ledger.
-Source/runtime/binary/private-connection binding, one-use consumption and the
-account entry remain incomplete. The default staged runtime contains five
-dependency symlinks; the preceding normal macOS bundle has zero. Strict execution
-inventory must bind and fully inventory that or another zero-link resource tree.
-No normal desktop command exposes this module.
+Offline source/runtime/binary/private-profile binding and one-use consumption
+are now implemented. The internal consumed runner checks full contents before
+authentication and physical admission, retains original outcomes separately from
+final integrity, and owns settlement through evidence persistence. Its complete
+optimized S=1 run on a full copied runtime passes 32 phases / 393 synthetic SQL
+requests. After a reproduced S=32 admission timeout, the accelerated-source
+S=32 rerun passes 32 phases / 610 requests with 751 successful admissions and
+no failures. The same-source S=1 rerun also passes all 32 phases / 393 requests
+with 525 successful admissions and no failures. The combined optimized module
+passes 204 tests and application validation passes 679 frontend / 467 standard
+Rust tests plus strict checks, with 129 fixtures ignored. See the ledger for
+the current result rather than treating preceding historical totals as current.
+The fixed account executable, exclusive private-file lifecycle and construction
+only from consumed bound roots remain incomplete. The default staged runtime
+contains five dependency symlinks; the preceding normal macOS bundle has zero.
+Strict execution inventory must bind and fully inventory that or another zero-link
+resource tree. No normal desktop command exposes this module, and none of these
+local tests supplies account execution authority.
 See the
 [verification ledger](replacement-verification.md) for checks and remaining gates.
 
@@ -82,12 +95,23 @@ the runner never edits the working profile, borrows a working console, or issues
 `USE`. Preserve the existing role, warehouse and secondary-role configuration.
 Pin the returned principal/session and all sampled settings/search-path context.
 
-The qualification profile must already satisfy the normal production policy:
-writable Safe Mode, explicit reviewed DDL and DML opt-ins, and the usual plan
-authorization. The first runner increment may support Confirm mode only and fail
-offline for other modes; it must not silently lower a policy or bypass a required
-passphrase. Profile/policy changes revoke the attempt’s pending plans. The wider
-Safe Mode matrix remains covered separately by local tests and later acceptance.
+The qualification profile must satisfy the normal application policy: writable
+Safe Mode, explicit reviewed DDL/DML opt-ins and ordinary plan authorization. The
+reviewed construction decision is a new isolated **Staging/Confirm** profile,
+not an adopted working profile or a classification of the entire remote account.
+The fixed declaration must be recomputed in the canonical envelope, including
+externalbrowser, verified TLS/443, no SSH/stored secrets and the exact test target.
+It is not a mutable environment/mode selector. Use the normal Staging group and
+`save_profile`, then verify the saved profile/effective mode before launch.
+
+Existing application profiles are neither read nor changed. Normal Production
+profiles still require PasswordGated; this Confirm-only runner rejects a plan
+requiring a passphrase and does not qualify that separate production workflow.
+Policy tampering, group/target/opt-in/TLS mismatches and missing/wrong/stale ordinary
+approval tokens must fail offline without fallback or downgrade. Profile/policy
+changes revoke pending plans. The wider Safe Mode matrix remains required and
+covered separately by local tests and later acceptance. This is a reviewed
+construction plan, not an implemented factory or new execution approval.
 
 Require the existing schema to be available, every DDL phase to observe idle
 AUTOCOMMIT=true state, and quoted-identifier policy false. Observe rather than

@@ -1,5 +1,64 @@
 # Joinery implementation roadmap
 
+## Complete-content performance gate (12 November 2026, passed locally)
+
+The complete optimized envelope capture/restore/consume test passes against the
+unchanged full packaged runtime. The consumed S=1 Studio workflow also passes:
+32 phases / 393 synthetic SQL requests, 527 successful admissions, maximum
+1,983 ms, and 667,423 ms from consumption through final persistence. Reproduced
+test-timer ownership and whole-read timeout defects are corrected with focused
+regressions and independent review. See the
+[verification ledger](replacement-verification.md) for exact evidence and failures.
+
+S=32 fails after nine completed phases when one admission reaches three seconds;
+the frozen source still matches. Profiling identifies software SHA-256 as a
+substantial cost; the macOS ARM64 acceleration feature now passes local verification.
+Its independent digest vector and inventory suite pass; full revalidation now
+measures 0.85–0.87 seconds against the exact unchanged packaged runtime. The
+changed-source S=32 run passes all 32 phases / 610 SQL requests: 751 successful
+admissions, maximum 1,419 ms and 703,735 ms consumption-to-persistence. S=1 also
+passes 32 phases / 393 requests: 525 successful admissions, maximum 1,206 ms and
+495,200 ms consumption-to-persistence. Both settle and persist; all 13 frozen
+source hashes match. The combined optimized module passes 204 tests with 4
+default ignores. Full application validation passes 679 frontend / 467 standard
+Rust tests, with 129 fixtures ignored, plus formatting/build/check/strict Clippy.
+Source commits `db18e03` and `a05cfae` preserve every inventory check and existing
+admission/lifecycle limit. Rebuild/check the normal macOS package, then proceed
+to the fixed account entry and bound-root construction below. `SANDBOX.BILLIE_TESTING` is the owner's
+permitted new-table location; prepare the exact table-only plan before fresh
+execution/billing approval. No new account activity has occurred. All applicable
+DataGrip workflows and hands-on acceptance remain required; the Goal is active
+and incomplete.
+
+Read-only integration review identifies the next concrete construction work:
+
+- Add one dedicated binary and a narrow private entry facade for offline
+  emit/verify and separately approved execute. Bind that binary's actual build
+  recipe; only emission generates a Plan. Verify/execute restore original
+  reviewed bytes and their explicit digest.
+- Add an explicitly bounded 16 MiB envelope reader: the current private reader
+  rejects requested limits above 64 KiB. Retain smaller 16 KiB profile / 4 KiB
+  approval bounds and all descriptor-relative ownership, permission and identity
+  checks. Fix the permanent consumption root independently of output paths.
+- Construct Studio, runtime and the new connection attempt only from the consumed
+  roots. The current assembled-component runner constructor is suitable for
+  fixtures, not proof of runtime provenance. Use fresh exclusive private storage;
+  the generic persistence opener can adopt existing databases and change modes.
+- Retain resource/guard/attempt/output ownership through journal and terminal
+  receipt persistence, including dropped waiters and failed launches. Prove
+  zero-launch offline commands, cross-process RUN reuse rejection, no profile or
+  runtime fallback and truthful original outcomes after local storage failure.
+- Construct a new isolated Staging/Confirm qualification profile. Recompute a
+  fixed policy declaration in the canonical envelope (including opt-ins, verified
+  TLS/443, no SSH/secrets and exact target); it is not a caller-selected policy.
+  Keep the seven-field connection input, use the normal Staging group/save/prepare/
+  authorize route and compare the resulting profile/effective mode before launch.
+  Never adopt, modify or downgrade an existing profile; Production still enforces
+  PasswordGated and is a separate qualification scope. Offline mismatch/tamper/
+  missing-token/stale-token tests precede account execution. The first closed
+  lifecycle uses fixed literals; parameterized and million-row account checks
+  require separately reviewed scopes.
+
 ## Consumed runner guard (12 November 2026, local verification)
 
 The retained runner now accepts the consumed envelope by value and checks exact

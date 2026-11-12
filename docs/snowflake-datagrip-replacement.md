@@ -14,7 +14,7 @@ The owner subsequently selected the **latest stable DataGrip release** and
 reported query results of **up to 1,000,000 rows**. JetBrains' official
 [release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
 reported DataGrip **2026.3**, build `263.7307.216`, released 5 November 2026,
-when checked on 9 November and rechecked on 10 and 11 November. Version-specific features, including bundled Air,
+when checked on 9 November and rechecked on 10, 11 and 12 November. Version-specific features, including bundled Air,
 cross-database queries and the new grid column controls, belong in applicability
 review. Their provider entitlements and database support remain separate facts.
 
@@ -75,9 +75,18 @@ approved single account attempt passed SSO and initial observations, then stoppe
 on definitive CREATE DATABASE rejection without creating a schema or table.
 That approval is consumed. The owner now permits new tables under
 `SANDBOX.BILLIE_TESTING`; the [existing-schema lifecycle proposal](snowflake-existing-schema-qualification.md)
-now has a tested harness-only offline definition. It still needs physical SQL and
-inbound resource gates, raw census/creation-marker interception, a source/runtime-
-bound executable plan, a fixed runner, review and fresh possible-billing approval.
+now has a tested offline definition, physical SQL/resource gates, raw census and
+creation-marker interception, retained runner, complete artifact envelope and
+one-use consumption. The consumed runner's full copied-runtime S=1 test passes;
+S=32 initially fails the three-second admission gate; the accelerated-source
+rerun now passes all 32 phases / 610 requests with 751 successful admissions.
+The same-source S=1 rerun also passes 32 phases / 393 requests with 525 successful
+admissions. Combined verification passes 204 module tests, 679 frontend tests and
+467 standard Rust tests plus strict checks, with 129 fixtures ignored. The fixed account command,
+exclusive private-file lifecycle and construction exclusively from bound roots
+remain open before emitting a concrete reviewed plan and obtaining fresh
+possible-billing approval. These are internal qualification results, not new
+externally qualified application workflows.
 The preceding
 SDK integration qualification passes, including all 143 browser workflows,
 124 actual local database fixtures and the packaged SDK runtime checks. These
