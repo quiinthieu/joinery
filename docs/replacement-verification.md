@@ -27,7 +27,7 @@ browser coverage as `4956562`, and the separate navigation fixture correction as
 their captured source hashes with the reviewed and staged source without drift.
 
 Local verification for this increment is complete within the synthetic scope
-below; current normal packaging and external acceptance remain pending. Focused
+below. Normal packaging passes; external/native UI acceptance remains pending. Focused
 frontend checks pass **205 cases** across
 seven files, IPC checks pass **9 cases** across three files, and TypeScript
 compiles against the actual newly generated contract. Local records are under
@@ -130,9 +130,45 @@ of this increment, outside these commands. No further cleanup was performed.
 The older preserved `278754b` app remains available under
 `.cache/verification/reviewed-console/preserved-release-278754b/`; it predates both
 console application increments. Historical packaging results below describe
-their recorded source, not a currently retained default-target artifact. The
-current increment has not yet been packaged; its new normal SDK-bearing bundle
-is pending.
+their recorded source, not a currently retained default-target artifact.
+
+One normal SDK-bearing ARM64 package is now built from clean committed source
+`9b20aa232d47ae78880c977e0d9bc318e712105e` (tree
+`03d5cab4c0ad2aff02ca5f8acc93b37ebf4966a6`). The command
+`pnpm desktop:snowflake:bundle:mac` passes in **718.09 seconds**, with no captured
+source or checkout drift. Strict ad-hoc signature/resources pass, the bundled
+Snowflake SDK is 3.4.1, and the network-guarded helper startup reports **zero
+authentication and SQL requests**. This does not launch or qualify the normal
+native UI. The existing `rust-objcopy` missing-`libLLVM.dylib` warning recurs for
+the library and executable; the stripping steps abort, but compilation, bundling
+and all package verification commands finish successfully. No global toolchain
+configuration is changed. See `negative-app-package.json` and adjacent log.
+
+The uninstalled version-0.1.0 app is at
+`src-tauri/target/release/bundle/macos/Joinery.app`. Executable SHA256 is
+`87cdeec3a9ae9932cbae6172a9863e6ee19073e92be0bce18c3be1a2eed3ae50`.
+It contains 13,055 regular files totaling **241,019,097 bytes**; the builder
+reported **225.66 MiB** before final package checks. After packaging, debug occupies
+**5,511,768 KiB**, release **2,511,820 KiB**, and actual free space is
+**214,530,072,576 bytes** (about 199.8 GiB). All preserved previous-app files and
+symlinks match their earlier manifest. See `negative-app-artifact.json`.
+
+Reproduce local checks with the pinned README toolchain and prepared runtime:
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib console -- --test-threads=1
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright test tests/e2e/snowflake-retained-console.spec.ts --workers=1
+pnpm desktop:snowflake:bundle:mac
+```
+
+These runs used Rust 1.99.1, Node 24.22.2 and pnpm 11.23.0. The local runners set
+the toolchain PATH and pointed `JOINERY_TEST_NODE` at that Node executable. The
+ignored receipts capture commands and source hashes. Source review is separate
+from package/startup evidence.
+The private project hub is unchanged under the owner's no-publication constraint;
+local repository documentation carries this milestone.
+
 No account/profile/approval-marker access, sign-in, billable operation, app
 installation, push or publication occurs in this increment. Real Snowflake
 effects, million-row interaction, packaged native workflows and owner acceptance

@@ -79,9 +79,10 @@ fixture ignored by default). Full validation passes 893 frontend / 559 standard
 Rust cases with 137 default ignores. The actual browser-to-Rust/helper/SQLite/
 Arrow case passes at 1024 × 720, including ordinary clicks, keyboard receipt
 scrolling, a dropped committed-refusal response and graceful restart with no
-replay or lookup SQL. The SDK is synthetic. Current normal packaging, real
-Snowflake effects, native UI/SSO/restart, million-row workflows and owner
-acceptance remain open; see the [ledger](replacement-verification.md).
+replay or lookup SQL. The SDK is synthetic. Normal SDK-bearing packaging from
+clean `9b20aa2` passes resource/signature and guarded helper-startup checks, without
+authentication/SQL. Real Snowflake effects, native UI/SSO/restart, million-row
+workflows and owner acceptance remain open; see the [ledger](replacement-verification.md).
 
 The local regression scope covers:
 

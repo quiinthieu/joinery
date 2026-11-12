@@ -14,10 +14,12 @@ and keyboard scrolling while pending notices remain visible. The
 [ledger](replacement-verification.md) track this source separately. Earlier
 sections describe their recorded predecessor, not verification of new source.
 
-Current-increment normal packaging is pending; historical bundle checks below
-qualify only their recorded source. After packaging, continue practical receipt
-retention without losing recovery identities, configurable qualified long-running queries, then the fresh
-approved disposable Snowflake/native/owner acceptance plan. Every applicable
+Normal SDK-bearing ARM64 packaging from clean `9b20aa2` now passes resources,
+strict ad-hoc signature and guarded helper startup with zero authentication/SQL.
+The app remains local and uninstalled; packaged native UI acceptance is open.
+Continue practical receipt retention without losing recovery identities,
+configurable qualified long-running queries, then the fresh approved disposable
+Snowflake/native/owner acceptance plan. Every applicable
 DataGrip capability remains required. No account, installation or publication
 authority is granted by local tests.
 

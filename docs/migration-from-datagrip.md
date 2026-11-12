@@ -12,7 +12,10 @@ explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
 response-loss/restart recovery and a bounded receipt panel. This does not
 establish real Snowflake effects, current packaged native UI behavior or daily
-replacement readiness; packaging this increment remains pending.
+replacement readiness. The normal SDK-bearing ARM64 bundle from clean `9b20aa2`
+passes resource/signature and guarded helper-startup checks. It is local and
+uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
+acceptance remains open. See the ledger for its binary hash and build warning.
 
 Console receipts retain both admitted runs and committed pre-admission refusals.
 After a lost response, use **Reconcile receipt (no SQL)** to retrieve the original local

@@ -27,8 +27,10 @@ with a synthetic SDK. The browser case includes the real committed-refusal
 response loss, graceful restart without replay and ordinary clicks/keyboard
 receipt scrolling at 1024 × 720. Pending notices remain visible with settled
 history collapsed. These local results do not establish actual account semantics
-or native application UI acceptance. Current packaging, configurable long-running
-query behavior and practical journal retention remain required.
+or native application UI acceptance. Normal bundle checks from clean `9b20aa2`
+now pass, including guarded helper startup with zero authentication/SQL. Packaged
+native UI/SSO/restart, configurable long-running query behavior and practical
+journal retention remain required.
 
 Real Snowflake effects, one-million-row paging/export, normal packaged external-
 browser SSO/restart and the owner's complete daily evaluation remain open. The

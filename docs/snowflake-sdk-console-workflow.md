@@ -96,7 +96,10 @@ restart without replay. At 1024 × 720 it also checks ordinary run/review clicks
 after eleven receipts and keyboard scrolling/reconciliation in the bounded panel.
 Full local validation passes 893 frontend / 559 standard Rust tests (137 default
 ignores). This does not qualify actual Snowflake effects, cancellation, SSO,
-performance or packaged native UI behavior. Packaging this increment is pending.
+performance or packaged native UI behavior. Normal SDK-bearing ARM64 packaging
+from clean `9b20aa2` passes resources, strict ad-hoc signature and guarded helper
+startup with zero authentication/SQL. The local app remains uninstalled; normal
+native UI/SSO/restart acceptance remains open.
 
 Account acceptance still needs a fresh exact reviewed plan and billing scope for
 the permitted disposable `SANDBOX.BILLIE_TESTING` target, then independently read

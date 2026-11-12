@@ -17,12 +17,15 @@ ordinary clicks/keyboard receipt scrolling at 1024 × 720. A bounded receipt pan
 keeps pending notices visible without displacing the editor. See the
 [ledger](replacement-verification.md) for source-scoped evidence and failures.
 
-Prior bundle verification describes its recorded sources. The prior default
-`src-tauri/target` build output is now absent; the preserved local `278754b` app
-remains under `.cache/verification/reviewed-console/preserved-release-278754b/`.
-It predates both console increments. Packaging the current increment is pending.
-No new app installation or account activity has occurred. Practical retention,
-long-running behavior and complete Snowflake/macOS/owner acceptance remain required; the Goal stays active.
+The normal SDK-bearing ARM64 bundle from clean `9b20aa2` passes resources,
+strict ad-hoc signature and network-guarded helper startup with zero authentication
+or SQL requests. It is available at
+`src-tauri/target/release/bundle/macos/Joinery.app`, local and uninstalled. The
+previous default build output became absent before this increment; all bytes of
+the separately preserved `278754b` app remain unchanged. The ledger records the
+current binary hash, storage measurements and nonfatal stripping-tool warning.
+Packaged native UI/SSO/restart, practical retention, long-running behavior and
+complete Snowflake/macOS/owner acceptance remain required; the Goal stays active.
 
 ## Retained console application integration (12 November 2026)
 
