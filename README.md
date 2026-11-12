@@ -56,6 +56,8 @@ and remaining account qualification. Local source also provides revision-bound
 generated table/view DDL, [declared key inspection](docs/snowflake-sdk-constraints-design.md)
 and [ordered key column mappings](docs/snowflake-sdk-key-mappings-design.md),
 including local [selection of a retained referenced table](docs/snowflake-sdk-key-mappings-design.md#referenced-table-selection),
+independent [CHECK-clause inspection](docs/snowflake-sdk-check-constraints-design.md)
+(current local verification tracked in the ledger),
 explicit [session observations](docs/snowflake-sdk-session-observation.md), and
 [guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
 application qualification passes. Separately reviewed

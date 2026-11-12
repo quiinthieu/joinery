@@ -34,6 +34,7 @@ pub(crate) enum ReadKind {
     ExactRelation,
     Definition,
     Constraints,
+    CheckConstraints,
     PrimaryKeyMapping,
     UniqueKeyMapping,
     ForeignKeyMapping,
@@ -183,6 +184,24 @@ pub(crate) fn constraints_read(
         browsing::constraints_sql(target)?,
         (browsing::CONSTRAINT_LIMIT + 1) as u64,
         browsing::CONSTRAINT_MAX_BYTES as u64,
+    );
+    read.binds = vec![
+        target.database.clone().into(),
+        target.table.schema.clone().into(),
+        target.table.name.clone().into(),
+    ];
+    Ok(read)
+}
+
+pub(crate) fn check_constraints_read(
+    target: &super::snowflake_browsing::BrowseRelation,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_browsing as browsing;
+    let mut read = ReadSpec::bounded(
+        ReadKind::CheckConstraints,
+        browsing::check_constraints_sql(target)?,
+        (browsing::CHECK_LIMIT + 1) as u64,
+        browsing::CHECK_MAX_BYTES as u64,
     );
     read.binds = vec![
         target.database.clone().into(),

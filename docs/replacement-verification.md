@@ -8,6 +8,96 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### CHECK-constraint inspection (12 November 2026)
+
+The independent retained-target CHECK action is implemented locally; the
+[contract](snowflake-sdk-check-constraints-design.md) and
+[prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
+record its limits. Full validation, changed browser and hidden native checks
+pass; a new normal SDK-bearing package is pending. Preceding package/test results below do not qualify this
+changed source.
+No account requests, owner marker-store access or account approvals are included.
+
+Evidence uses `.cache/verification/check-constraints/`. Base is clean 73e47c8 on
+`feat/datagrip-replacement`. source-freeze-final.json binds all 21 changed
+source/test/ACL files; documentation is recorded separately in commits. Each
+command receipt records HEAD/tree, changed source hashes before/after, exit and
+elapsed time. Independent Rust/UI collectors permit implementation in the other
+scope; final checks freeze all source. Pinned Node 24.22.2, pnpm 11.23.0 and
+Rust/Cargo 1.99.1 are used, with repository-local JOINERY_TEST_NODE and browser cache.
+
+The initial `pnpm contracts` exits 0 in 83.230 seconds while independent source
+work continues; its receipt correctly records changed source, so it is generation
+rather than a frozen verification claim. Focused commands on unchanged captured
+source all exit 0:
+
+```sh
+pnpm exec vitest run src/features/studio/RelationBrowser.test.tsx src/ipc/command-map.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib check_constraints_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --locked --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests:: -- --test-threads=3
+```
+
+Frontend/IPC passes 140/140 (138 relation-browser and two typed-contract tests),
+12.871 seconds. Forty-one new UI cases cover exact outer/row identity, inert
+multiline/Unicode text, independent denial preserving other metadata, retry/empty,
+displayed and pending-response invalidation, and still-connected old handlers
+after transient holds. Rust focused passes 13/13, 48.409 seconds including
+compilation: four pure parser/factory cases, seven synthetic SDK adapter cases,
+one seven-state Studio admission case and one test-classifier rejection case.
+All synthetic SDK session regressions pass 104/104, 12.238 seconds.
+
+Cases verify exact quoted/bound identities, one retained helper connection and no
+USE, denied versus empty metadata, malformed/NULL/duplicate/truncated results,
+row/aggregate/JSON-escaping bounds, forged/stale/busy/unavailable targets before
+SQL, pre/post drift and held-read refresh/disconnect. The new qualification
+panic test rejects the new kind in the test ledger classifier; it is not itself
+a runtime wire-admission proof. Production qualification ledger, exact wire
+matcher, plan, policy and sequence are unchanged.
+
+Independent bounded UI/integration and backend reviews have no material finding
+(ui-review.json, backend-review.json). Tier 2 generations 07:49:25Z cover 15 UI/
+integration paths and ten backend/qualification paths with matching metadata and
+no recorded gaps, supplemented by direct source reads. Root list/coverage calls
+still return Transport closed; no index or global configuration is changed.
+The backend pure fixture was corrected before freeze to use BASE TABLE with
+Iceberg/hybrid traits, preserving current availability semantics. No failed
+product test or accepted family claim is hidden by that correction.
+
+Full `pnpm validate` exits 0 in 456.852 seconds with unchanged captured source
+(validate.json / log): 803 frontend tests, 486 standard Rust tests, 129 fixture/
+helper ignores, formatting, TypeScript, production UI build, compiler checks and
+strict all-target/all-feature Clippy. Existing nonfatal ts-rs attribute and Vite
+chunk/timing warnings remain in the log. This run adds no real Snowflake fixture
+qualification; skipped database/helper cases remain skipped.
+
+The changed headless Playwright workflow exits 0, 1/1 in 45.994 seconds including
+harness startup (browser.json / log; test 13.8 seconds), with unchanged source.
+It exercises the real UI through synthetic RPC: keyboard CHECK activation, exact
+quoted/multiline clause display, denial preserving other views, explicit retry to
+empty results, clearing on referenced-table selection, and held-response refresh
+invalidation. No account, user browser profile or native UI acceptance is inferred.
+
+Hidden native build and runner both exit 0 with unchanged frozen source
+(native-build.json / log, native-smoke.json / log). The build takes 227.631
+seconds overall (3m24s optimized compilation). The isolated runner takes 4.264
+seconds, passes 20 categories and 10 cleanup cycles, with 3,639 ms native elapsed
+and 100.05 MiB main-process peak RSS. The new command reaches the disconnected-
+session guard through native IPC; no unknown-command or permission error is
+accepted. native-final-build.json / native-final-runs.json preserve binary/source
+and run details before normal packaging replaces the release binary. Runtime
+resources are absent in this fixture. It qualifies hidden startup, IPC and
+cleanup only, not normal account UI/SSO, cold visible startup or representative
+performance. The known rust-objcopy/libLLVM SIGABRT stripping warning remains
+nonfatal; no machine/toolchain/global setting is changed to suppress it.
+
+Official source refresh (official-refresh.json) confirms the five VARCHAR fields,
+including CONSTRAINT_TABLE, and current-role visibility. The view supplies no
+enforcement/validation flag. Actual account output, visibility, propagation,
+interruptions, object-family compatibility and normal packaged usability remain
+unqualified. Local synthetic checks do not establish real database behavior.
+CHECK creation/modification/validation and all other replacement gates remain
+required; the Goal stays active and incomplete.
+
 ### Referenced-table selection (12 November 2026)
 
 Local source, browser and hidden native checks pass. The

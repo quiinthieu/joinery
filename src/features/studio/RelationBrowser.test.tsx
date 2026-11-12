@@ -4,6 +4,7 @@ import { StrictMode } from "react";
 import type {
   BrowseCatalog,
   ColumnInfo,
+  RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
@@ -219,6 +220,21 @@ const keyMappings: RelationConstraintMappings = {
     },
   ],
 };
+const checkConstraints: RelationCheckConstraints = {
+  revision: catalog.revision,
+  targetId: catalog.relations[0].targetId,
+  database: catalog.database,
+  table: catalog.relations[0].table,
+  constraints: [
+    {
+      catalog: "DB",
+      schema: "S",
+      tableName: catalog.relations[0].table.name,
+      name: 'CHECK "amount',
+      checkClause: '"amount" > 0\nAND "label" <> \'雪 <img src=x onerror=alert(1)>\'',
+    },
+  ],
+};
 beforeEach(() => {
   vi.clearAllMocks();
   useStudio.setState({
@@ -240,6 +256,7 @@ beforeEach(() => {
     if (method === "define_relation") return definition;
     if (method === "inspect_relation_constraints") return keyConstraints;
     if (method === "inspect_relation_constraint_mappings") return keyMappings;
+    if (method === "inspect_relation_check_constraints") return checkConstraints;
     throw new Error(`Unexpected ${method}`);
   });
 });
@@ -1291,6 +1308,7 @@ function renderReferenceNavigation(
   vi.mocked(client.call).mockImplementation(async (method, args) => {
     if (method === "relation_catalog") return retainedCatalog;
     if (method === "inspect_relation_constraint_mappings") return resultMappings;
+    if (method === "inspect_relation_check_constraints") return checkConstraints;
     if (method === "define_relation") return definition;
     if (method === "inspect_relation_constraints") return keyConstraints;
     if (method === "preview_relation") return preview;
@@ -1534,4 +1552,210 @@ it.each([
   expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).not.toBe(
     "opaque-qualified-destination",
   );
+});
+
+async function selectAndLoadChecks() {
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  expect(screen.getByText("CHECK constraints have not been fetched.")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  return screen.findByRole("table", { name: "CHECK constraint inventory" });
+}
+
+it("views CHECK clauses independently as escaped multiline Unicode text with quoted identities", async () => {
+  const { container } = render(<RelationBrowser sessionId="isolated-console" onClose={vi.fn()} />);
+  const table = await selectAndLoadChecks();
+  expect(client.call).toHaveBeenLastCalledWith("inspect_relation_check_constraints", {
+    sessionId: "isolated-console",
+    request: { revision: "catalog-1", targetId: "opaque-target" },
+  });
+  expect(client.call).toHaveBeenCalledTimes(2);
+  expect(within(table).getByRole("rowheader").textContent).toBe('"DB"."S"."CHECK ""amount"');
+  expect(within(table).getAllByRole("cell")[0].textContent).toBe('"DB"."S"."Quoted Table"');
+  expect(table.querySelector("pre")?.textContent).toBe(checkConstraints.constraints[0].checkClause);
+  expect(container.querySelector("img, script")).toBeNull();
+  const region = screen.getByRole("region", { name: "Relation CHECK constraints" });
+  expect(within(region).queryByRole("button")).toBeNull();
+  expect(within(region).getByRole("note").textContent).toContain(
+    "do not report enforcement or validation",
+  );
+  expect(within(region).getByRole("note").textContent).toContain("establish engine eligibility");
+  expect(within(region).getByRole("note").textContent).toContain("grant row editing authority");
+});
+
+it("CHECK denial clears only its old result, preserves other views, and retries to explicit empty", async () => {
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndLoadChecks();
+  fireEvent.click(screen.getByRole("button", { name: "View key constraints" }));
+  const keys = await screen.findByRole("table", { name: "Key constraint inventory" });
+  fireEvent.click(screen.getByRole("button", { name: "View key column mappings" }));
+  const mappings = await screen.findByRole("table", { name: "Key column mapping inventory" });
+  fireEvent.click(screen.getByRole("button", { name: "View definition" }));
+  await screen.findByLabelText("Object DDL");
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  const columns = await screen.findByRole("table", { name: "Column inspection" });
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  const rows = await screen.findByRole("table", { name: "Read-only preview" });
+  vi.mocked(client.call).mockRejectedValueOnce(new Error("Synthetic CHECK denied"));
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  const region = screen.getByRole("region", { name: "Relation CHECK constraints" });
+  expect((await within(region).findByRole("alert")).textContent).toContain(
+    "CHECK constraints are unavailable: Synthetic CHECK denied",
+  );
+  expect(within(region).queryByRole("table")).toBeNull();
+  expect(within(region).queryByText(/No visible|not been fetched/)).toBeNull();
+  expect(screen.getByRole("table", { name: "Key constraint inventory" })).toBe(keys);
+  expect(screen.getByRole("table", { name: "Key column mapping inventory" })).toBe(mappings);
+  expect(screen.getByRole("table", { name: "Column inspection" })).toBe(columns);
+  expect(screen.getByRole("table", { name: "Read-only preview" })).toBe(rows);
+  expect(screen.getByLabelText("Object DDL").textContent).toBe(definition.ddl);
+  vi.mocked(client.call).mockResolvedValueOnce({ ...checkConstraints, constraints: [] });
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  await within(region).findByText("No visible CHECK constraints returned.");
+  expect(within(region).queryByRole("alert")).toBeNull();
+  expect(within(region).queryByRole("table")).toBeNull();
+});
+
+it.each([
+  "revision",
+  "targetId",
+  "database",
+  "schema",
+  "name",
+  "row catalog",
+  "row schema",
+  "row tableName",
+])("rejects CHECK results with mismatched %s before publication", async (field) => {
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await selectAndLoadChecks();
+  const result = structuredClone(checkConstraints);
+  if (field === "schema" || field === "name") result.table[field] = "different";
+  else if (field === "revision" || field === "targetId" || field === "database")
+    result[field] = "different";
+  else if (field === "row catalog") result.constraints[0].catalog = "different";
+  else if (field === "row schema") result.constraints[0].schema = "different";
+  else result.constraints[0].tableName = "different";
+  vi.mocked(client.call).mockResolvedValueOnce(result);
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  const region = screen.getByRole("region", { name: "Relation CHECK constraints" });
+  expect((await within(region).findByRole("alert")).textContent).toContain(
+    "CHECK constraint target changed",
+  );
+  expect(within(region).queryByRole("table")).toBeNull();
+});
+
+function changeCheckContext(change: string) {
+  if (change === "context") useStudio.setState({ sessionContextRevision: { s: 1 } });
+  else if (change === "owner disappears") useStudio.setState({ tabs: [] });
+  else {
+    const key =
+      change === "transaction hold"
+        ? "sessionTransactionPending"
+        : change === "metadata hold"
+          ? "sessionMetadataRefreshRequired"
+          : change === "DDL metadata hold"
+            ? "sessionDdlCatalogRefreshRequired"
+            : "sessionContextSwitching";
+    useStudio.setState({ [key]: { s: true } });
+    useStudio.setState({ [key]: {} });
+  }
+}
+
+it.each(["transaction hold", "metadata hold", "DDL metadata hold", "schema hold"])(
+  "does not dispatch a still-connected CHECK action after a transient %s",
+  async (change) => {
+    const { view } = renderReferenceNavigation();
+    await loadReferenceButton();
+    const button = screen.getByRole("button", { name: "View CHECK constraints" });
+    const bubbled = vi.fn();
+    view.container.addEventListener("click", bubbled);
+    const before = vi.mocked(client.call).mock.calls.length;
+    act(() => {
+      changeCheckContext(change);
+      expect(button.isConnected).toBe(true);
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      expect(button.isConnected).toBe(true);
+      expect(bubbled).toHaveBeenCalledTimes(1);
+      expect(client.call).toHaveBeenCalledTimes(before);
+    });
+    expect(screen.queryByRole("table", { name: "CHECK constraint inventory" })).toBeNull();
+  },
+);
+
+it.each([
+  "selection",
+  "filter",
+  "refresh",
+  "context",
+  "owner disappears",
+  "session replacement",
+  "reference navigation",
+  "transaction hold",
+  "metadata hold",
+  "DDL metadata hold",
+  "schema hold",
+])("clears displayed CHECK clauses on %s", async (change) => {
+  const { view, ownerTabId } = renderReferenceNavigation();
+  const referenceButton = await loadReferenceButton();
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  await screen.findByRole("table", { name: "CHECK constraint inventory" });
+  if (change === "selection")
+    fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "" } });
+  else if (change === "filter")
+    fireEvent.change(screen.getByLabelText("Find relation"), { target: { value: "absent" } });
+  else if (change === "refresh")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+  else if (change === "reference navigation") {
+    const before = vi.mocked(client.call).mock.calls.length;
+    fireEvent.click(referenceButton);
+    expect((screen.getByLabelText("Relation") as HTMLSelectElement).value).toBe(
+      referencedTarget.targetId,
+    );
+    expect(screen.getByText("CHECK constraints have not been fetched.")).toBeTruthy();
+    expect(client.call).toHaveBeenCalledTimes(before);
+  } else if (change === "session replacement")
+    view.rerender(<RelationBrowser sessionId="other" ownerTabId={ownerTabId} onClose={vi.fn()} />);
+  else act(() => changeCheckContext(change));
+  expect(screen.queryByRole("table", { name: "CHECK constraint inventory" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it.each(
+  [
+    "refresh",
+    "context",
+    "owner disappears",
+    "session replacement",
+    "transaction hold",
+    "metadata hold",
+    "DDL metadata hold",
+    "schema hold",
+  ].flatMap((change) => ["resolve", "reject"].map((outcome) => ({ change, outcome }))),
+)("discards a held CHECK $outcome after $change", async ({ change, outcome }) => {
+  const { view, ownerTabId } = renderReferenceNavigation();
+  await loadReferenceButton();
+  let release!: (value: RelationCheckConstraints) => void;
+  let reject!: (error: Error) => void;
+  const held = new Promise<RelationCheckConstraints>((resolve, fail) => {
+    release = resolve;
+    reject = fail;
+  });
+  vi.mocked(client.call).mockReturnValueOnce(held);
+  fireEvent.click(screen.getByRole("button", { name: "View CHECK constraints" }));
+  expect(client.call).toHaveBeenLastCalledWith("inspect_relation_check_constraints", {
+    sessionId: "s",
+    request: { revision: catalog.revision, targetId: "opaque-target" },
+  });
+  if (change === "refresh")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh relations" }));
+  else if (change === "session replacement")
+    view.rerender(<RelationBrowser sessionId="other" ownerTabId={ownerTabId} onClose={vi.fn()} />);
+  else act(() => changeCheckContext(change));
+  await act(async () => {
+    if (outcome === "resolve") release(checkConstraints);
+    else reject(new Error("Stale CHECK denial"));
+    await held.catch(() => {});
+  });
+  expect(screen.queryByRole("table", { name: "CHECK constraint inventory" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });

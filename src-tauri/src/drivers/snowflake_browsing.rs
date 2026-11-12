@@ -6,10 +6,10 @@ use super::snowflake_metadata::{self as metadata, LiveContext, MetadataResult};
 use crate::domain::{AppError, AppResult, ColumnInfo, ColumnKind, ErrorCode, TableRef};
 use crate::relation_inspection::{
     ColumnIdentity, ColumnInspection, ConstraintMappingStatus, ConstraintReferenceStatus,
-    InspectedColumnKind, RelationAvailability, RelationConstraintColumnMapping,
-    RelationConstraintMapping, RelationConstraintReference, RelationConstraintTableReference,
-    RelationKeyConstraint, RelationKeyConstraintKind, RelationPreview, RelationTargetSummary,
-    RelationTraits, WriteDefaultObservationStatus,
+    InspectedColumnKind, RelationAvailability, RelationCheckConstraint,
+    RelationConstraintColumnMapping, RelationConstraintMapping, RelationConstraintReference,
+    RelationConstraintTableReference, RelationKeyConstraint, RelationKeyConstraintKind,
+    RelationPreview, RelationTargetSummary, RelationTraits, WriteDefaultObservationStatus,
 };
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -26,6 +26,8 @@ pub(crate) const CATALOG_MAX_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const COLUMN_LIMIT: usize = 1000;
 pub(crate) const COLUMN_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFINITION_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const CHECK_LIMIT: usize = 1000;
+pub(crate) const CHECK_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const CONSTRAINT_LIMIT: usize = 1000;
 pub(crate) const CONSTRAINT_MAX_BYTES: usize = 1024 * 1024;
 pub(crate) const PREVIEW_LIMIT: usize = 500;
@@ -68,6 +70,13 @@ const COLUMN_COLUMNS: [&str; 22] = [
     "COMMENT",
     "EXPRESSION",
     "KIND",
+];
+const CHECK_COLUMNS: [&str; 5] = [
+    "CONSTRAINT_CATALOG",
+    "CONSTRAINT_SCHEMA",
+    "CONSTRAINT_TABLE",
+    "CONSTRAINT_NAME",
+    "CHECK_CLAUSE",
 ];
 const CONSTRAINT_COLUMNS: [&str; 21] = [
     "TABLE_CATALOG",
@@ -532,6 +541,54 @@ pub(crate) fn parse_constraints(
         });
     }
     bounded(&constraints, CONSTRAINT_MAX_BYTES)?;
+    Ok(constraints)
+}
+
+pub(crate) fn check_constraints_sql(target: &BrowseRelation) -> AppResult<String> {
+    usable(target)?;
+    let database = metadata::quote_identifier(&target.database)?;
+    Ok(format!(
+        "SELECT {} FROM {database}.INFORMATION_SCHEMA.CHECK_CONSTRAINTS WHERE CONSTRAINT_CATALOG = ? AND CONSTRAINT_SCHEMA = ? AND CONSTRAINT_TABLE = ? ORDER BY CONSTRAINT_CATALOG, CONSTRAINT_SCHEMA, CONSTRAINT_TABLE, CONSTRAINT_NAME LIMIT {}",
+        CHECK_COLUMNS.join(", "),
+        CHECK_LIMIT + 1
+    ))
+}
+
+pub(crate) fn parse_check_constraints(
+    target: &BrowseRelation,
+    result: &MetadataResult,
+) -> AppResult<Vec<RelationCheckConstraint>> {
+    usable(target)?;
+    exact(result, &CHECK_COLUMNS, CHECK_LIMIT, CHECK_MAX_BYTES)?;
+    let mut seen = HashSet::new();
+    let mut constraints = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        let catalog = identifier(&row[0])?;
+        let schema = identifier(&row[1])?;
+        let table_name = identifier(&row[2])?;
+        let name = identifier(&row[3])?;
+        if catalog != target.database
+            || schema != target.table.schema
+            || table_name != target.table.name
+        {
+            return Err(malformed());
+        }
+        if !seen.insert((catalog, schema, table_name, name)) {
+            return Err(ambiguous());
+        }
+        let check_clause = text(required(&row[4])?, CHECK_MAX_BYTES, false)?;
+        if check_clause.trim().is_empty() {
+            return Err(malformed());
+        }
+        constraints.push(RelationCheckConstraint {
+            catalog: catalog.to_owned(),
+            schema: schema.to_owned(),
+            table_name: table_name.to_owned(),
+            name: name.to_owned(),
+            check_clause: check_clause.to_owned(),
+        });
+    }
+    bounded(&constraints, CHECK_MAX_BYTES)?;
     Ok(constraints)
 }
 
@@ -1057,6 +1114,9 @@ mod tests {
 
     mod constraints_tests {
         include!("snowflake_constraints_tests.rs");
+    }
+    mod check_constraints_tests {
+        include!("snowflake_check_constraints_tests.rs");
     }
 
     fn context() -> LiveContext {

@@ -45,6 +45,18 @@ application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
 
+## Local CHECK inspection (12 November 2026)
+
+| Capability | Current local state | Remaining gate |
+| --- | --- | --- |
+| Read visible CHECK clauses | Independent retained-target command and UI; [fixed contract](snowflake-sdk-check-constraints-design.md); full validation (803 frontend / 486 standard Rust, 129 ignores), changed browser, hidden native IPC/10 cleanup cycles and bounded review pass; new normal package pending | Actual account types, privilege visibility, interruption and normal packaged keyboard/accessibility acceptance |
+| Complete metadata and schema behavior | Reject incomplete, mismatched, ambiguous and oversized inventories; exact inert clause text; no enforcement/validation claim | CHECK creation, modification and existing-data validation; full object coverage and safe editing remain required |
+
+No actual account activity or full replacement area is qualified. See the
+[prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
+and [verification ledger](replacement-verification.md). Previous counts below
+apply to their recorded source; the new normal package remains pending.
+
 ## Referenced-table selection (12 November 2026)
 
 | Capability | Local implementation and evidence | Remaining gate |

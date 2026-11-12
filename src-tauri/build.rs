@@ -98,6 +98,7 @@ fn build_desktop() {
             "define_relation",
             "inspect_relation_constraints",
             "inspect_relation_constraint_mappings",
+            "inspect_relation_check_constraints",
             "preview_relation",
             "catalog",
             "database_objects",

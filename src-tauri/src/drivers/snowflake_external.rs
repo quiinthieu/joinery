@@ -2768,6 +2768,42 @@ impl Driver for SnowflakeExternal {
         .await
     }
 
+    async fn inspect_relation_check_constraints(
+        &self,
+        request: &InspectRelationCheckConstraintsRequest,
+    ) -> AppResult<RelationCheckConstraints> {
+        let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
+        let read = metadata::check_constraints_read(&target)?;
+        self.browse_operation(&request.revision, async {
+            self.browse_target(&request.revision, &request.target_id)?;
+            self.browse_context(Some(&context)).await?;
+            self.require_browse_relation(&context, &target).await?;
+            let constraints =
+                browsing::parse_check_constraints(&target, &self.read_spec(&read).await?)?;
+            self.require_browse_relation(&context, &target).await?;
+            self.browse_context(Some(&context)).await?;
+            let result = RelationCheckConstraints {
+                revision: request.revision.clone(),
+                target_id: request.target_id.clone(),
+                database: target.database,
+                table: target.table,
+                constraints,
+            };
+            if serde_json::to_vec(&result)
+                .map_err(|_| protocol_error())?
+                .len()
+                > browsing::CHECK_MAX_BYTES
+            {
+                return Err(metadata_limit());
+            }
+            self.browse_target(&request.revision, &request.target_id)?;
+            #[cfg(all(unix, feature = "test-harness"))]
+            self.check_metadata_observer()?;
+            Ok(result)
+        })
+        .await
+    }
+
     async fn inspect_relation_constraint_mappings(
         &self,
         request: &InspectRelationConstraintMappingsRequest,
@@ -3411,6 +3447,9 @@ mod session_tests {
     mod relation_mapping_tests {
         include!("snowflake_constraint_mappings_adapter_tests.rs");
     }
+    mod check_constraints_tests {
+        include!("snowflake_check_constraints_adapter_tests.rs");
+    }
     mod relation_constraints_tests {
         include!("snowflake_relation_constraints_adapter_tests.rs");
     }
@@ -3430,7 +3469,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, definitionSeen = false, constraintsSeen = false, mappingSeen = false, currentTransaction = null;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, definitionSeen = false, constraintsSeen = false, checksSeen = false, mappingSeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -3441,7 +3480,7 @@ const sdk = { createConnection() {
       const sql = options.sqlText, id = ++sequence;
       appendFileSync(file('queries'), JSON.stringify(sql) + '\n');
       const settingsText = existsSync(file('settings')) ? readFileSync(file('settings'), 'utf8') : '{}';
-      if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; definitionSeen = false; constraintsSeen = false; mappingSeen = false; }
+      if (settingsText !== previousSettings) { previousSettings = settingsText; contextReads = 0; transactionReads = 0; definitionSeen = false; constraintsSeen = false; checksSeen = false; mappingSeen = false; }
       const settings = JSON.parse(settingsText);
       const value = (key, fallback) => Object.hasOwn(settings, key) ? settings[key] : fallback;
       // Opt-in navigation fixture; ordinary observer/qualification fixtures keep
@@ -3463,6 +3502,7 @@ const sdk = { createConnection() {
       const zeroRows = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
       const definition = sql.startsWith('SELECT GET_DDL(');
       const constraints = sql.includes('.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC ');
+      const checks = sql.includes('.INFORMATION_SCHEMA.CHECK_CONSTRAINTS ');
       const mappingKind = sql.startsWith('SHOW PRIMARY KEYS IN TABLE ') ? 'Primary' : sql.startsWith('SHOW UNIQUE KEYS IN TABLE ') ? 'Unique' : sql.startsWith('SHOW IMPORTED KEYS IN TABLE ') ? 'Foreign' : null;
       const use = sql.startsWith('USE SCHEMA ');
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
@@ -3521,6 +3561,15 @@ const sdk = { createConnection() {
           ['DB','PUBLIC','ORDERS','PARENT_A','1','ORDERS_PARENT_FK','DB',navigation ? navigationSchema : 'PUBLIC',navigation ? navigationTable : 'PARENTS','A','PARENT_PK'],
         ] : [['DB','PUBLIC','ORDERS','B','2',key],['DB','PUBLIC','ORDERS','A','1',key]]);
         if (settings.mappingColumnName !== undefined) names[0] = settings.mappingColumnName;
+      } else if (checks) {
+        checksSeen = true;
+        appendFileSync(file('check-binds'), JSON.stringify(options.binds) + '\n');
+        names = ['CONSTRAINT_CATALOG','CONSTRAINT_SCHEMA','CONSTRAINT_TABLE','CONSTRAINT_NAME','CHECK_CLAUSE'];
+        const schema = navigation ? options.binds[1] : 'PUBLIC';
+        const table = navigation ? options.binds[2] : 'ORDERS';
+        if (navigation && (!['PUBLIC',navigationSchema].includes(schema) || !['ORDERS',navigationTable].includes(table))) throw new Error('unexpected navigation CHECK target');
+        rows = value('checkRows', [['DB',schema,table,'POSITIVE_ID','ID > 0'],['DB',schema,table,'NOTES_LENGTH','"NOTES" IS NULL OR\nLENGTH("NOTES") <= 100 /* 雪 */']]);
+        if (settings.checkColumnName !== undefined) names[0] = settings.checkColumnName;
       } else if (constraints) {
         constraintsSeen = true;
         appendFileSync(file('constraint-binds'), JSON.stringify(options.binds) + '\n');
@@ -3543,7 +3592,7 @@ const sdk = { createConnection() {
         const table = schema === 'OTHER' ? 'Mixed.Name' : value('tableName','ORDERS');
         const kind = value('tableType','BASE TABLE');
         const transient = value('isTransient','NO');
-        const lastDdl = mappingSeen ? value('afterMappingLastDdl',value('lastDdl','last-ddl')) : constraintsSeen ? value('afterConstraintsLastDdl',value('lastDdl','last-ddl')) : definitionSeen ? value('afterDefinitionLastDdl',value('lastDdl','last-ddl')) : ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
+        const lastDdl = checksSeen ? value('afterCheckLastDdl',value('lastDdl','last-ddl')) : mappingSeen ? value('afterMappingLastDdl',value('lastDdl','last-ddl')) : constraintsSeen ? value('afterConstraintsLastDdl',value('lastDdl','last-ddl')) : definitionSeen ? value('afterDefinitionLastDdl',value('lastDdl','last-ddl')) : ddlSeen ? value('afterLastDdl','last-ddl') : value('lastDdl','last-ddl');
         rows = settings.emptyRelations ? [] : [['DB',schema,table,kind,transient,'NO','NO',value('isDynamic','NO'),'NO','NO','created',lastDdl]];
         if (navigation) {
           const exactSchema = predicate('TABLE_SCHEMA');
@@ -3576,8 +3625,16 @@ const sdk = { createConnection() {
       let cancelled = false;
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => mappingKind ? value('mappingType','TEXT') : constraints ? value('constraintType','TEXT') : definition ? value('definitionType','TEXT') : (zeroRows && name === 'ID') ? 'FIXED' : dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
+        getColumns: () => names.map(name => ({ getName: () => settings.badDmlName && dml ? 'unexpected' : name, getType: () => checks ? value('checkType','TEXT') : mappingKind ? value('mappingType','TEXT') : constraints ? value('constraintType','TEXT') : definition ? value('definitionType','TEXT') : (zeroRows && name === 'ID') ? 'FIXED' : dml ? value('dmlType','FIXED') : settings.wrongTransactionType && name === 'TRANSACTION_ID' ? 'FIXED' : 'TEXT' })),
         streamRows() {
+          if (checks && settings.holdChecks) {
+            writeFileSync(file('held-checks'), '');
+            return Readable.from((async function*() {
+              while (!existsSync(file('release')) && !cancelled) await new Promise(resolve => setTimeout(resolve,5));
+              if (cancelled) throw { sqlState: '57014' };
+              yield* rows;
+            })());
+          }
           if (mappingKind && settings.holdMappings) {
             writeFileSync(file('held-mappings'), '');
             return Readable.from((async function*() {
@@ -3630,7 +3687,7 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = mappingKind && settings.rejectMappings || constraints && settings.rejectConstraints || definition && settings.rejectDefinition || ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = checks && settings.rejectChecks || mappingKind && settings.rejectMappings || constraints && settings.rejectConstraints || definition && settings.rejectDefinition || ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
         if (ddl && settings.holdDdl) { writeFileSync(file('held-ddl'), ''); return; }
         if (dml && settings.holdDml) { writeFileSync(file('held-dml'), ''); return; }

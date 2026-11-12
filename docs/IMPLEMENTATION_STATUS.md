@@ -1,5 +1,26 @@
 # Implementation and release status
 
+## Snowflake CHECK inspection (12 November 2026)
+
+A separate **View CHECK constraints** action is implemented through retained
+opaque targets, the serialized metadata lane, typed IPC and main-window native
+permissions. The [contract](snowflake-sdk-check-constraints-design.md) fixes exact
+identity, complete bounded results and inert clause display. Focused frontend/IPC
+140/140, focused Rust 13/13 and synthetic SDK sessions 104/104 pass. Full validation
+passes 803 frontend / 486 standard Rust tests (129 fixture/helper ignores) and
+strict checks; the changed synthetic browser workflow passes 1/1. Independent
+bounded UI/integration and backend reviews have no material finding. Hidden
+native startup/IPC and 10 cleanup cycles pass; a new normal SDK-bearing package
+is pending. No account requests or production qualification-ledger expansion are
+included.
+
+The [prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
+leaves actual role visibility, output compatibility, interruption and normal
+packaged usability open. CHECK creation/modification/validation, cross-database
+catalogs, inbound relationships, safe grid editing/import, broader SQL/DDL,
+performance investigation, actual million-row Snowflake workflows and owner
+acceptance remain required. The Goal is active and incomplete.
+
 ## Referenced Snowflake table selection (12 November 2026)
 
 The relation browser adds **Select referenced table** for a complete foreign-key

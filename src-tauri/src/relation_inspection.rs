@@ -138,6 +138,34 @@ pub struct RelationConstraintReference {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InspectRelationCheckConstraintsRequest {
+    pub revision: String,
+    pub target_id: String,
+}
+
+/// CHECK expressions visible to the current role; not validation or edit authority.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationCheckConstraints {
+    pub revision: String,
+    pub target_id: String,
+    pub database: String,
+    pub table: TableRef,
+    pub constraints: Vec<RelationCheckConstraint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationCheckConstraint {
+    pub catalog: String,
+    pub schema: String,
+    pub table_name: String,
+    pub name: String,
+    pub check_clause: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InspectRelationConstraintMappingsRequest {
     pub revision: String,
     pub target_id: String,
@@ -298,11 +326,19 @@ mod tests {
             let mut value = serde_json::json!({"revision":"r", "targetId":"opaque"});
             value[unknown] = "caller input".into();
             assert!(
+                serde_json::from_value::<InspectRelationCheckConstraintsRequest>(value.clone())
+                    .is_err()
+            );
+            assert!(
                 serde_json::from_value::<InspectRelationConstraintMappingsRequest>(value.clone())
                     .is_err()
             );
             assert!(serde_json::from_value::<InspectRelationConstraintsRequest>(value).is_err());
         }
+        let checks: InspectRelationCheckConstraintsRequest =
+            serde_json::from_value(serde_json::json!({"revision":"r", "targetId":"opaque"}))
+                .unwrap();
+        assert_eq!(checks.target_id, "opaque");
         let constraints: InspectRelationConstraintsRequest =
             serde_json::from_value(serde_json::json!({
                 "revision":"r", "targetId":"opaque"

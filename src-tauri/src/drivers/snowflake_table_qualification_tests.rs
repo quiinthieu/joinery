@@ -411,6 +411,12 @@ fn closed_snapshot_restore_rejects_rehashed_run_target_sql_and_policy_tampering(
     }
 }
 
+#[test]
+#[should_panic(expected = "Relation detail reads are outside the qualification ledger")]
+fn check_constraints_remain_outside_the_frozen_qualification_ledger() {
+    ledger_tag(SqlKind::Read(metadata::ReadKind::CheckConstraints));
+}
+
 fn ledger_tag(kind: SqlKind) -> &'static str {
     use metadata::ReadKind::*;
     match kind {
@@ -425,7 +431,8 @@ fn ledger_tag(kind: SqlKind) -> &'static str {
         SqlKind::Read(Relations) => "B",
         SqlKind::Read(ExactRelation) => "R",
         SqlKind::Read(
-            Definition | Constraints | PrimaryKeyMapping | UniqueKeyMapping | ForeignKeyMapping,
+            Definition | Constraints | CheckConstraints | PrimaryKeyMapping | UniqueKeyMapping
+            | ForeignKeyMapping,
         ) => {
             panic!("Relation detail reads are outside the qualification ledger")
         }

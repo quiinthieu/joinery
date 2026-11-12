@@ -11,6 +11,7 @@ import type {
   PreparedPlan,
   RelationDefinition,
   RelationConstraints,
+  RelationCheckConstraints,
   RelationConstraintMappings,
   SchemaDdlPlan,
   TableSchema,
@@ -46,6 +47,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       request: { revision: "catalog-1", targetId: "opaque-target" },
     });
     expectTypeOf(constraintsPromise).toEqualTypeOf<Promise<RelationConstraints>>();
+
+    const checkConstraintsPromise = typedClient.call("inspect_relation_check_constraints", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(checkConstraintsPromise).toEqualTypeOf<Promise<RelationCheckConstraints>>();
 
     const mappingsPromise = typedClient.call("inspect_relation_constraint_mappings", {
       sessionId: "session-1",
@@ -97,13 +104,14 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       bootstrapPromise,
       definitionPromise,
       constraintsPromise,
+      checkConstraintsPromise,
       mappingsPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
       releasePreviewPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(8);
+    expect(callMock).toHaveBeenCalledTimes(9);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -134,6 +142,17 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
         request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
       });
       void c.call("inspect_relation_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraints require the retained catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_check_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraint inspection never accepts caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("inspect_relation_check_constraints", {
         sessionId: "session-1",
         // @ts-expect-error — constraints require the retained catalog revision
         request: { targetId: "opaque-target" },

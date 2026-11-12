@@ -56,6 +56,38 @@ required. See the [qualification attachments](snowflake-qualification-attachment
 [offline SQL ledger](snowflake-qualification-sql-ledger.md), and current
 [verification ledger](replacement-verification.md).
 
+## Snowflake CHECK constraints (prepared acceptance walkthrough)
+
+The [CHECK contract](snowflake-sdk-check-constraints-design.md) and
+[verification ledger](replacement-verification.md) distinguish implementation,
+local checks and account acceptance. This walkthrough is prepared, not completed
+owner acceptance. Account browsing and the new CHECK view require a separately
+approved scope. Creating fixtures or modifying permissions requires exact
+approved disposable SQL; the expired table-lifecycle plan does not cover this read.
+
+1. In an SDK Snowflake console, open **Browse relations**, select a current
+   available target and choose **View CHECK constraints**. Other metadata actions
+   are independent: none needs to succeed first.
+2. On an approved fixture with known CHECK clauses, compare the exact qualified
+   table, constraint name and multiline clause text. Include quoted names,
+   same-named tables in different schemas and Unicode text. The clause must
+   appear as inert read-only text; no execution or validation-status claim follows.
+3. A successful empty inventory says **No visible CHECK constraints returned**.
+   Under an approved denied-privilege fixture, verify the explicit error/retry
+   remains distinct and preserves columns, keys, mappings, definitions and preview.
+4. Refresh, change selection/context or apply a metadata hold while the read is
+   pending. Previous CHECK output must disappear; late replies must not restore
+   it. Repeat after selecting a referenced table and after reconnecting.
+5. Exercise the action by keyboard in the normal packaged macOS app. Record
+   source/binary version, focus/accessibility behavior and observed account
+   outcomes. Reopen the app and verify profile/script recovery separately.
+
+The view does not expose enforcement or existing-row validation status; empty
+role-visible metadata proves neither absence nor editing eligibility. Creating,
+changing and validating CHECK constraints remains separate schema work. Keep
+account visibility, interruption, object-family compatibility and owner acceptance
+open until demonstrated.
+
 ## Declared Snowflake keys (prepared acceptance walkthrough)
 
 Local focused/full validation, headless browser, hidden native IPC/cleanup and

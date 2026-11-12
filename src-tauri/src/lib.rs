@@ -182,6 +182,7 @@ pub fn run() {
             commands::define_relation,
             commands::inspect_relation_constraints,
             commands::inspect_relation_constraint_mappings,
+            commands::inspect_relation_check_constraints,
             commands::preview_relation,
             commands::catalog,
             commands::database_objects,

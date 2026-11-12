@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type {
   BrowseCatalog,
+  RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
@@ -152,6 +153,11 @@ export function RelationBrowser({
     value: RelationConstraintMappings;
   } | null>(null);
   const [mappingsError, setMappingsError] = useState<string | null>(null);
+  const [checks, setChecks] = useState<{
+    contextKey: string;
+    value: RelationCheckConstraints;
+  } | null>(null);
+  const [checksError, setChecksError] = useState<string | null>(null);
   const [selected, setSelected] = useState("");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
@@ -185,6 +191,8 @@ export function RelationBrowser({
       setConstraintsError(null);
       setMappings(null);
       setMappingsError(null);
+      setChecks(null);
+      setChecksError(null);
       setSelected("");
       setBusy(false);
       setError(null);
@@ -230,6 +238,8 @@ export function RelationBrowser({
         setConstraintsError(null);
         setMappings(null);
         setMappingsError(null);
+        setChecks(null);
+        setChecksError(null);
         setSelected("");
         setError(messageOf(err));
       }
@@ -246,6 +256,8 @@ export function RelationBrowser({
     setConstraintsError(null);
     setMappings(null);
     setMappingsError(null);
+    setChecks(null);
+    setChecksError(null);
     setSelected("");
     setRowPage(0);
     setColumnPage(0);
@@ -337,6 +349,42 @@ export function RelationBrowser({
     }, setConstraintsError);
   };
   const target = catalog?.relations.find((entry) => entry.targetId === selected);
+  const loadChecks = () => {
+    if (
+      !catalog ||
+      target?.availability !== "available" ||
+      blocked ||
+      !ownerAvailable ||
+      activationEpoch !== generation.current ||
+      renderedContext.current !== contextKey ||
+      relationContextKey(useStudio.getState(), sessionId, ownerTabId) !== contextKey
+    )
+      return;
+    setChecks(null);
+    setChecksError(null);
+    void run(async (current) => {
+      const result = await client.call("inspect_relation_check_constraints", {
+        sessionId,
+        request: { revision: catalog.revision, targetId: target.targetId },
+      });
+      if (!current()) return;
+      if (
+        result.revision !== catalog.revision ||
+        result.targetId !== target.targetId ||
+        result.database !== catalog.database ||
+        result.table.schema !== target.table.schema ||
+        result.table.name !== target.table.name ||
+        result.constraints.some(
+          (constraint) =>
+            constraint.catalog !== catalog.database ||
+            constraint.schema !== target.table.schema ||
+            constraint.tableName !== target.table.name,
+        )
+      )
+        throw new Error("CHECK constraint target changed. Refresh relations and try again.");
+      setChecks({ contextKey, value: result });
+    }, setChecksError);
+  };
   const loadMappings = () => {
     if (!catalog || target?.availability !== "available" || blocked || !ownerAvailable) return;
     setMappings(null);
@@ -426,6 +474,8 @@ export function RelationBrowser({
     setConstraintsError(null);
     setMappings(null);
     setMappingsError(null);
+    setChecks(null);
+    setChecksError(null);
     setError(null);
     setRowPage(0);
     setColumnPage(0);
@@ -498,6 +548,8 @@ export function RelationBrowser({
               setConstraintsError(null);
               setMappings(null);
               setMappingsError(null);
+              setChecks(null);
+              setChecksError(null);
               setBusy(false);
             }}
           />
@@ -519,6 +571,8 @@ export function RelationBrowser({
               setConstraintsError(null);
               setMappings(null);
               setMappingsError(null);
+              setChecks(null);
+              setChecksError(null);
               setBusy(false);
             }}
           >
@@ -579,6 +633,13 @@ export function RelationBrowser({
             onClick={loadMappings}
           >
             View key column mappings
+          </button>
+          <button
+            className="button small"
+            disabled={busy || blocked || !ownerAvailable || target?.availability !== "available"}
+            onClick={loadChecks}
+          >
+            View CHECK constraints
           </button>
           {canDdl && (
             <>
@@ -663,6 +724,69 @@ export function RelationBrowser({
               />
             </section>
           )}
+        {target?.availability === "available" && !blocked && ownerAvailable && (
+          <section aria-label="Relation CHECK constraints">
+            <h3>CHECK constraints</h3>
+            <p role="note">
+              These role-visible CHECK clauses are read-only metadata. They do not report
+              enforcement or validation, establish engine eligibility, or grant row editing
+              authority. Metadata can lag schema changes.
+            </p>
+            {checksError ? (
+              <p className="inline-error" role="alert">
+                CHECK constraints are unavailable: {checksError}
+              </p>
+            ) : checks &&
+              checks.contextKey === contextKey &&
+              checks.value.targetId === selected &&
+              checks.value.revision === catalog?.revision ? (
+              checks.value.constraints.length === 0 ? (
+                <p>No visible CHECK constraints returned.</p>
+              ) : (
+                <div className="relation-table-scroll">
+                  <table>
+                    <caption>CHECK constraint inventory</caption>
+                    <thead>
+                      <tr>
+                        <th>Constraint</th>
+                        <th>Table</th>
+                        <th>CHECK clause</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {checks.value.constraints.map((constraint) => (
+                        <tr
+                          key={JSON.stringify([
+                            constraint.catalog,
+                            constraint.schema,
+                            constraint.tableName,
+                            constraint.name,
+                          ])}
+                        >
+                          <th scope="row">
+                            {quotedName(constraint.catalog, constraint.schema, constraint.name)}
+                          </th>
+                          <td>
+                            {quotedName(
+                              constraint.catalog,
+                              constraint.schema,
+                              constraint.tableName,
+                            )}
+                          </td>
+                          <td>
+                            <pre>{constraint.checkClause}</pre>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : (
+              <p>CHECK constraints have not been fetched.</p>
+            )}
+          </section>
+        )}
         {target?.availability === "available" && !blocked && ownerAvailable && (
           <section aria-label="Relation key constraints">
             <h3>Key constraints</h3>

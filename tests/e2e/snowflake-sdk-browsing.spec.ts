@@ -3,6 +3,7 @@ import type {
   BrowseCatalog,
   ColumnInfo,
   ConnectionProfile,
+  RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
@@ -24,6 +25,8 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   let releaseConstraints: (() => void) | undefined;
   let mappingsMode: "available" | "empty" | "denied" | "held" | "unsupported" = "available";
   let releaseMappings: (() => void) | undefined;
+  let checksMode: "available" | "empty" | "denied" | "held" = "available";
+  let releaseChecks: (() => void) | undefined;
   let dynamicTarget = false;
   const catalog: BrowseCatalog = {
     revision: "catalog-r1",
@@ -137,6 +140,21 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
     database: catalog.database,
     table: catalog.relations[0].table,
     ddl: 'CREATE OR REPLACE TABLE "DB"."S"."Quoted ""table" ("EXACT" NUMBER(38,0));',
+  };
+  const checkConstraints: RelationCheckConstraints = {
+    revision: catalog.revision,
+    targetId: catalog.relations[0].targetId,
+    database: catalog.database,
+    table: catalog.relations[0].table,
+    constraints: [
+      {
+        catalog: "DB",
+        schema: "S",
+        tableName: catalog.relations[0].table.name,
+        name: 'CHECK "synthetic',
+        checkClause: '"EXACT" > 0\nAND "label" <> \'雪 <img src=x onerror=alert(1)>\'',
+      },
+    ],
   };
   const keyConstraints: RelationConstraints = {
     revision: catalog.revision,
@@ -292,6 +310,22 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
           traits: { ...relation.traits, dynamic: dynamicTarget },
         })),
       };
+    } else if (command === "inspect_relation_check_constraints") {
+      expect(args).toEqual({
+        sessionId,
+        request: { revision: "catalog-r1", targetId: "opaque-r1-target" },
+      });
+      if (checksMode === "denied") {
+        await route.fulfill({
+          json: { error: { code: "database", message: "Synthetic CHECK denied" } },
+        });
+        return;
+      }
+      if (checksMode === "held")
+        await new Promise<void>((resolve) => {
+          releaseChecks = resolve;
+        });
+      result = checksMode === "empty" ? { ...checkConstraints, constraints: [] } : checkConstraints;
     } else if (command === "inspect_relation_constraint_mappings") {
       expect(args).toEqual({
         sessionId,
@@ -407,9 +441,27 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(dialog.getByRole("button", { name: "View definition" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View key constraints" })).toBeDisabled();
   await expect(dialog.getByRole("button", { name: "View key column mappings" })).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "View CHECK constraints" })).toBeDisabled();
   await expect(dialog.getByRole("note")).toContainText("shadowed");
   await dialog.getByLabel("Find relation").fill('Quoted "table');
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  const viewChecks = dialog.getByRole("button", { name: "View CHECK constraints" });
+  const checksRegion = dialog.getByRole("region", { name: "Relation CHECK constraints" });
+  const checksTable = checksRegion.getByRole("table", { name: "CHECK constraint inventory" });
+  await expect(checksRegion).toContainText("CHECK constraints have not been fetched");
+  await viewChecks.focus();
+  await page.keyboard.press("Enter");
+  await expect(checksTable.getByRole("rowheader")).toHaveText('"DB"."S"."CHECK ""synthetic"');
+  await expect(checksTable.locator("pre")).toHaveText(checkConstraints.constraints[0].checkClause);
+  expect(await checksTable.locator("pre").textContent()).toBe(
+    checkConstraints.constraints[0].checkClause,
+  );
+  await expect(checksTable.locator("img,script")).toHaveCount(0);
+  await expect(checksRegion.getByRole("note")).toContainText(
+    "do not report enforcement or validation",
+  );
+  await expect(checksRegion.getByRole("note")).toContainText("grant row editing authority");
+  await expect(checksRegion.getByRole("button")).toHaveCount(0);
   const viewMappings = dialog.getByRole("button", { name: "View key column mappings" });
   const mappingsRegion = dialog.getByRole("region", { name: "Relation key column mappings" });
   const mappingsTable = mappingsRegion.getByRole("table", { name: "Key column mapping inventory" });
@@ -452,6 +504,8 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(dialog.getByLabel("Relation", { exact: true })).toBeFocused();
   await expect(dialog.getByLabel("Find relation")).toHaveValue("");
   await expect(mappingsTable).toHaveCount(0);
+  await expect(checksTable).toHaveCount(0);
+  await expect(checksRegion).toContainText("CHECK constraints have not been fetched");
   await dialog.getByRole("button", { name: "Inspect relation" }).click();
   await expect(dialog.getByRole("heading", { name: 'DB.P.dot.Quoted "parent' })).toBeVisible();
   expect(calls.filter((call) => call.command === "inspect_relation").at(-1)?.args).toEqual({
@@ -533,6 +587,21 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
     .toBe(definition.ddl);
   expect(calls.filter((c) => c.command === "inspect_relation")).toHaveLength(1);
 
+  await viewChecks.click();
+  await expect(checksTable).toBeVisible();
+  checksMode = "denied";
+  await viewChecks.click();
+  await expect(checksRegion.getByRole("alert")).toContainText("Synthetic CHECK denied");
+  await expect(checksTable).toHaveCount(0);
+  await expect(checksRegion).not.toContainText("No visible CHECK constraints returned");
+  await expect(keyTable).toContainText("PK synthetic");
+  await expect(mappingsTable).toContainText("Not visible");
+  await expect(definitionRegion.getByLabel("Object DDL")).toHaveText(definition.ddl);
+  checksMode = "empty";
+  await viewChecks.click();
+  await expect(checksRegion).toContainText("No visible CHECK constraints returned");
+  await expect(checksRegion.getByRole("alert")).toHaveCount(0);
+
   mappingsMode = "denied";
   await viewMappings.click();
   await expect(mappingsRegion.getByRole("alert")).toContainText(
@@ -605,6 +674,27 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
   await expect(viewMappings).toBeDisabled();
   mappingsMode = "available";
   await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
+  checksMode = "held";
+  await viewChecks.click();
+  await expect.poll(() => !!releaseChecks).toBe(true);
+  await dialog.getByRole("button", { name: "Refresh relations" }).click();
+  await expect(dialog.getByRole("status").first()).toContainText("4 visible relations · DB");
+  const staleChecks = page.waitForResponse((response) =>
+    response.url().endsWith("/rpc/inspect_relation_check_constraints"),
+  );
+  releaseChecks!();
+  await (await staleChecks).finished();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+  await expect(checksTable).toHaveCount(0);
+  await expect(checksRegion.getByRole("alert")).toHaveCount(0);
+  await expect(viewChecks).toBeDisabled();
+  checksMode = "available";
+  await dialog.getByLabel("Relation", { exact: true }).selectOption("opaque-r1-target");
   await dialog.getByRole("button", { name: "Inspect relation" }).click();
   await expect(dialog).toContainText("NUMBER(38,0)");
   await expect(dialog).toContainText("Key constraints have not been fetched");
@@ -632,6 +722,7 @@ test("SDK console views key mappings and DDL, rejects stale results, inspects an
       "define_relation",
       "inspect_relation_constraints",
       "inspect_relation_constraint_mappings",
+      "inspect_relation_check_constraints",
       "inspect_relation",
       "preview_relation",
     ].includes(c.command),

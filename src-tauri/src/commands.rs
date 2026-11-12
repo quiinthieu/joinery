@@ -260,6 +260,17 @@ pub async fn inspect_relation_constraints(
 }
 
 #[tauri::command]
+pub async fn inspect_relation_check_constraints(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationCheckConstraintsRequest,
+) -> AppResult<RelationCheckConstraints> {
+    studio
+        .inspect_relation_check_constraints(&session_id, &request)
+        .await
+}
+
+#[tauri::command]
 pub async fn inspect_relation_constraint_mappings(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
