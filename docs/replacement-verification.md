@@ -37,9 +37,12 @@ capture exact commands, complete source hashes and before/after disk usage.
 | `history-paging-final-metadata` | All 12 real SQLite cases pass after the review correction; 17.706 seconds, unchanged captured sources. New metadata-only positive/negative fixtures check both summary pages and compatibility search, validated UPDATE multi-joined counts and unavailable DML/DDL summary status |
 | `history-paging-full-final` | Corrected-source `pnpm validate` passes: 1,022 frontend cases / 71 files, 641 standard Rust cases / 139 default fixture ignores, formatting, contracts, TypeScript, production UI, desktop compile and strict Clippy. 136.747 seconds, all 551 captured product/test/tooling files unchanged during the check |
 | `history-paging-browser-final` | All four browser cases pass again on the corrected metadata-search source, 27.102 seconds, all 551 captured source files unchanged. Exact full-SQL reopening, delayed-response clear protection and actual PostgreSQL template-only history remain verified; the lead's PostgreSQL fixture is stopped afterward |
+| `history-paging-prior-app-preservation` | Previous clean-`f9c1ce2` app preserved with copy-on-write before replacement. All 15,120 inventory entries match; strict signature verifies. The complete preserved inventory remains unchanged after packaging |
+| `history-paging-normal-package` | Normal SDK-bearing ARM64 app packages from clean feature commit `99a3ca3` in 210.164 seconds. Resource verification, strict ad-hoc signing and actual guarded helper/SDK 3.4.1 startup pass with zero authentication/SQL requests. All 551 source hashes equal final full-validation/browser hashes and remain unchanged during packaging |
+| `history-paging-app-artifact` | Current version 0.1.0 executable is 34,475,472 bytes, SHA-256 `dfcc94bc98508459f3a37c6e6f7ccd3315e2001bc689c1d3d12c2b30f1a57506`. Original bundled dependency-notice bytes equal source and Git. Full inventory, preserved predecessor and source/hash proofs are recorded. About 188.2 GiB free, debug output 8.9 GiB / release output 3.0 GiB |
 
-The browser and native runs above precede the review correction for two displayed
-Snowflake summary search fields. Enrollment, UI and detail/paging logic remain
+The first browser run and hidden native run precede the review correction for two
+displayed Snowflake summary search fields. Enrollment, UI and detail/paging logic remain
 unchanged; final source checks separately qualify the corrected search terms.
 Independent review identified omitted multi-joined-row counts and unavailable
 summary status. The correction indexes validated counts only, preserving the
@@ -52,6 +55,14 @@ The lead's graph transport was closed. Review used Tier 2 generation
 `2026-11-12T17:28:35Z`, then `17:39:52Z` for the final history/display paths,
 with matching metadata and no recorded coverage gaps plus direct source reads.
 Unreliable graph edges were not used as call-path evidence.
+
+The runnable local app is
+`src-tauri/target/release/bundle/macos/Joinery.app`; the preceding app is preserved
+at `.cache/verification/reviewed-console/preserved-release-f9c1ce2/Joinery.app`.
+Normal packaged owner UI/SSO/restart acceptance, installation/update, Developer
+ID/notarization and actual account qualification remain open. No account activity,
+installation, push or publication occurred. The private project hub remains
+unchanged because publication is not authorized.
 
 Search streams one SQL row at a time under the shared SQLite mutex; the sorter
 holds keys. This is not a bound on arbitrary legacy row bytes or proof of

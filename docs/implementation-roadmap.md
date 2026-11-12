@@ -11,6 +11,11 @@ four actual browser cases and hidden main-WebView command checks also pass withi
 the source scopes in the [ledger](replacement-verification.md#paged-query-history-13-november-2026).
 Independent review corrected metadata-search omissions and has no remaining
 material findings in this increment.
+The normal SDK-bearing ARM64 app from clean `99a3ca3` passes packaging,
+resources/signature/license and guarded SDK-startup checks without authentication
+or SQL. The preceding `f9c1ce2` app is preserved with its full inventory unchanged.
+The new app remains local and uninstalled; normal owner UI/SSO/restart acceptance
+is open.
 
 Continue the atomic admitted/completed history, durable side-write obligations,
 publisher sealing and reservation workflow below. Configurable retention,
@@ -31,8 +36,9 @@ legacy migration and disjoint restore. Full validation passes 997 frontend /
 This is the accounting prerequisite for durable reservations. Continue the
 complete reservation, atomic history/audit, publisher-settlement and crash
 recovery workflow below, then full-capacity/resource acceptance. Keep both count
-gates and `retentionEnabled=false`. The normal local package remains the verified
-`f9c1ce2` recovery app; this backend increment has not been packaged separately.
+gates and `retentionEnabled=false`. At this checkpoint the normal local package
+was the verified `f9c1ce2` recovery app. The newer history package above includes
+this prerequisite; no separate accounting-only package was made.
 
 The dependent [atomic history lifecycle](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
 must preserve opted-in SQL in one pending history row before dispatch, make

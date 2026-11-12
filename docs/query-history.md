@@ -62,6 +62,13 @@ with account qualification and owner acceptance. See the
 
 ## Reproducible local acceptance
 
+The local SDK-bearing ARM64 app at
+`src-tauri/target/release/bundle/macos/Joinery.app` packages from clean `99a3ca3`.
+Final full validation passes 1,022 frontend and 641 standard Rust cases. Twelve
+history SQLite cases, four actual browser cases and the separately scoped native
+command checks are recorded in the ledger. Normal packaged owner interaction and
+restart acceptance remain open.
+
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.
 
 ```sh

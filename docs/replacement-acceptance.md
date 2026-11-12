@@ -1,5 +1,31 @@
 # Daily DataGrip replacement acceptance
 
+## Query history acceptance
+
+The [paged history guide](query-history.md) and
+[ledger](replacement-verification.md#paged-query-history-13-november-2026) record
+automated real-SQLite/browser verification, native command checks and the normal
+local `99a3ca3` package. Normal packaged owner interaction and application-restart
+acceptance remain open. Use disposable local data; this walkthrough authorizes
+no Snowflake activity or access to existing private application state.
+
+1. With SQL history enabled, run a synthetic query in an isolated local fixture.
+   Search for a marker near the end of its SQL. Open the summary and compare the
+   complete statement in the new editor; opening must not execute or reconnect.
+2. Repeat from the keyboard palette's History scope. For more than one page,
+   browse Next/Previous and Refresh; the automated suite also covers 1,006 entries
+   with tied timestamps and a match beyond the newest 1,000.
+3. Disable SQL-text history and run another synthetic query. Its metadata remains
+   inspectable and opening explains that SQL was not stored. Parameter values
+   must remain absent from history.
+4. Restart the evaluation app and repeat exact reopening. Clear local history,
+   then verify Refresh and the palette show no retained entries. Already opened
+   editor tabs are independent work and remain. Automated coverage additionally
+   clears while a real detail response is delayed.
+
+These steps do not accept crash-time pending history, configurable retention,
+full-capacity performance, SQL-log/Local History parity or Snowflake workflows.
+
 ## Local metadata recovery acceptance
 
 The [encrypted recovery walkthrough](encrypted-metadata-recovery.md) specifies

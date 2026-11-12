@@ -14,6 +14,13 @@ the final metadata-search review correction have precise source scopes in the
 See the [usage and acceptance guide](query-history.md).
 Final full validation passes 1,022 frontend / 641 standard Rust cases, with 139
 fixture cases ignored by default, plus formatting, compilation and strict checks.
+The normal SDK-bearing ARM64 app packages from clean `99a3ca3`, with resources,
+strict ad-hoc signature, original license bytes and guarded SDK startup verified
+(zero authentication/SQL). It is local at
+`src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0; executable
+SHA-256 is `dfcc94bc98508459f3a37c6e6f7ccd3315e2001bc689c1d3d12c2b30f1a57506`.
+The previous `f9c1ce2` app is separately preserved with all 15,120 inventory
+entries unchanged. About 188.2 GiB is free; debug artifacts occupy 8.9 GiB.
 
 Atomic admitted/completed history, durable reservations, publisher settlement,
 configurable retention, full-capacity/resource and actual Snowflake/owner gates
@@ -33,7 +40,7 @@ full-payload capacity or memory plateau. Exact commands/source pins are in the
 
 Durable reservations, atomic completion/history/audit and publisher settlement
 remain required before expanded retention. `retentionEnabled=false`. No new
-normal package was built for this prerequisite: the local runnable app remains
+normal package was built for this prerequisite: the then-current app was
 the `f9c1ce2` recovery package below, with its executable hash rechecked unchanged.
 No account activity, installation, publication or replacement acceptance occurred.
 
