@@ -1,5 +1,6 @@
 import { EditorState } from "@codemirror/state";
 import { sql } from "@codemirror/lang-sql";
+import { ensureSyntaxTree } from "@codemirror/language";
 import { describe, expect, test } from "vitest";
 import type { EngineKind, TableSchema } from "../../ipc/generated";
 import { sqlDialect } from "./sql-identifiers";
@@ -34,6 +35,8 @@ const stateOf = (doc: string, engine: EngineKind = "postgres") =>
   EditorState.create({ doc, extensions: [sql({ dialect: sqlDialect(engine) })] });
 function inspect(doc: string, engine: EngineKind = "postgres") {
   const state = stateOf(doc, engine);
+  // Prepare semantic fixtures independently of the interactive parse budget.
+  expect(ensureSyntaxTree(state, state.doc.length, 1000)).not.toBeNull();
   return {
     state,
     result: prepareColumnInspection(state, 7, context(engine)).finish(state, [schema]),
