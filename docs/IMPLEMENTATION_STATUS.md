@@ -1,5 +1,24 @@
 # Implementation and release status
 
+## Snowflake owned-batch protocol (13 November 2026)
+
+The internal helper and typed supervisor now support bounded owned transactions,
+checked per-unit cardinality, manual finish and retained SQL-free evidence.
+All 427 helper cases pass, including ten actual-SDK HTTP/TLS batch cases. Full
+validation passes 1,038 frontend / 745 standard Rust tests, desktop compilation
+and strict Clippy, with 145 intentional default fixture ignores. Thirteen focused
+Rust protocol/process tests and guarded SDK startup also pass. The
+[ledger](replacement-verification.md#snowflake-owned-batch-protocol-13-november-2026)
+records reproduced defects, exact checks and the distinction between synthetic
+SDKs, actual loopback SDK transport and account qualification.
+
+This has no compiler-to-driver or UI caller and enables no grid/CSV capability.
+Durable per-unit storage, immutable pending membership, rollback recording
+capacity, application integration, broader codecs and normal packaged/account
+acceptance remain required. The runnable `d6cfb2a` normal app remains unchanged,
+local and uninstalled. No additional cache deletion, release build or account
+activity is part of this work.
+
 ## Snowflake mutation compiler (13 November 2026)
 
 The closed compiler emits bound, ordered INSERT/UPDATE/DELETE units with

@@ -10,6 +10,8 @@ pub mod redis;
 pub mod snowflake;
 pub mod snowflake_auth;
 #[cfg(unix)]
+pub(crate) mod snowflake_batch;
+#[cfg(unix)]
 pub(crate) mod snowflake_browsing;
 pub mod snowflake_dml_summary;
 #[cfg(unix)]

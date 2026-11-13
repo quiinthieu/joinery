@@ -340,6 +340,7 @@ async fn guard_failed_attempt_still_durably_forwards_original_terminal_and_local
             kind: SnowflakeDdlKind::CreateTable,
             statement,
         }),
+        batch: None,
     };
     assert!(
         fixture

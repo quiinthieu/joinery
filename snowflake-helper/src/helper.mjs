@@ -1,5 +1,12 @@
 import { deriveSetupLedger } from "./disposable-setup-ledger.mjs";
 import { SQL_CONTRACT } from "./sql-contract.mjs";
+import {
+  executeMutationStep,
+  mutationInterruptedSummary,
+  mutationOwnerAdmits,
+  runMutationRequest,
+  validateMutationRequest,
+} from "./mutation-batch.mjs";
 
 export function connectionOptions(profile, clientConfigFile) {
   const { reviewedConsoleTimeoutSeconds, ...identity } = profile;
@@ -109,6 +116,7 @@ export class Helper {
     this.retired = false;
     this.setupBootstrap = 0;
     this.setupRun = null;
+    this.mutationOwner = null;
     emit({
       v: 1,
       type: "hello",
@@ -129,12 +137,30 @@ export class Helper {
   }
   finish(request, code, result = {}) {
     if (this.done.has(request)) return;
+    const mutationActive =
+      this.active?.request === request && ["mutationBatch", "mutationFinish"].includes(request.op);
+    if (mutationActive && code) {
+      result = mutationInterruptedSummary(
+        this.active,
+        code === "cancelled" ? "cancelled" : "transport",
+      );
+      this.active.batch && (this.active.batch.terminal = result);
+      code = null;
+    }
     this.done.add(request);
     if (
       !this.setupRun &&
-      ["context", "query", "switchSchema", "transaction", "dml", "ddl", "reviewedSql"].includes(
-        request.op,
-      )
+      [
+        "context",
+        "query",
+        "switchSchema",
+        "transaction",
+        "dml",
+        "ddl",
+        "reviewedSql",
+        "mutationBatch",
+        "mutationFinish",
+      ].includes(request.op)
     ) {
       const p = request.payload;
       if (!code && request.op === "context" && this.setupBootstrap === 0) this.setupBootstrap = 1;
@@ -158,10 +184,11 @@ export class Helper {
     }
     const a = this.active?.request === request ? this.active : null;
     if (a) this.publishStatementAcknowledged(a);
-    this.send(request, "terminal", {
+    const publication = this.send(request, "terminal", {
       ...(a ? this.idsFor(a) : {}),
       ...(code ? { ok: false, error: error(code) } : { ok: true, result }),
     });
+    if (mutationActive) Promise.resolve(publication).catch(() => this.stop());
     // Once setup owns the session, even malformed control requests seal it.
     if (code && this.setupRun && !this.retired) this.stop();
   }
@@ -232,6 +259,8 @@ export class Helper {
         "ddl",
         "reviewedSql",
         "setup",
+        "mutationBatch",
+        "mutationFinish",
       ].includes(r.op)
     )
       return this.finish(r, "unsupported");
@@ -244,6 +273,7 @@ export class Helper {
     // No queued or pipelined request can reserve a future setup statement.
     if (r.op === "setup" && (this.active || this.queue.length)) return this.rejectSetup(r);
     if (!this.validateWork(r)) return;
+    if (!mutationOwnerAdmits(this, r)) return this.finish(r, "invalidInput");
     if (r.op === "setup" && !this.setupRun)
       this.setupRun = {
         runId: r.payload.runId,
@@ -311,6 +341,13 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "mutationBatch" || r.op === "mutationFinish") {
+      if (!validateMutationRequest(r, this)) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
     if (r.op === "reviewedSql") {
       if (
         !exact(p, ["sql", "binds", "expected", "credits", "maxRows", "maxBytes"]) ||
@@ -503,6 +540,11 @@ export class Helper {
     if (this.active || this.retired) return;
     const r = this.queue.shift();
     if (!r) return;
+    if (!mutationOwnerAdmits(this, r)) {
+      this.finish(r, "invalidInput");
+      this.pump();
+      return;
+    }
     const a = (this.active = {
       request: r,
       credits: r.payload.credits ?? 0,
@@ -514,7 +556,10 @@ export class Helper {
     });
     try {
       a.submitOwner = this.submitGuard?.beginOperation();
-      if (r.op === "query" || r.op === "reviewedSql") {
+      if (r.op === "mutationBatch" || r.op === "mutationFinish") {
+        if (!this.validateWork(r)) return;
+        await runMutationRequest(this, a);
+      } else if (r.op === "query" || r.op === "reviewedSql") {
         if (r.op === "reviewedSql" && !this.validateWork(r)) return;
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
         this.finish(r, null, { ...result, ...this.idsFor(a) });
@@ -767,6 +812,7 @@ export class Helper {
     setup = null,
     ddl = null,
   ) {
+    if (a.batch) return executeMutationStep(this, a, sql, binds);
     // This is per execute: a preceding USE acknowledgement cannot settle the
     // following context readback's outcome before that statement acknowledges.
     a.acknowledged = false;
@@ -906,14 +952,16 @@ export class Helper {
     if (
       Buffer.byteLength(JSON.stringify(columns)) > LIMITS.frameBytes - 512 ||
       columns.length >
-        (a.setupEntry?.maximumColumns ??
-          (a.request.op === "dml" || a.request.op === "ddl" ? 2 : 1000)) ||
+        (a.batch
+          ? 16
+          : (a.setupEntry?.maximumColumns ??
+            (a.request.op === "dml" || a.request.op === "ddl" ? 2 : 1000))) ||
       columns.some((c) => !text(c.name, 4096) || !text(c.type, 128))
     )
       throw error("resultLimitReached");
     const privateBudget = a.setupEntry
       ? a.setupEntry.maximumBytes - Buffer.byteLength(JSON.stringify(columns)) - 2
-      : a.request.op === "dml" || a.request.op === "ddl"
+      : a.batch || a.request.op === "dml" || a.request.op === "ddl"
         ? 65536 - Buffer.byteLength(JSON.stringify(columns))
         : 131072;
     if (a.setupEntry && privateBudget < 0) throw error("resultLimitReached");
@@ -975,10 +1023,12 @@ export class Helper {
         if (!publish) {
           if (
             values.length >=
-              (a.setupEntry?.maximumRows ??
-                (a.request.op === "dml" || a.request.op === "ddl" ? 1 : 2)) ||
+              (a.batch
+                ? 1
+                : (a.setupEntry?.maximumRows ??
+                  (a.request.op === "dml" || a.request.op === "ddl" ? 1 : 2))) ||
             size > 65536 ||
-            ((a.request.op === "dml" || a.request.op === "ddl" || a.setupEntry) &&
+            ((a.batch || a.request.op === "dml" || a.request.op === "ddl" || a.setupEntry) &&
               bytes + size > privateBudget)
           )
             throw error("resultLimitReached");
@@ -1048,8 +1098,16 @@ export class Helper {
   removeQueued(control, target) {
     const index = this.queue.findIndex(
       (r) =>
-        ["query", "reviewedSql", "switchSchema", "transaction", "dml", "ddl"].includes(r.op) &&
-        r.id === target,
+        [
+          "query",
+          "reviewedSql",
+          "switchSchema",
+          "transaction",
+          "dml",
+          "ddl",
+          "mutationBatch",
+          "mutationFinish",
+        ].includes(r.op) && r.id === target,
     );
     if (index < 0) return false;
     const [queued] = this.queue.splice(index, 1);
@@ -1069,6 +1127,20 @@ export class Helper {
     }
     if (this.removeQueued(r, p.target)) return;
     const a = this.active;
+    if (
+      a &&
+      a.request.id === p.target &&
+      ["mutationBatch", "mutationFinish"].includes(a.request.op)
+    ) {
+      this.send(r, "accepted");
+      if (a.batch) a.batch.terminal = mutationInterruptedSummary(a, "cancelled");
+      try {
+        a.statement?.cancel(() => {});
+      } catch {}
+      this.finish(r, null, { requested: true });
+      this.finish(a.request, "cancelled");
+      return this.stop();
+    }
     if (!a || a.request.id !== p.target || !a.statement) return this.finish(r, "invalidInput");
     this.send(r, "accepted");
     if (
@@ -1077,7 +1149,9 @@ export class Helper {
       a.request.op === "dml" ||
       a.request.op === "ddl" ||
       a.request.op === "reviewedSql" ||
-      a.request.op === "setup"
+      a.request.op === "setup" ||
+      a.request.op === "mutationBatch" ||
+      a.request.op === "mutationFinish"
     ) {
       // A cancel ACK cannot verify either the USE outcome or final context.
       try {

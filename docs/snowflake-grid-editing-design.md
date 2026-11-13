@@ -60,6 +60,75 @@ establish the generated single-statement shape only. The
 records current commands and results; neither these tests nor the official SQL
 references replace actual Snowflake semantic and account acceptance.
 
+## Owned-batch runtime integration
+
+The internal helper protocol adds `mutationBatch` and `mutationFinish` on one
+retained physical connection. The Rust supervisor retains separate typed batch
+evidence. This work is not yet an application editing route: the compiler has no
+dispatch caller, durable batch recording is not integrated, and grid/CSV
+capabilities remain disabled. The
+[ledger](replacement-verification.md#snowflake-owned-batch-protocol-13-november-2026)
+records passing helper, parser, actual child-process, actual-SDK loopback,
+resource/startup and full application checks, with their exact source scopes.
+None establishes remote Snowflake effects or new UI readiness.
+
+The helper admits at most 500 generated units and 510 independently identified
+steps, including fixed context, settings and boundary observations. The complete
+encoded request must fit the existing 1 MiB frame before queue admission. The
+compiler's 8 MiB logical budget and 1 MiB cell ceiling do not promise transport
+admission; larger generated requests still need a reviewed framing solution.
+Each generated unit uses scalar binds and `MULTI_STATEMENT_COUNT=1`. The native
+compiler must establish the SQL grammar before dispatch; helper shape checks do
+not authorize browser-supplied SQL or prove metadata provenance.
+
+Initial admission verifies idle state and exact observed context before BEGIN,
+then retains the actual transaction ID. Quoted-name execution requires observed
+`QUOTED_IDENTIFIERS_IGNORE_CASE=false`. Manual continuation requires the same
+private owner, physical session, context and transaction ID, plus explicit
+consent that a later whole-transaction rollback includes prior submitted batches.
+Both request receipt and queued dispatch exclude unrelated SQL while owned work
+is pending. Whole-batch submission capacity is reserved before the first SQL;
+manual ownership also retains a separate five-statement finish allowance.
+The guard's 65,536 spent-ID process ceiling still applies. Protected finish
+capacity does not permit unlimited batches. Exhaustion must refuse further work;
+it cannot silently reconnect or replay an open manual transaction. Large-import
+capacity and a safe lifecycle policy remain replacement acceptance requirements.
+
+DML summaries require exact `FIXED` metadata and decimal strings. Only affected
+count one advances; a present UPDATE multi-join count must be zero. An omitted
+optional multi-join count stays absent: the native generated UPDATE has no join.
+No status-row count or earlier uniqueness query substitutes for affected rows.
+Statement ACK, complete drain, exact count and transaction disposition are
+separate facts. Interrupted execution/cancellation never authorizes blind cleanup
+on a possibly active statement, and connection retirement never proves rollback.
+
+A boundary ACK and an idle observation cannot alone prove commit or rollback.
+The helper also checks the owned ID, session and state from
+[`DESCRIBE TRANSACTION`](https://docs.snowflake.com/en/sql-reference/sql/desc-transaction),
+whose output shape is illustrated in the official
+[monitoring example](https://docs.snowflake.com/en/sql-reference/transactions#monitoring-transactions-and-locks).
+Missing or contradictory disposition is unknown. A
+[`COMMIT` can have no open transaction to commit](https://docs.snowflake.com/en/sql-reference/sql/commit#usage-notes).
+Explicit transactions do not require silently changing AUTOCOMMIT; its value
+does not affect statements inside BEGIN/COMMIT. Server aborts and observation
+failures still require truthful unknown outcomes.
+
+The compact versioned evidence contract retains ordered step roles, exact IDs,
+ACK/drain/count states and the closed terminal summary without SQL or bindings.
+Its strict decoder must reject malformed or reordered evidence, and maximum-size
+proof must include the future durable descriptor/base64 wrapper within 32 KiB.
+Raw binary fitting that limit does not establish whole-payload admission.
+
+Before application dispatch is enabled, extend schema-7's closed outcome model
+and migrate it under the existing exclusive admission/owner fence. Current
+settlement deletes the captured payload, so the new per-unit proof must be
+retained atomically in a bounded durable record. Earlier pending manual receipts
+remain immutable; a separate finish record resolves their explicitly bound
+transaction membership. Reserve recording capacity for rollback before accepting
+manual work. Restore imports historical proof without helper ownership, replay
+or live execution authority. Capture/settle faults, caller loss, child death,
+ordinary-quota exhaustion and restart require actual SQLite/process tests.
+
 ## Database correctness constraints
 
 Snowflake [does not enforce primary or unique keys on standard tables](https://docs.snowflake.com/en/sql-reference/constraints-overview).
@@ -123,9 +192,9 @@ accepted solution for standard-table editing.
    Manual submission must not issue a fresh BEGIN or automatic COMMIT into an
    already owned pending transaction. Explain that a subsequent whole-transaction
    rollback also discards earlier submitted grid batches in that transaction.
-   The helper currently rejects a third statement ID in one request; introduce
-   a separate bounded batch admission/ID budget including control and metadata
-   reads. Do not relax that global ceiling or loop the old operation unchanged.
+   Ordinary helper operations retain their two-statement identity ceiling. Use
+   the separate bounded batch admission/ID budget including control and metadata
+   reads; do not relax the ordinary ceiling or loop the old operation unchanged.
    Size durable evidence against schema-7's compact payload limit before choosing
    the runtime batch size; the compiler's row limit is not that proof.
 3. **Application grid and import workflow.** Retain comparison-grade originals,

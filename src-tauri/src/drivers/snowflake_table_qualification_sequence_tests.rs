@@ -32,6 +32,7 @@ fn report() -> Report {
         dml_acknowledged: None,
         statement_acknowledged: None,
         ddl_acknowledged: None,
+        batch: None,
     }
 }
 

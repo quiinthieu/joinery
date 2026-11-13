@@ -23,11 +23,21 @@ passes 1,038 frontend / 732 standard Rust tests and strict checks; independent
 review has no material finding. See its
 [current boundary](snowflake-grid-editing-design.md#current-compiler-implementation)
 and [verification](replacement-verification.md#snowflake-mutation-compiler-13-november-2026).
-Next implement the dedicated owned-batch protocol and transaction outcome model,
-including actual cardinality enforcement, distinct confirmed/unknown rollback,
-manual submission and bounded per-unit evidence. Reusing the helper's old
-two-statement operation or the grid's committed-success return type is
-insufficient. Then integrate application staging and CSV, and qualify the whole
+The dedicated owned-batch helper and typed supervisor are now implemented with
+checked cardinality, separate ACK/count/drain/disposition, retained prefixes,
+manual ownership and reserved finish capacity. All 427 helper cases, including
+ten actual-SDK HTTP/TLS batch cases, and thirteen focused Rust protocol/process
+tests pass. Full validation passes 1,038 frontend / 745 standard Rust cases and
+strict checks, with 145 intentional default fixture ignores. Resource/startup
+checks also pass; exact source scopes are in the
+[batch ledger](replacement-verification.md#snowflake-owned-batch-protocol-13-november-2026).
+Next extend durable storage before enabling application dispatch: retain bounded
+per-unit proof after settlement, preserve immutable pending originals, bind
+separate finish records to explicit transaction membership, and reserve rollback
+recording even when ordinary quota is exhausted. Prove the entire encoded
+envelope fits the durable limit and test real SQLite faults, restore and crashes.
+Then build a dedicated adapter; the old generic grid's committed-success return
+type cannot represent pending work. Integrate application staging and CSV, and qualify the whole
 workflow against Snowflake and the normal packaged app. Broader codecs remain
 required, not optional follow-up work.
 

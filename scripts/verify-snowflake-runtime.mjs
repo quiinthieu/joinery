@@ -63,6 +63,7 @@ export function verifySnowflakeRuntime({
     "sql-contract.mjs",
     "framing.mjs",
     "helper.mjs",
+    "mutation-batch.mjs",
     "main.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",

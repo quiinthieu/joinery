@@ -91,6 +91,15 @@ for (const transport of ["http", "tls", "proxy"])
     "reviewed-file-veto",
   ])
     cases.push([scenario, transport]);
+for (const transport of ["http", "tls"])
+  for (const scenario of [
+    "helper-batch-automatic",
+    "helper-batch-cardinality",
+    "helper-batch-manual-commit",
+    "helper-batch-manual-rollback",
+    "helper-batch-lost-ack",
+  ])
+    cases.push([scenario, transport]);
 
 async function bounded(promise, milliseconds) {
   let timer;
@@ -239,6 +248,74 @@ for (const [scenario, transport] of cases) {
         assert.equal(result.connected, true);
         assert.equal(result.intendedSQLOnly, true);
         assert.equal(result.scalarBindsExact, true);
+        if (scenario.startsWith("helper-batch-")) {
+          assert.equal(result.helperFixturePreconnected, true);
+          assert.equal(result.externalBrowserConnectSkipped, true);
+          assert.equal(result.batchPostIdentitiesExact, true);
+          assert.equal(result.batchPostIdentitiesDistinct, true);
+          assert.equal(result.batchPrefixExact, true);
+          const manual = scenario.startsWith("helper-batch-manual-");
+          const lost = scenario === "helper-batch-lost-ack";
+          const cardinality = scenario === "helper-batch-cardinality";
+          const steps = {
+            "helper-batch-automatic": 11,
+            "helper-batch-cardinality": 9,
+            "helper-batch-manual-commit": 12,
+            "helper-batch-manual-rollback": 10,
+            "helper-batch-lost-ack": 6,
+          }[scenario];
+          assert.equal(result.queryPosts, steps);
+          assert.equal(result.batchSteps, steps);
+          assert.equal(result.guardAdmitted, steps);
+          assert.equal(result.guardRegistered, steps);
+          assert.equal(result.batchAcknowledgements, steps - Number(lost));
+          assert.equal(result.effects, scenario === "helper-batch-automatic" ? 3 : 2);
+          const counts = [{ affectedRows: "1", multiJoinedRows: null }];
+          if (!lost)
+            counts.push({
+              affectedRows: cardinality ? "99999999999999999999999999999999999999" : "1",
+              multiJoinedRows: manual ? null : "0",
+            });
+          if (scenario === "helper-batch-automatic")
+            counts.push({ affectedRows: "1", multiJoinedRows: null });
+          assert.deepEqual(result.batchCounts, counts);
+          const outcome = lost
+            ? "unknown"
+            : cardinality || scenario.endsWith("-rollback")
+              ? "rolledBack"
+              : "committed";
+          assert.equal(result.batchTerminal, outcome);
+          assert.equal(result.outcome, `helper-batch-${outcome}`);
+          assert.equal(
+            result.batchFailure,
+            lost ? "transport" : cardinality ? "cardinality" : null,
+          );
+          assert.equal(result.batchPriorBatches, Number(manual));
+          assert.equal(result.helperTerminals, manual ? 2 : 1);
+          assert.equal(result.helperRetired, 1);
+          assert.equal(result.violations, Number(lost));
+          assert.equal(result.guardFailed, lost);
+          assert.equal(result.rows, 0);
+          if (manual) {
+            assert.equal(result.batchPendingImmutable, true);
+            assert.equal(result.batchOwnerStable, true);
+          }
+          if (lost) {
+            assert.equal(result.violationCategory, "duplicate");
+            assert.equal(result.helperSettledSynchronously, true);
+          }
+          if (transport === "tls") assert.equal(result.tlsVerified, true);
+          t.diagnostic(
+            JSON.stringify({
+              scenario,
+              transport,
+              posts: result.queryPosts,
+              counts: result.batchCounts.length,
+              outcome: result.batchTerminal,
+            }),
+          );
+          return;
+        }
         if (scenario.startsWith("reviewed-")) {
           assert.equal(result.helperFixturePreconnected, true);
           assert.equal(result.externalBrowserConnectSkipped, true);

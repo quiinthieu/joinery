@@ -29,6 +29,7 @@ const HELPER_FILES = [
   "framing.mjs",
   "helper.mjs",
   "main.mjs",
+  "mutation-batch.mjs",
   "query-submit-guard.mjs",
   "transport-source-pins.mjs",
   "disposable-setup-ledger.mjs",

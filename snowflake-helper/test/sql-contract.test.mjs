@@ -76,7 +76,12 @@ test("invalid bundled JSON or schema prevents helper module loading", async (t) 
   ].entries()) {
     const directory = join(root, String(index));
     await mkdir(directory);
-    for (const name of ["helper.mjs", "disposable-setup-ledger.mjs", "sql-contract.mjs"])
+    for (const name of [
+      "helper.mjs",
+      "mutation-batch.mjs",
+      "disposable-setup-ledger.mjs",
+      "sql-contract.mjs",
+    ])
       await copyFile(new URL(`../src/${name}`, import.meta.url), join(directory, name));
     await writeFile(join(directory, "sql-contract.json"), contents);
     await assert.rejects(import(pathToFileURL(join(directory, "helper.mjs")).href));
@@ -90,7 +95,12 @@ test("actual helper dispatches contract SQL and recognizes the contract version 
 test("disposable source copy proves helper SQL and version recognition derive from contract bytes", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "joinery-sql-contract-source-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  for (const name of ["helper.mjs", "disposable-setup-ledger.mjs", "sql-contract.mjs"])
+  for (const name of [
+    "helper.mjs",
+    "mutation-batch.mjs",
+    "disposable-setup-ledger.mjs",
+    "sql-contract.mjs",
+  ])
     await copyFile(new URL(`../src/${name}`, import.meta.url), join(root, name));
   // Change only a disposable source artifact, never a runtime override or packaged file.
   const contract = Object.fromEntries(

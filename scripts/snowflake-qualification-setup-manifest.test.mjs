@@ -150,6 +150,7 @@ test("every source/runtime/profile/window binding and the closed input shape are
   const base = input();
   const manifest = compileSetupManifest(base);
   for (const change of [
+    (v) => (v.sources["snowflake-helper/src/mutation-batch.mjs"] = "b".repeat(64)),
     (v) => (v.sources[SETUP_SOURCE_PATHS.at(-1)] = "b".repeat(64)),
     (v) => (v.runtime.manifestSha256 = "b".repeat(64)),
     (v) => (v.profile.database = "OTHER_DB"),

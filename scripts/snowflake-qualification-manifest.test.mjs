@@ -344,6 +344,9 @@ test("verification rejects unhashed tampering,rehashed edits and independent cur
   }
   for (const mutate of [
     (value) => {
+      value.sources["snowflake-helper/src/mutation-batch.mjs"] = "f".repeat(64);
+    },
+    (value) => {
       value.sources[SOURCE_PATHS[0]] = "f".repeat(64);
     },
     (value) => {

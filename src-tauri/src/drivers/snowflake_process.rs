@@ -1,4 +1,5 @@
 //! Bounded Snowflake helper process transport. No remote capability is qualified here.
+use super::snowflake_batch::{BatchCapture, BatchEvidence, BatchRequest, Outcome as BatchOutcome};
 #[cfg(all(unix, feature = "test-harness"))]
 use super::snowflake_qualification_transport::{
     Disposition, LocalTerminal, LocalTerminalOrigin, PhysicalRequest, PhysicalTerminal,
@@ -556,6 +557,9 @@ fn parse_ddl_kind(value: &Value) -> Option<SnowflakeDdlKind> {
     serde_json::from_value(value.clone()).ok()
 }
 fn valid_transaction_impact(op: &str, payload: &Value, impact: Impact) -> bool {
+    if matches!(op, "mutationBatch" | "mutationFinish") {
+        return impact == Impact::Mutating && BatchRequest::parse(op, payload).is_ok();
+    }
     if op == "reviewedSql" {
         return impact == Impact::Mutating;
     }
@@ -624,6 +628,9 @@ pub struct Report {
     pub ddl_acknowledged: Option<DdlAcknowledgement>,
     /// Original reviewed SQL success, independent of result retention or later failure.
     pub statement_acknowledged: Option<ReviewedAcknowledgement>,
+    /// Dedicated batch identities/counts and disposition; never synthesized
+    /// from ordinary statement events or lost when the process is retired.
+    pub batch: Option<BatchEvidence>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatementIdentity {
@@ -675,6 +682,7 @@ struct Pending {
     ddl_kind: Option<SnowflakeDdlKind>,
     ddl_acknowledged: Option<DdlAcknowledgement>,
     statement_acknowledged: Option<ReviewedAcknowledgement>,
+    batch: Option<BatchEvidence>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -860,6 +868,17 @@ impl Operation {
             .filter(|pending| pending.ticket == self.token.ticket)
             .and_then(|pending| pending.statement_acknowledged.clone())
     }
+    pub fn batch_evidence(&self) -> Option<BatchEvidence> {
+        let state = self.owner.state.lock().unwrap();
+        if let Some(report) = self.completion_evidence(&state) {
+            return report.batch;
+        }
+        state
+            .pending
+            .get(&self.token.id)
+            .filter(|pending| pending.ticket == self.token.ticket)
+            .and_then(|pending| pending.batch.clone())
+    }
     /// Observe completion while independently consuming columns and queued rows.
     /// A terminal report does not imply the row receiver has been drained.
     pub fn terminal_receiver(&self) -> watch::Receiver<Option<Report>> {
@@ -885,6 +904,7 @@ impl Operation {
                     dml_acknowledged: None,
                     ddl_acknowledged: None,
                     statement_acknowledged: None,
+                    batch: None,
                 };
             }
         }
@@ -924,6 +944,8 @@ impl Operation {
                 | "dml"
                 | "ddl"
                 | "reviewedSql"
+                | "mutationBatch"
+                | "mutationFinish"
                 | "close"
         ) {
             self.owner.retire_target(&self.token, Retirement::Dropped);
@@ -1253,6 +1275,8 @@ impl Supervisor {
                                         | "dml"
                                         | "ddl"
                                         | "reviewedSql"
+                                        | "mutationBatch"
+                                        | "mutationFinish"
                                 )
                         })
                         .map(|(id, _)| id.clone())
@@ -1272,6 +1296,7 @@ impl Supervisor {
                             dml_acknowledged: pending.dml_acknowledged.clone(),
                             ddl_acknowledged: pending.ddl_acknowledged.clone(),
                             statement_acknowledged: pending.statement_acknowledged.clone(),
+                            batch: pending.batch.clone(),
                         };
                         publications.push(self.inner.stage_local(
                             &mut state,
@@ -1504,7 +1529,12 @@ impl Inner {
                 && (is_connect
                     || matches!(
                         pending.op.as_str(),
-                        "switchSchema" | "transaction" | "dml" | "ddl"
+                        "switchSchema"
+                            | "transaction"
+                            | "dml"
+                            | "ddl"
+                            | "mutationBatch"
+                            | "mutationFinish"
                     )))
         {
             return Err(TargetError::Control("invalid query target"));
@@ -1527,6 +1557,7 @@ impl Inner {
             dml_acknowledged: pending.dml_acknowledged.clone(),
             ddl_acknowledged: pending.ddl_acknowledged.clone(),
             statement_acknowledged: pending.statement_acknowledged.clone(),
+            batch: pending.batch.clone(),
         };
         let publication = self.stage_local(
             &mut state,
@@ -1614,6 +1645,8 @@ impl Inner {
                     | "dml"
                     | "ddl"
                     | "reviewedSql"
+                    | "mutationBatch"
+                    | "mutationFinish"
                     | "credit"
                     | "cancel"
                     | "close"
@@ -1628,6 +1661,9 @@ impl Inner {
         if (op == "switchSchema") != (impact == Impact::ContextChange) {
             return Err("invalid context-change impact");
         }
+        let batch = BatchRequest::parse(op, &payload)
+            .map_err(|_| "invalid mutation batch payload")?
+            .map(BatchEvidence::new);
         let priority = matches!(op, "credit" | "cancel" | "close");
         if priority && impact != Impact::Control {
             return Err("invalid control impact");
@@ -1716,6 +1752,7 @@ impl Inner {
                 dml_kind,
                 ddl_acknowledged: None,
                 statement_acknowledged: None,
+                batch,
                 ddl_kind,
                 transaction_action,
                 statement_events: 0,
@@ -1827,6 +1864,7 @@ impl Inner {
                 dml_acknowledged: pending.dml_acknowledged.clone(),
                 ddl_acknowledged: pending.ddl_acknowledged.clone(),
                 statement_acknowledged: pending.statement_acknowledged.clone(),
+                batch: pending.batch.clone(),
             };
             publications.push(self.stage_local(
                 state,
@@ -1871,6 +1909,20 @@ impl Inner {
                 pending.accepted = true;
                 true
             }
+            Some("batchStep" | "batchStatement" | "batchCount" | "batchCountUnavailable") => {
+                if !pending.accepted || pending.phase < Phase::Sent {
+                    return false;
+                }
+                let Some(batch) = &mut pending.batch else {
+                    return false;
+                };
+                if !batch.apply_event(&event) {
+                    return false;
+                }
+                pending.phase = Phase::Dispatching;
+                true
+            }
+            Some("phase") if pending.batch.is_some() => false,
             Some("phase") => match event.get("phase").and_then(Value::as_str) {
                 Some("dispatching")
                     if pending.accepted
@@ -2165,6 +2217,23 @@ impl Inner {
                 let Some(ok) = event.get("ok").and_then(Value::as_bool) else {
                     return false;
                 };
+                let mut batch_terminal = pending.batch.clone();
+                if let Some(batch) = &mut batch_terminal {
+                    if ok {
+                        if !pending.accepted
+                            || !event
+                                .get("result")
+                                .is_some_and(|result| batch.accept_terminal(result))
+                            || BatchCapture::encode(batch).is_err()
+                        {
+                            return false;
+                        }
+                    } else if batch.has_dispatch() {
+                        // Once work starts the helper owes a closed batch
+                        // summary, including unknown remote disposition.
+                        return false;
+                    }
+                }
                 if ok
                     && pending.op == "switchSchema"
                     && event.get("sdkRequestId").and_then(Value::as_str).is_none()
@@ -2263,6 +2332,7 @@ impl Inner {
                 {
                     return false;
                 }
+                pending.batch = batch_terminal;
                 let unverified_use =
                     pending.use_acknowledged.is_some() && pending.phase != Phase::Acknowledged;
                 let cancelled_context = matches!(
@@ -2273,7 +2343,18 @@ impl Inner {
                         | Impact::Rollback
                         | Impact::Mutating
                 ) && code.as_deref() == Some("cancelled");
-                let certainty = if pending.boundary_acknowledged.is_some()
+                let certainty = if pending.batch.as_ref().is_some_and(|batch| {
+                    batch
+                        .summary
+                        .as_ref()
+                        .is_some_and(|summary| summary.outcome == BatchOutcome::Unknown)
+                }) {
+                    Certainty::OutcomeUnknown
+                } else if pending
+                    .batch
+                    .as_ref()
+                    .is_some_and(BatchEvidence::has_acknowledgement)
+                    || pending.boundary_acknowledged.is_some()
                     || pending.dml_acknowledged.is_some()
                     || pending.ddl_acknowledged.is_some()
                     || pending.statement_acknowledged.is_some()
@@ -2315,7 +2396,13 @@ impl Inner {
                         || pending.statement_acknowledged.is_some())
                         && pending.phase != Phase::Acknowledged)
                     || cancelled_context
-                    || (pending.statement_acknowledged.is_some() && !ok);
+                    || (pending.statement_acknowledged.is_some() && !ok)
+                    || pending.batch.as_ref().is_some_and(|batch| {
+                        batch
+                            .summary
+                            .as_ref()
+                            .is_some_and(|summary| summary.outcome == BatchOutcome::Unknown)
+                    });
                 let report = Report {
                     ok,
                     certainty,
@@ -2329,6 +2416,7 @@ impl Inner {
                     dml_acknowledged: pending.dml_acknowledged,
                     ddl_acknowledged: pending.ddl_acknowledged,
                     statement_acknowledged: pending.statement_acknowledged,
+                    batch: pending.batch,
                 };
                 let closing = (pending.op == "reviewedSql" && state.closing)
                     || state.pending.values().any(|p| p.op == "close");
@@ -2355,8 +2443,9 @@ impl Inner {
                 // A failed reviewed drain must close admission before waking
                 // the original terminal recipient. Preserve its original report;
                 // stage other operations for publication outside State.
-                let reviewed_retirement =
-                    pending.op == "reviewedSql" && terminal_connection_loss && !closing;
+                let reviewed_retirement = (pending.op == "reviewedSql" || report.batch.is_some())
+                    && terminal_connection_loss
+                    && !closing;
                 let retirement_publications = if reviewed_retirement {
                     self.retire_locked(&mut state, Retirement::Requested)
                 } else {
@@ -2581,6 +2670,7 @@ fn local_report(result: Value) -> Report {
         dml_acknowledged: None,
         ddl_acknowledged: None,
         statement_acknowledged: None,
+        batch: None,
     }
 }
 
@@ -3103,6 +3193,442 @@ mod tests {
             json!({"type":"statement","sdkRequestId":USE_ID})
         ));
         (inner, operation)
+    }
+    fn batch_payload() -> Value {
+        json!({"mode":"automatic","owner":null,"rollbackPrior":false,
+            "expected":{"user":"TEST","session":"123","role":"ROLE","database":"DB","schema":"PUBLIC","warehouse":"WH"},
+            "units":[{"kind":"update","sql":"UPDATE synthetic SET v = ? WHERE id = ?","binds":["value","1"]}]})
+    }
+    fn batch_frame(inner: &Inner, step: usize, role: &str, unit: Option<usize>, phase: &str) {
+        assert!(switch_event(
+            inner,
+            json!({"type":"batchStep","step":step,"role":role,"unit":unit,"phase":phase})
+        ));
+    }
+    fn batch_identity(step: usize) -> String {
+        uuid::Uuid::from_u128(0x12340000000040008000000000000000 + step as u128).to_string()
+    }
+    fn batch_query(step: usize) -> String {
+        uuid::Uuid::from_u128(0x56780000000040008000000000000000 + step as u128).to_string()
+    }
+    fn batch_step(inner: &Inner, step: usize, role: &str, unit: Option<usize>, drain: bool) {
+        batch_frame(inner, step, role, unit, "dispatching");
+        assert!(switch_event(
+            inner,
+            json!({"type":"batchStatement","step":step,"sdkRequestId":batch_identity(step)})
+        ));
+        batch_frame(inner, step, role, unit, "acknowledged");
+        assert!(switch_event(
+            inner,
+            json!({"type":"batchStatement","step":step,"sdkRequestId":batch_identity(step),"queryId":batch_query(step)})
+        ));
+        if unit.is_some() {
+            assert!(switch_event(
+                inner,
+                json!({"type":"batchCount","step":step,"unit":unit,"affectedRows":"1","multiJoinedRows":null})
+            ));
+        }
+        if drain {
+            batch_frame(inner, step, role, unit, "drained");
+        }
+    }
+    fn dispatched_batch() -> (
+        Arc<Inner>,
+        Operation,
+        mpsc::Receiver<Outbound>,
+        mpsc::Receiver<Outbound>,
+    ) {
+        let (inner, normal, control) = isolated();
+        let operation = inner
+            .request("batch", "mutationBatch", batch_payload(), Impact::Mutating)
+            .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.pending.get_mut("batch").unwrap().phase = Phase::Sent;
+            state.wire_ids.insert("1".into(), "batch".into());
+        }
+        assert!(switch_event(&inner, json!({"type":"accepted"})));
+        for (index, role) in ["context", "settings", "begin", "transaction"]
+            .iter()
+            .enumerate()
+        {
+            batch_step(&inner, index + 1, role, None, true);
+        }
+        batch_step(&inner, 5, "unit", Some(0), false);
+        (inner, operation, normal, control)
+    }
+    #[test]
+    fn batch_admission_requires_closed_payload_mutating_impact_and_dedicated_events() {
+        let (inner, _normal, _control) = isolated();
+        for impact in [
+            Impact::Read,
+            Impact::Control,
+            Impact::ContextChange,
+            Impact::Begin,
+            Impact::Commit,
+            Impact::Rollback,
+        ] {
+            assert!(
+                inner
+                    .request("invalid", "mutationBatch", batch_payload(), impact)
+                    .is_err()
+            );
+        }
+        let mut malformed = batch_payload();
+        malformed["units"][0]["binds"] = json!([1.5]);
+        assert!(
+            inner
+                .request("invalid", "mutationBatch", malformed, Impact::Mutating)
+                .is_err()
+        );
+        assert!(inner.state.lock().unwrap().pending.is_empty());
+        let (inner, operation) = dispatched_reviewed();
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"batchStep","step":1,"role":"context","unit":null,"phase":"dispatching"})
+        ));
+        assert!(operation.batch_evidence().is_none());
+        let (inner, operation, _normal, _control) = dispatched_batch();
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"statement","sdkRequestId":USE_ID})
+        ));
+        assert!(!switch_event(
+            &inner,
+            json!({"type":"phase","phase":"acknowledged"})
+        ));
+        assert!(operation.batch_evidence().is_some());
+    }
+    #[tokio::test]
+    async fn batch_evidence_survives_eof_deadline_protocol_and_dropped_waiter_without_replay() {
+        for reason in [
+            Retirement::Eof,
+            Retirement::Protocol,
+            Retirement::Write,
+            Retirement::Requested,
+        ] {
+            let (inner, mut operation, mut normal, _control) = dispatched_batch();
+            let original = operation.batch_evidence().unwrap();
+            assert_eq!(
+                original.steps[4].count.as_ref().unwrap().multi_joined_rows,
+                None
+            );
+            assert_eq!(
+                original.steps[4]
+                    .statement
+                    .as_ref()
+                    .unwrap()
+                    .query_id
+                    .as_deref(),
+                Some(batch_query(5).as_str())
+            );
+            inner.retire(reason);
+            let report = operation.wait().await;
+            assert_eq!(report.retirement, Some(reason));
+            assert_eq!(report.batch.as_ref(), Some(&original));
+            assert_eq!(operation.batch_evidence().as_ref(), Some(&original));
+            assert!(report.batch.unwrap().summary.is_none());
+            assert!(
+                inner
+                    .request("replay", "mutationBatch", batch_payload(), Impact::Mutating)
+                    .is_err()
+            );
+            assert!(normal.try_recv().is_ok());
+            assert!(normal.try_recv().is_err());
+        }
+        let (_inner, mut operation, _normal, _control) = dispatched_batch();
+        let original = operation.batch_evidence();
+        let report = operation.wait_bounded(Duration::ZERO).await;
+        assert_eq!(report.retirement, Some(Retirement::Deadline));
+        assert_eq!(report.batch, original);
+        let (inner, operation, _normal, _control) = dispatched_batch();
+        let original = operation.batch_evidence();
+        let terminal = operation.terminal_receiver();
+        drop(operation);
+        let report = terminal.borrow().clone().unwrap();
+        assert_eq!(report.retirement, Some(Retirement::Dropped));
+        assert_eq!(report.batch, original);
+        assert!(inner.state.lock().unwrap().retired.is_some());
+    }
+    #[tokio::test]
+    async fn batch_cancel_unknown_summary_preserves_ack_and_closes_admission_before_publication() {
+        let (inner, mut operation, _normal, _control) = dispatched_batch();
+        let cancel = inner.cancel(&operation.token()).unwrap();
+        let original = operation.batch_evidence().unwrap();
+        let recipient = inner.clone();
+        TERMINAL_PUBLICATION_OBSERVER.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move |_| {
+                assert!(
+                    recipient
+                        .request(
+                            "replacement",
+                            "mutationBatch",
+                            batch_payload(),
+                            Impact::Mutating
+                        )
+                        .is_err()
+                );
+            }));
+        });
+        assert!(switch_event(
+            &inner,
+            json!({"type":"terminal","ok":true,"result":{
+            "outcome":"unknown","owner":null,"transactionId":"123","failure":"cancelled","priorBatches":0}})
+        ));
+        let report = operation.wait().await;
+        assert_eq!(report.certainty, Certainty::OutcomeUnknown);
+        let retained = report.batch.unwrap();
+        assert_eq!(retained.steps, original.steps);
+        assert_eq!(
+            retained.summary.unwrap().failure,
+            Some(super::super::snowflake_batch::Failure::Cancelled)
+        );
+        assert!(cancel.report().is_some());
+        assert_eq!(
+            inner.state.lock().unwrap().retired,
+            Some(Retirement::Requested)
+        );
+    }
+    // Actual child bridge through production Helper, framing and submit guard;
+    // the SDK is strictly local synthetic data, with no external account calls.
+    #[cfg(all(unix, feature = "test-harness"))]
+    fn actual_batch_launch(scenario: &str) -> Launch {
+        let node = PathBuf::from(
+            std::env::var_os("JOINERY_TEST_NODE")
+                .expect("JOINERY_TEST_NODE must name an explicit absolute Node executable"),
+        );
+        assert!(node.is_absolute() && node.is_file());
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("batch-fixture.mjs");
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../snowflake-helper/src");
+        let body = r#"
+import { Readable, PassThrough } from 'node:stream';
+import { writeFileSync } from 'node:fs';
+const { Helper } = await import(HELPER_PATH);
+const { Decoder, writer } = await import(FRAMING_PATH);
+const { installQuerySubmitGuard } = await import(GUARD_PATH);
+const { MUTATION_CONTEXT_SQL, MUTATION_SETTINGS_SQL } = await import(BATCH_PATH);
+const { SQL_CONTRACT } = await import(CONTRACT_PATH);
+const scenario=SCENARIO, root=process.env.JOINERY_SNOWFLAKE_STATE_DIR;
+let serial=0, transaction=null, units=0, connections=0, stopping=false;
+const records=new Map(), calls=[];
+const id=(prefix,n)=>`${prefix}-${String(n).padStart(12,'0')}`;
+const sdk={createConnection:()=>{
+  connections++;
+  return {
+    connectAsync(cb){queueMicrotask(()=>cb(null));return Promise.resolve();},
+    destroy(cb){cb(null);},
+    execute(options){
+      const n=++serial, sql=options.sqlText;
+      calls.push(sql);writeFileSync(root+'/calls',JSON.stringify({connections,calls}));
+      let names=[],rows=[],unit=false,acknowledged=false;
+      if(sql===SQL_CONTRACT.bootstrapContext||sql===MUTATION_CONTEXT_SQL){
+        names=['user','role','database','schema','warehouse','session'];
+        rows=[['TEST','ROLE','DB','PUBLIC','WH','123']];
+        if(sql===MUTATION_CONTEXT_SQL){names.push('transaction');rows[0].push(transaction);}
+      }else if(sql===MUTATION_SETTINGS_SQL){names=['key','value'];rows=[['QUOTED_IDENTIFIERS_IGNORE_CASE','false']];}
+      else if(sql==='BEGIN TRANSACTION'){transaction=String(1000+n);records.set(transaction,'running');}
+      else if(sql==='COMMIT'||sql==='ROLLBACK'){records.set(transaction,sql==='COMMIT'?'committed':'rolled back');transaction=null;}
+      else if(sql.startsWith('DESCRIBE TRANSACTION ')){const tid=sql.slice('DESCRIBE TRANSACTION '.length);names=['id','session','state'];rows=[[tid,'123',records.get(tid)]];}
+      else if(sql.startsWith('UPDATE synthetic ')){unit=true;units++;names=['number of rows updated'];rows=[['1']];}
+      else throw Error('unexpected synthetic SQL');
+      const statement={
+        getRequestId:()=>id('11111111-1111-4111-8111',n),
+        getQueryId:()=>acknowledged?id('22222222-2222-4222-8222',n):undefined,
+        getColumns:()=>names.map(name=>({getName:()=>name,getType:()=>name.startsWith('number of ')||sql.startsWith('DESCRIBE TRANSACTION ')&&['id','session'].includes(name)?'FIXED':'TEXT'})),
+        streamRows:()=>unit&&units===2&&scenario!=='manual'?new PassThrough({objectMode:true}):Readable.from(rows),
+        cancel(cb){cb(null);}
+      };
+      queueMicrotask(()=>{acknowledged=true;options.complete(null,statement);});
+      return statement;
+    }
+  };
+}};
+const send=writer(process.stdout.write.bind(process.stdout),()=>process.exit(2));
+const stop=()=>{if(!stopping){stopping=true;send.flush().then(()=>process.exit(0));}};
+const guard=installQuerySubmitGuard({onViolation:stop});
+const emit=event=>{
+  const publication=send(event);
+  if(scenario==='invalid'&&event.type==='batchStep'&&event.role==='unit'&&event.unit===1&&event.phase==='acknowledged'){
+    send({...event,type:'batchCount',affectedRows:'1',multiJoinedRows:null,unit:499,phase:undefined,role:undefined});
+  }
+  return publication;
+};
+const helper=new Helper(sdk,emit,stop,{submitGuard:guard,isFileTransfer:()=>false,closeTimeoutMs:20});
+const decoder=new Decoder();
+process.stdin.on('data',chunk=>{try{for(const frame of decoder.push(chunk))helper.receive(frame);}catch{stop();}});
+process.stdin.on('end',stop);
+"#;
+        let body = [
+            ("HELPER_PATH", "helper.mjs"),
+            ("FRAMING_PATH", "framing.mjs"),
+            ("GUARD_PATH", "query-submit-guard.mjs"),
+            ("BATCH_PATH", "mutation-batch.mjs"),
+            ("CONTRACT_PATH", "sql-contract.mjs"),
+        ]
+        .into_iter()
+        .fold(body.to_owned(), |body, (token, file)| {
+            body.replace(token, &serde_json::to_string(&source.join(file)).unwrap())
+        })
+        .replace("SCENARIO", &serde_json::to_string(scenario).unwrap());
+        std::fs::write(&script, body).unwrap();
+        Launch::new(
+            node,
+            Some(script),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            root,
+        )
+        .unwrap()
+    }
+    #[cfg(all(unix, feature = "test-harness"))]
+    async fn actual_batch_supervisor(scenario: &str) -> (Supervisor, PathBuf) {
+        let launch = actual_batch_launch(scenario);
+        let root = launch.state_directory().to_owned();
+        let supervisor = Supervisor::spawn(
+            launch,
+            "00000000-0000-4000-8000-000000000001",
+            Bounds::default(),
+        )
+        .await
+        .unwrap();
+        let mut connect = supervisor
+            .request(
+                "connect",
+                "connect",
+                json!({"account":"fixture","host":"fixture.snowflakecomputing.com",
+            "username":"TEST","role":"ROLE","database":"DB","schema":"PUBLIC","warehouse":"WH"}),
+                Impact::Control,
+            )
+            .unwrap();
+        assert!(connect.wait_bounded(Duration::from_secs(5)).await.ok);
+        let mut context = supervisor
+            .request("context", "context", json!({}), Impact::Read)
+            .unwrap();
+        assert!(context.wait_bounded(Duration::from_secs(5)).await.ok);
+        (supervisor, root)
+    }
+    #[cfg(all(unix, feature = "test-harness"))]
+    #[tokio::test]
+    #[ignore = "requires explicit JOINERY_TEST_NODE; local production-helper child bridge only"]
+    async fn actual_helper_batch_manual_finish_cancel_and_invalid_frame_preserve_evidence() {
+        let limit = Duration::from_secs(5);
+        for scenario in ["manual", "cancel", "invalid"] {
+            let (supervisor, root) = actual_batch_supervisor(scenario).await;
+            let mut payload = batch_payload();
+            payload["units"] = json!([payload["units"][0].clone(), payload["units"][0].clone()]);
+            if scenario == "manual" {
+                payload["mode"] = json!("manual");
+            }
+            let mut operation = supervisor
+                .request("batch", "mutationBatch", payload.clone(), Impact::Mutating)
+                .unwrap();
+            if scenario == "manual" {
+                let report = operation.wait_bounded(limit).await;
+                assert!(report.ok, "{report:?}");
+                let original = report.batch.unwrap();
+                let pending = original.summary.as_ref().unwrap();
+                assert_eq!(
+                    pending.outcome,
+                    super::super::snowflake_batch::Outcome::Pending
+                );
+                assert_eq!(
+                    original
+                        .steps
+                        .iter()
+                        .filter(|s| s.unit.is_some() && s.count.is_some())
+                        .count(),
+                    2
+                );
+                let original_bytes = BatchCapture::encode(&original).unwrap();
+                let mut finish = supervisor.request("finish", "mutationFinish", json!({"owner":pending.owner,"action":"rollback","expected":payload["expected"]}), Impact::Mutating).unwrap();
+                let finished = finish.wait_bounded(limit).await;
+                assert!(finished.ok, "{finished:?}");
+                let evidence = finished.batch.unwrap();
+                assert_eq!(
+                    evidence.summary.as_ref().unwrap().outcome,
+                    super::super::snowflake_batch::Outcome::RolledBack
+                );
+                assert_eq!(evidence.summary.as_ref().unwrap().owner, pending.owner);
+                assert_eq!(BatchCapture::encode(&original).unwrap(), original_bytes);
+                let calls: Value =
+                    serde_json::from_str(&std::fs::read_to_string(root.join("calls")).unwrap())
+                        .unwrap();
+                assert_eq!(calls["connections"], 1);
+                assert_eq!(
+                    calls["calls"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|s| s.as_str().unwrap().starts_with("UPDATE synthetic "))
+                        .count(),
+                    2
+                );
+                assert!(supervisor.close().await.unwrap().ok);
+            } else {
+                if scenario == "cancel" {
+                    timeout(limit, async {
+                        loop {
+                            if operation.batch_evidence().is_some_and(|batch| batch.steps.iter().any(|step|
+                                step.unit == Some(1) && step.phase >= super::super::snowflake_batch::StepPhase::Acknowledged)) { break; }
+                            tokio::task::yield_now().await;
+                        }
+                    }).await.unwrap();
+                    let mut cancel = supervisor.cancel(&operation.token()).unwrap();
+                    assert!(cancel.wait_bounded(limit).await.ok);
+                }
+                let report = operation.wait_bounded(limit).await;
+                if scenario == "invalid" {
+                    assert_eq!(report.retirement, Some(Retirement::Protocol));
+                }
+                let batch = report.batch.unwrap();
+                assert_eq!(
+                    batch
+                        .steps
+                        .iter()
+                        .filter(|step| step.unit.is_some())
+                        .count(),
+                    2
+                );
+                assert_eq!(
+                    batch
+                        .steps
+                        .iter()
+                        .find(|step| step.unit == Some(0))
+                        .unwrap()
+                        .count
+                        .as_ref()
+                        .unwrap()
+                        .affected_rows,
+                    "1"
+                );
+                let second = batch
+                    .steps
+                    .iter()
+                    .find(|step| step.unit == Some(1))
+                    .unwrap();
+                assert_eq!(
+                    second.phase,
+                    super::super::snowflake_batch::StepPhase::Acknowledged
+                );
+                assert!(second.count.is_none());
+                assert!(batch.steps.iter().all(|step| !matches!(
+                    step.role,
+                    super::super::snowflake_batch::Role::Commit
+                        | super::super::snowflake_batch::Role::Rollback
+                )));
+                assert_eq!(
+                    BatchCapture::decode(&BatchCapture::encode(&batch).unwrap()).unwrap(),
+                    batch
+                );
+                assert!(
+                    supervisor
+                        .request("replay", "mutationBatch", payload, Impact::Mutating)
+                        .is_err()
+                );
+            }
+            assert!(supervisor.wait_exited().await);
+            assert!(!root.exists());
+        }
     }
     #[tokio::test]
     async fn reviewed_sql_requires_mutating_impact_and_bounded_initial_credits() {

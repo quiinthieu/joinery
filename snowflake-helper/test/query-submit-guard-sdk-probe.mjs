@@ -18,6 +18,7 @@ import { installQuerySubmitGuard } from "../src/query-submit-guard.mjs";
 import { verifyTransportSources } from "../src/transport-source-pins.mjs";
 import { Helper, connectionOptions } from "../src/helper.mjs";
 import { deriveSetupLedger } from "../src/disposable-setup-ledger.mjs";
+import { MUTATION_CONTEXT_SQL, MUTATION_SETTINGS_SQL } from "../src/mutation-batch.mjs";
 
 const [scenario, transport] = process.argv.slice(2);
 const allowed = new Set([
@@ -39,6 +40,11 @@ const allowed = new Set([
   "redirect-307",
   "redirect-308",
   "helper-success",
+  "helper-batch-automatic",
+  "helper-batch-cardinality",
+  "helper-batch-manual-commit",
+  "helper-batch-manual-rollback",
+  "helper-batch-lost-ack",
   "helper-lost-ack",
   "helper-ack-drain",
   "helper-database",
@@ -144,6 +150,7 @@ const dmlScenario = scenario.startsWith("helper-dml-");
 const ddlScenario = scenario.startsWith("helper-ddl-");
 const setupScenario = scenario.startsWith("helper-setup-");
 const reviewedScenario = scenario.startsWith("reviewed-");
+const batchScenario = scenario.startsWith("helper-batch-");
 const setupRunId = "0123456789ABCDEF0123456789ABCDEF";
 const setupLedger = deriveSetupLedger(setupRunId);
 const setupStep =
@@ -211,6 +218,65 @@ const expectedBindings = {
   2: { type: "BOOLEAN", value: "true" },
   3: { type: "TEXT", value: null },
 };
+const batchExpected = Object.freeze({
+  user: "SERVER_USER",
+  role: "SYNTHETIC",
+  database: "SYNTHETIC",
+  schema: "PUBLIC",
+  warehouse: "SYNTHETIC",
+  session: "1",
+});
+const batchTransactionId = "9007199254740993";
+const batchHugeCount = "99999999999999999999999999999999999999";
+const batchManual = scenario.startsWith("helper-batch-manual-");
+const batchUnits = ["insert", "update", "delete"].map((kind) => ({
+  kind,
+  sql: {
+    insert: "INSERT INTO SYNTHETIC.PUBLIC.T (A,B,C) VALUES (?,?,?)",
+    update: "UPDATE SYNTHETIC.PUBLIC.T SET A=?, B=? WHERE C=?",
+    delete: "DELETE FROM SYNTHETIC.PUBLIC.T WHERE A=? AND B=? AND C=?",
+  }[kind],
+  binds,
+}));
+const batchControl = (role, sql = MUTATION_CONTEXT_SQL) => ({ role, sql, unit: null });
+const batchUnitPlan = batchUnits.map((unit, index) => ({
+  role: "unit",
+  sql: unit.sql,
+  unit: index,
+}));
+const batchPlan = [
+  batchControl("context"),
+  batchControl("settings", MUTATION_SETTINGS_SQL),
+  batchControl("begin", "BEGIN TRANSACTION"),
+  batchControl("transaction"),
+  ...batchUnitPlan.slice(
+    0,
+    batchManual || ["helper-batch-cardinality", "helper-batch-lost-ack"].includes(scenario) ? 2 : 3,
+  ),
+  ...(scenario === "helper-batch-lost-ack"
+    ? []
+    : scenario === "helper-batch-cardinality"
+      ? [batchControl("rollback", "ROLLBACK"), batchControl("idle")]
+      : batchManual
+        ? [
+            batchControl("verify"),
+            ...(scenario === "helper-batch-manual-commit"
+              ? [
+                  batchControl("context"),
+                  batchControl("settings", MUTATION_SETTINGS_SQL),
+                  batchControl("commit", "COMMIT"),
+                  batchControl("idle"),
+                ]
+              : [batchControl("rollback", "ROLLBACK"), batchControl("idle")]),
+          ]
+        : [batchControl("verify"), batchControl("commit", "COMMIT"), batchControl("idle")]),
+  ...(scenario === "helper-batch-lost-ack"
+    ? []
+    : [batchControl("disposition", `DESCRIBE TRANSACTION ${batchTransactionId}`)]),
+];
+const batchPosts = [];
+let batchTransaction = null,
+  batchDisposition = null;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const bounded = (promise, ms = 12_000) =>
   Promise.race([
@@ -381,7 +447,86 @@ try {
         firstId = id;
         firstQueryTime = Date.now();
         firstQueryProxyConnects = report.proxyConnects;
-      } else report.queryIdsSame &&= firstId === id;
+      } else if (!batchScenario) report.queryIdsSame &&= firstId === id;
+      if (batchScenario) {
+        const expected = batchPlan[batchPosts.length];
+        assert(expected, "no suffix/replay POST after the closed batch plan");
+        assert.equal(body.sqlText, expected.sql);
+        assert.deepEqual(body.parameters, { MULTI_STATEMENT_COUNT: 1 });
+        assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        assert(!batchPosts.some((post) => post.id === id), "one admitted POST per SDK identity");
+        if (expected.role === "unit") assert.deepEqual(body.bindings, expectedBindings);
+        else assert(body.bindings === undefined || JSON.stringify(body.bindings) === "{}");
+        const queryId = `11111111-1111-4111-8111-${String(report.queryPosts).padStart(12, "0")}`;
+        batchPosts.push({ ...expected, id, queryId });
+        resolveFirstQuery();
+        const reply = success();
+        reply.data.queryId = queryId;
+        const textColumns = (names) =>
+          names.map((name) => ({ name, type: "text", length: 1024, nullable: true }));
+        if (["context", "transaction", "verify", "idle"].includes(expected.role)) {
+          reply.data.rowtype = textColumns([
+            "user",
+            "role",
+            "database",
+            "schema",
+            "warehouse",
+            "session",
+            "transaction",
+          ]);
+          reply.data.rowset = [
+            [
+              batchExpected.user,
+              batchExpected.role,
+              batchExpected.database,
+              batchExpected.schema,
+              batchExpected.warehouse,
+              batchExpected.session,
+              batchTransaction,
+            ],
+          ];
+        } else if (expected.role === "settings") {
+          reply.data.rowtype = textColumns(["key", "value"]);
+          reply.data.rowset = [["QUOTED_IDENTIFIERS_IGNORE_CASE", "false"]];
+        } else if (expected.role === "disposition") {
+          reply.data.rowtype = [
+            { name: "id", type: "fixed", precision: 38, scale: 0, nullable: false },
+            { name: "session", type: "fixed", precision: 38, scale: 0, nullable: false },
+            ...textColumns(["state"]),
+          ];
+          reply.data.rowset = [[batchTransactionId, batchExpected.session, batchDisposition]];
+        } else if (expected.role === "unit") {
+          report.effects++;
+          if (scenario === "helper-batch-lost-ack" && expected.unit === 1)
+            return request.socket.destroy();
+          const kind = batchUnits[expected.unit].kind;
+          // The manual cases exercise the SDK's actual one-column UPDATE
+          // metadata. Absence remains null; no zero observation is invented.
+          const multi = kind === "update" && !batchManual;
+          reply.data.statementTypeId = { insert: 12288, update: 12289, delete: 12290 }[kind];
+          reply.data.rowtype = [
+            `number of rows ${kind === "insert" ? "inserted" : kind === "update" ? "updated" : "deleted"}`,
+            ...(multi ? ["number of multi-joined rows updated"] : []),
+          ].map((name) => ({ name, type: "fixed", precision: 38, scale: 0, nullable: false }));
+          reply.data.rowset = [
+            [
+              scenario === "helper-batch-cardinality" && expected.unit === 1 ? batchHugeCount : "1",
+              ...(multi ? ["0"] : []),
+            ],
+          ];
+        } else {
+          if (expected.role === "begin") batchTransaction = batchTransactionId;
+          else {
+            assert.equal(batchTransaction, batchTransactionId);
+            batchDisposition = expected.role === "commit" ? "committed" : "rolled back";
+            batchTransaction = null;
+          }
+          reply.data.rowtype = textColumns(["status"]);
+          reply.data.rowset = [["Synthetic boundary acknowledged"]];
+        }
+        reply.data.total = reply.data.returned = reply.data.rowset.length;
+        return json(response, reply);
+      }
       report.intendedSQLOnly &&=
         body.sqlText ===
         (setupScenario
@@ -1164,6 +1309,229 @@ try {
     report.guardFailed = guard.snapshot().failed;
     report.guardAdmitted = guard.snapshot().admitted;
     report.firstQueryProxyConnects = firstQueryProxyConnects;
+    await finish();
+  }
+  if (batchScenario) {
+    phase = "preconnected-batch-helper";
+    report.helperFixturePreconnected = true;
+    report.externalBrowserConnectSkipped = true;
+    report.helperTerminals = 0;
+    report.helperRetired = 0;
+    const { isPutCommand, isGetCommand } = require("snowflake-sdk/dist/lib/util.js");
+    const events = [],
+      terminals = new Map();
+    let sequence = 0;
+    helper = new Helper(
+      sdk,
+      (event) => {
+        events.push(event);
+        if (event.type === "terminal") {
+          report.helperTerminals++;
+          terminals.get(event.id)?.(event);
+        }
+      },
+      () => {
+        report.helperRetired++;
+      },
+      {
+        submitGuard: guard,
+        clientConfigFile: join(root, "disabled-config.json"),
+        isFileTransfer: (sql) => isPutCommand(sql) || isGetCommand(sql),
+      },
+    );
+    // Only browser authentication/bootstrap is seeded. Every batch preflight,
+    // SDK execute/getter, streamed FIXED value, guarded HTTP submission and
+    // disposition observation below crosses the real pinned SDK connection.
+    helper.connection = connection;
+    helper.state = "connected";
+    helper.generation = "11111111-1111-4111-8111-111111111111";
+    helper.identityPin = { user: batchExpected.user, session: batchExpected.session };
+    const submit = (op, payload) => {
+      const id = String(++sequence);
+      const terminal = new Promise((resolve) => terminals.set(id, resolve));
+      helper.receive({ v: 1, generation: helper.generation, id, op, payload });
+      return bounded(terminal);
+    };
+    phase = "batch-original-terminal";
+    const original = await submit("mutationBatch", {
+      mode: batchManual ? "manual" : "automatic",
+      owner: null,
+      rollbackPrior: false,
+      expected: batchExpected,
+      units: batchManual ? batchUnits.slice(0, 2) : batchUnits,
+    });
+    report.batchTerminal = original.result?.outcome ?? original.error?.code;
+    report.batchFailure = original.result?.failure ?? null;
+    assert.equal(original.ok, true);
+    const originalSnapshot = JSON.stringify(original);
+    let final = original;
+    if (batchManual) {
+      assert.equal(original.result.outcome, "pending");
+      assert.equal(original.result.transactionId, batchTransactionId);
+      assert.equal(original.result.priorBatches, 0);
+      assert.match(original.result.owner, /^[0-9a-f-]{36}$/);
+      phase = "batch-finish-terminal";
+      final = await submit("mutationFinish", {
+        owner: original.result.owner,
+        action: scenario.endsWith("-commit") ? "commit" : "rollback",
+        expected: batchExpected,
+      });
+      report.batchTerminal = final.result?.outcome ?? final.error?.code;
+      report.batchFailure = final.result?.failure ?? null;
+      assert.equal(final.ok, true);
+      assert.equal(final.result.owner, original.result.owner);
+      assert.equal(final.result.priorBatches, 1);
+      assert.equal(JSON.stringify(original), originalSnapshot);
+      report.batchPendingImmutable = true;
+      report.batchOwnerStable = true;
+    }
+    if (scenario === "helper-batch-lost-ack") {
+      phase = "batch-lost-ack-guard";
+      await bounded(violated);
+    }
+    // The loss fixture records receipt of the second unit then drops its ACK.
+    // Wait through the guard's retry denial before checking the fixed prefix.
+    await pause(350);
+    phase = "batch-request-prefix";
+    assert.equal(batchPosts.length, batchPlan.length);
+    assert.equal(report.queryPosts, batchPosts.length);
+    const dispatches = events.filter(
+      (event) => event.type === "batchStep" && event.phase === "dispatching",
+    );
+    assert.equal(dispatches.length, batchPosts.length);
+    assert.equal(new Set(batchPosts.map((post) => post.id)).size, batchPosts.length);
+    const countEvents = [],
+      seenIdentities = new Set();
+    report.batchCounts = countEvents;
+    let acknowledged = 0;
+    for (const [index, dispatch] of dispatches.entries()) {
+      phase = `batch-evidence-${index + 1}-${dispatch.role}`;
+      const post = batchPosts[index];
+      assert.equal(dispatch.role, post.role);
+      assert.equal(dispatch.unit, post.unit);
+      if (index > 0) {
+        const previous = dispatches[index - 1];
+        const previousDrain = events.find(
+          (event) =>
+            event.type === "batchStep" &&
+            event.phase === "drained" &&
+            event.id === previous.id &&
+            event.step === previous.step,
+        );
+        assert(previousDrain);
+        assert(events.indexOf(previousDrain) < events.indexOf(dispatch));
+      }
+      const same = (event) => event.id === dispatch.id && event.step === dispatch.step;
+      const identities = events.filter((event) => event.type === "batchStatement" && same(event));
+      assert(identities.length >= 1);
+      assert(identities.length <= 2);
+      assert(identities.every((event) => event.sdkRequestId === post.id));
+      assert(
+        identities.every((event) => event.queryId === undefined || event.queryId === post.queryId),
+      );
+      assert.equal(
+        new Set(identities.map((event) => JSON.stringify([event.sdkRequestId, event.queryId])))
+          .size,
+        identities.length,
+      );
+      assert(!seenIdentities.has(post.id));
+      seenIdentities.add(post.id);
+      const ack = events.find(
+        (event) => event.type === "batchStep" && event.phase === "acknowledged" && same(event),
+      );
+      const drained = events.find(
+        (event) => event.type === "batchStep" && event.phase === "drained" && same(event),
+      );
+      if (scenario === "helper-batch-lost-ack" && index === dispatches.length - 1) {
+        assert.equal(ack, undefined);
+        assert.equal(drained, undefined);
+        continue;
+      }
+      acknowledged++;
+      assert(ack && drained);
+      assert(events.indexOf(dispatch) < events.indexOf(ack));
+      assert(events.indexOf(ack) < events.indexOf(drained));
+      assert.equal(identities.at(-1).queryId, post.queryId);
+      assert(events.indexOf(ack) < events.indexOf(identities.at(-1)));
+      assert(events.indexOf(identities.at(-1)) < events.indexOf(drained));
+      if (post.role === "unit") {
+        const count = events.find((event) => event.type === "batchCount" && same(event));
+        assert(count);
+        assert.equal(count.unit, post.unit);
+        assert(events.indexOf(ack) < events.indexOf(count));
+        assert(events.indexOf(count) < events.indexOf(drained));
+        assert.equal(typeof count.affectedRows, "string");
+        assert.equal(
+          count.affectedRows,
+          scenario === "helper-batch-cardinality" && post.unit === 1 ? batchHugeCount : "1",
+        );
+        assert.equal(
+          count.multiJoinedRows,
+          batchUnits[post.unit].kind === "update" && !batchManual ? "0" : null,
+        );
+        countEvents.push({
+          affectedRows: count.affectedRows,
+          multiJoinedRows: count.multiJoinedRows,
+        });
+      }
+    }
+    assert(
+      !events.some((event) =>
+        ["statement", "phase", "columns", "rows", "batchCountUnavailable"].includes(event.type),
+      ),
+    );
+    const snapshot = guard.snapshot();
+    phase = "batch-disposition-and-admission";
+    assert.equal(snapshot.registered, batchPosts.length);
+    assert.equal(snapshot.admitted, batchPosts.length);
+    const expectedOutcome =
+      scenario === "helper-batch-lost-ack"
+        ? "unknown"
+        : scenario === "helper-batch-cardinality" || scenario.endsWith("-rollback")
+          ? "rolledBack"
+          : "committed";
+    assert.equal(final.result.outcome, expectedOutcome);
+    assert.equal(final.result.transactionId, batchTransactionId);
+    assert.equal(
+      final.result.failure,
+      scenario === "helper-batch-cardinality"
+        ? "cardinality"
+        : scenario === "helper-batch-lost-ack"
+          ? "transport"
+          : null,
+    );
+    assert.equal(report.effects, scenario === "helper-batch-automatic" ? 3 : 2);
+    if (scenario === "helper-batch-lost-ack") {
+      assert.equal(report.violations, 1);
+      assert.equal(report.violationCategory, "duplicate");
+      assert.equal(snapshot.failed, true);
+      assert.equal(helper.retired, true);
+      assert(
+        !batchPosts.some((post) =>
+          ["verify", "commit", "rollback", "idle", "disposition"].includes(post.role),
+        ),
+      );
+    } else {
+      assert.equal(report.violations, 0);
+      assert.equal(snapshot.failed, false);
+      assert.equal(batchTransaction, null);
+      assert.equal(batchDisposition, expectedOutcome === "committed" ? "committed" : "rolled back");
+      assert.equal(dispatches.at(-1).role, "disposition");
+    }
+    report.batchSteps = dispatches.length;
+    report.batchAcknowledgements = acknowledged;
+    report.batchCounts = countEvents;
+    report.batchPostIdentitiesExact = true;
+    report.batchPostIdentitiesDistinct = true;
+    report.batchPrefixExact = true;
+    report.batchTerminal = final.result.outcome;
+    report.batchFailure = final.result.failure;
+    report.batchPriorBatches = final.result.priorBatches;
+    report.guardAdmitted = snapshot.admitted;
+    report.guardRegistered = snapshot.registered;
+    report.guardFailed = snapshot.failed;
+    report.outcome = `helper-batch-${final.result.outcome}`;
+    if (!helper.retired) helper.stop();
     await finish();
   }
   if (scenario.startsWith("helper-")) {

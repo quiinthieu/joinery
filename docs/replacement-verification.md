@@ -8,6 +8,114 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake owned-batch protocol (13 November 2026)
+
+Base `fe45a6a`, task branch `feat/datagrip-replacement`. Three reused
+`gpt-6.1-sol` high-effort agents own the helper, Rust protocol/process tests and
+independent read-only review respectively. The lead owns integration, resource
+pins, shared documentation and all serialized checks. No model fallback, global
+configuration change, account activity or additional cache deletion occurs.
+
+This internal protocol admits up to 500 generated single-row units in a complete
+1 MiB request frame. It reserves a bounded submission budget before SQL, retains
+a separate manual-finish allowance, checks actual status counts before advancing
+and separates statement ACK, drain, count and transaction disposition. Context,
+quoted-name policy, owned transaction and DESCRIBE TRANSACTION evidence must
+agree; a COMMIT ACK alone does not prove the final disposition. Count, transport,
+observer and cancellation failures retain distinct evidence. An unobserved
+terminal never authorizes a SQL retry or invented count. The ordinary helper
+operation's two-ID ceiling is unchanged.
+
+The Rust supervisor retains a validated typed prefix on EOF, protocol failure,
+deadline, cancellation or dropped waiter. Version-1 compact capture excludes SQL,
+bindings and context; its strict round trip does not establish admission of the
+future full durable envelope. Schema-7 journal settlement still removes captured
+payloads: application dispatch must remain disabled until durable per-unit and
+manual-membership storage is integrated. No grid/CSV or new UI capability is
+enabled by this increment; the existing `d6cfb2a` normal app is preserved.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `helper-first` | Full helper suite passes 415 cases, exit zero, 199.819 seconds including command overhead; captured sources remain unchanged. Includes pinned SDK HTTP/TLS loopback fixtures, never a Snowflake account. This precedes the two final helper refinements below |
+| `helper-regressions-red` | The uppercase SDK-ID regression reproduces an incorrectly successful committed summary. The setup test initially passes because its malformed run ID independently refuses setup; that fixture is corrected rather than treated as proof |
+| `helper-regressions-corrected-red` | Both defects reproduce before production fixes: valid setup still dispatches after a batch, and uppercase SDK identity incorrectly produces committed evidence. Captured sources remain unchanged |
+| `mutation-final` | All 22 focused helper cases pass after the narrow fixes: batch/finish invalidate setup bootstrap and dedicated batch SDK IDs require canonical lowercase. Legacy identity rules are unchanged. Captured sources remain unchanged |
+| `batch-rust-first` | Ten request/event/count/disposition/capture regressions pass, exit zero, 29.699 seconds including compilation, captured sources unchanged. Maximum capture retains every UUID pair and failed exact count under 30 KiB in base64; the future whole 32 KiB journal envelope is not proved |
+| `batch-process-final` | Three supervisor regressions pass, including closed admission, typed prefix preservation across EOF/deadline/protocol/caller loss, cancellation and no replay; captured sources unchanged |
+| `batch-production-helper-bridge` | The explicit ignored test passes using a real child process, framing, production Helper and submission guard with a synthetic SDK. Exercises manual finish, cancellation and invalid-frame evidence retention; zero HTTP/account calls. Captured sources unchanged. This does not qualify SDK transport or remote SQL behavior |
+| `helper-final` | All 417 helper cases pass after the two production fixes, exit zero, 200.141 seconds including command overhead, all 62 captured sources unchanged. This precedes the additional actual-SDK batch scenarios; it qualifies final helper production logic, not those later test-file additions |
+| `batch-packaging-final` / `batch-qualification-scripts` | All 25 packaging/read/setup manifest cases and all 136 offline qualification-script cases pass; captured inputs remain unchanged. New module copying, missing/tampered source rejection and independent current-source drift are checked. No account activity |
+| `batch-runtime-preparation` | Offline preparation fails before startup: the default repository npm cache lacks the locked `@smithy/types` 4.20.0 tarball (`ENOTCACHED`). No dependency or source is changed to bypass that refusal. The failed receipt is preserved; retry uses the documented existing `.cache/snowflake-helper-dev/npm-cache` instead |
+| `batch-runtime-cached` | Corrected offline preparation and actual guarded SDK 3.4.1 hello/EOF startup pass, 8.369 / 0.933 seconds. Zero authentication and SQL requests; all captured inputs unchanged. The staged runtime includes the new module and nine pinned helper source files; no release bundle is overwritten |
+| `batch-sdk-loopback-first` | All ten new pinned actual-SDK HTTP/TLS cases pass: automatic mixed units, exact 38-digit count conflict with verified rollback, manual pending then commit/rollback, and second-unit lost ACK. Every step binds to distinct wire request/query identities and guard admission; optional UPDATE multi-count absence stays absent. Lost ACK retains only the known prefix and stops suffix, replay and speculative cleanup. All captured sources unchanged. Row effects and final disposition are synthetic server replies, not actual Snowflake effects |
+| `batch-validate-first` | Formatting, contracts and TypeScript pass; frontend tests stop validation at 1,037 passes / one failed recursive-CTE inspection case reporting an incomplete parse. Exit 1, 54.768 seconds, all 541 captured inputs unchanged. Rust tests, desktop compilation and strict Clippy are not reached. The inspection/test source is unchanged by this increment; cause is investigated rather than labelled pre-existing or ignored |
+| `helper-with-sdk-batch` | Full final helper suite passes all 427 cases, exit zero, 205.640 seconds, all captured helper/script inputs unchanged. Includes all ten new actual-SDK batch transport cases and existing HTTP/TLS/proxy/negative cases. No account effects are qualified |
+| `inspection-prepared-fixtures` | All 83 SQL-inspection semantic cases pass after the three-line test-only preparation correction; captured inputs unchanged. Production authoring limits and assertions are unchanged |
+| `batch-validate-prepared` | All 1,038 frontend and 745 standard Rust cases pass, with 145 intentional default fixture ignores; formatting, contracts, TypeScript and production UI build pass. Validation stops at Rust formatting of the new runtime source pin. Exit 1, 160.951 seconds, all 541 captured inputs unchanged. Desktop compilation and Clippy are not reached; only the source-pin wrapping is corrected |
+| `batch-rust-strict` | After formatting, Rust formatting and desktop compilation pass; strict Clippy rejects three nested conditionals in the new batch parser. Exit 101, 45.243 seconds, captured inputs unchanged. The conditions are collapsed without changing evaluation order, predicates or errors; no lint suppression |
+| `batch-rust-strict-corrected` | Rust formatting, desktop compilation and strict all-target/all-feature Clippy pass, exit zero, 40.350 seconds, captured inputs unchanged. This includes the final parser style and runtime pin formatting; complete application validation follows separately |
+| `batch-validate-final` | Complete pnpm validate passes: 1,038 frontend / 745 standard Rust tests, 145 intentional default fixture ignores, formatting, regenerated contracts, TypeScript, production UI build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 214.018 seconds, all 541 captured inputs unchanged. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain |
+| `batch-bridge-final` | The explicit production-Helper child-process bridge passes again on final Rust sources after style corrections, exit zero, 31.611 seconds including compilation. Manual finish, cancellation and invalid-frame prefix retention pass with a synthetic SDK and zero HTTP/account calls; all 313 captured inputs unchanged |
+| `batch-independent-review` | Final read-only helper/protocol/process/resource-pin review finds no material issue. Both final regressions reproduce before narrow fixes; ACK-first publication, unavailable counts, manual finish reservation and canonical capture remain consistent. Tier 2 coverage generations 07:32:00Z / 07:34:04Z on 13 November report matching reviewed metadata; a partial cfg-test destructure is read directly. No reviewer edits, builds or account activity |
+| `doc-links` / documentation review | All 820 repository-relative Markdown path targets exist; fragments are not exhaustively checked. Read-only review of the five changed documentation scopes and whole next-storage proposal finds no material overclaim or missing replacement gate. Final result summaries are refreshed from receipts afterward |
+
+Receipts and exact command logs are under
+`.cache/verification/snowflake-mutation-batch/`. Final full application validation
+passes. Its source snapshot includes the test-only fixture correction, runtime
+pin formatting and three parser conditional style changes. All 427 helper cases
+qualify the final unchanged helper/scripts; earlier Rust receipts precede the
+style-only changes, while the final full run qualifies those final Rust sources.
+No real-database or UI qualification is inferred from these protocol checks. The
+[design](snowflake-grid-editing-design.md#owned-batch-runtime-integration)
+records the remaining journal, adapter, staging, CSV and account/native gates.
+
+The `final-source-and-storage.json` receipt compares current bytes with every
+final check. Full validation, final child bridge, all 427 helper cases and all
+56 runtime-pin script cases match exactly. Packaging, offline qualification
+scripts and guarded startup precede only the two Rust style/format changes;
+their helper/script inputs remain unchanged, and final Rust checks qualify those
+changes. No package or real-account claim comes from this comparison.
+
+Free space after the final bridge is 205,264,781,312 bytes (about 191.2 GiB).
+The debug/release directories occupy about 9.1 / 3.0 GiB. The prior approved
+cleanup receipt still records 135.8 GiB reclaimed; it was not repeated. Reduced
+debug profiles, serialized builds and the 20 GiB preflight floor remain in use.
+The unchanged normal release executable is 34,912,112 bytes, SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+No normal release build, installation or publication occurs in this increment.
+
+The inspection failure occurs before recursive analysis on the first short CTE
+fixture. The call chain reaches `ensureSyntaxTree` with the unchanged 10 ms
+interactive budget; size/depth limits are far above that fixture. Previous
+unchanged inspection/navigation cases also show timing sensitivity. Scheduler
+stalls or GC are a supported inference, not a measured cause of this run. The
+test-only correction prepares and asserts a complete syntax tree with a bounded
+1,000 ms fixture budget before the unchanged semantic assertions. No production
+deadline, expected result, skip or retry changes. This does not improve or
+qualify actual interactive readiness under load; native authoring acceptance
+remains open. The correction is a separate test commit from the batch protocol.
+
+Final narrow review of the three parser conditional collapses and runtime pin
+formatting finds no behavior change or material issue. Direct source review and
+Tier 2 coverage generation 07:44:46Z, recorded 07:55:58Z, report matching metadata
+with no recorded gap in those two paths. This scoped review is not an exhaustive
+repository audit.
+
+Focused reproduction with the pinned toolchains from README:
+
+```sh
+node --test snowflake-helper/test/mutation-batch.test.mjs
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib \
+  drivers::snowflake_batch::tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib \
+  drivers::snowflake_process::tests::batch_ -- --test-threads=1
+JOINERY_TEST_NODE="$PWD/.cache/toolchains/node-v24.22.2-darwin-arm64/bin/node" \
+  cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --features test-harness --lib \
+  drivers::snowflake_process::tests::actual_helper_batch_manual_finish_cancel_and_invalid_frame_preserve_evidence \
+  -- --exact --ignored --nocapture
+```
+
 ### Batch submission capacity (13 November 2026)
 
 Base `cd5da45`, task branch `feat/datagrip-replacement`. A regression first fails
