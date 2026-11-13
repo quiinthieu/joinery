@@ -306,6 +306,13 @@ impl Studio {
                     "The app is closing",
                 ));
             }
+            #[cfg(unix)]
+            let _ = self.flush_snowflake_grid_outcomes();
+            #[cfg(unix)]
+            let snowflake_grid_busy =
+                !self.batch_outcomes.is_empty() || !self.snowflake_grid.is_empty();
+            #[cfg(not(unix))]
+            let snowflake_grid_busy = false;
             if self.recovery_activity.load(Ordering::Acquire) != 0
                 || self.connection_attempts.has_pending()
                 || !self.sessions.lock().is_empty()
@@ -315,6 +322,7 @@ impl Studio {
                 || !self.dml_tasks.is_empty()
                 || !self.pending_history.lock().is_empty()
                 || !self.pending_snowflake_receipts.lock().is_empty()
+                || snowflake_grid_busy
             {
                 return Err(AppError::new(
                     ErrorCode::Conflict,

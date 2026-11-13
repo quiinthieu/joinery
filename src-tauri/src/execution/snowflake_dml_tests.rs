@@ -75,6 +75,8 @@ fn sdk_dml_fixture(
     });
     let session = Arc::new(Session {
         rollback_memory: Mutex::new(None),
+        #[cfg(unix)]
+        snowflake_external: None,
         info: SessionInfo {
             console_mode: false,
             id: id.clone(),

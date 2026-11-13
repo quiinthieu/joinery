@@ -2562,6 +2562,7 @@ impl Driver for SnowflakeExternal {
     }
 
     async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
+        self.grid.require_ordinary()?;
         let revision = uuid::Uuid::new_v4().to_string();
         // Refresh owns a new generation before its first await, even if it fails
         // to acquire the lane or the caller abandons it.
@@ -2679,6 +2680,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &InspectRelationRequest,
     ) -> AppResult<RelationInspection> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         let inspection = uuid::Uuid::new_v4().to_string();
         {
@@ -2753,6 +2755,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &DefineRelationRequest,
     ) -> AppResult<RelationDefinition> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         let read = metadata::definition_read(&target)?;
         self.browse_operation(&request.revision, async {
@@ -2790,6 +2793,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &InspectRelationConstraintsRequest,
     ) -> AppResult<RelationConstraints> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         let read = metadata::constraints_read(&target)?;
         self.browse_operation(&request.revision, async {
@@ -2825,6 +2829,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &InspectRelationCheckConstraintsRequest,
     ) -> AppResult<RelationCheckConstraints> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         let read = metadata::check_constraints_read(&target)?;
         self.browse_operation(&request.revision, async {
@@ -2861,6 +2866,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &InspectRelationConstraintMappingsRequest,
     ) -> AppResult<RelationConstraintMappings> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         // Unknown traits are rejected by browse_target before SQL. The explicit
         // unsupported result below is only for an admitted dynamic relation.
@@ -2908,6 +2914,7 @@ impl Driver for SnowflakeExternal {
         &self,
         request: &PreviewRelationRequest,
     ) -> AppResult<RelationPreview> {
+        self.grid.require_ordinary()?;
         let (context, target) = self.browse_target(&request.revision, &request.target_id)?;
         let columns = self.browse_columns(
             &request.revision,

@@ -2,10 +2,10 @@
 //! Callers must retain the private manual owner before invoking `execute` and
 //! supply real durable admission/original recording; there are no no-op defaults.
 #![cfg_attr(
-    not(test),
+    not(all(test, feature = "test-harness")),
     allow(
         dead_code,
-        reason = "Typed native adapter precedes the Studio grid run owner"
+        reason = "Typed native adapter precedes public UI staging and IPC wiring"
     )
 )]
 use super::*;

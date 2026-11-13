@@ -520,6 +520,8 @@ impl Studio {
                 "The database session is busy",
             ));
         }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         *session.completion.lock() = None;
         self.plans
             .lock()

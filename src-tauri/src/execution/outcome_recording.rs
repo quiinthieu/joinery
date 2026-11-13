@@ -59,17 +59,24 @@ impl OutcomeCell {
 }
 
 impl Studio {
-    pub(super) fn rollback_memory(&self, session: &Session) -> AppResult<MemoryLease> {
+    pub(super) fn session_safety_slot(
+        &self,
+        session: &Session,
+    ) -> AppResult<Arc<outcome_memory::SafetySlot>> {
         let mut safety = session.rollback_memory.lock();
         // Test fixtures can create a Session without authenticating. Production
         // sessions reserve this before their authentication future is polled.
         if safety.is_none() {
             *safety = Some(self.outcome_memory.safety()?);
         }
-        safety
+        Ok(safety
             .as_ref()
             .expect("reserved session safety slot")
-            .claim()
+            .clone())
+    }
+
+    pub(super) fn rollback_memory(&self, session: &Session) -> AppResult<MemoryLease> {
+        self.session_safety_slot(session)?.claim()
     }
 
     pub(super) fn admit_outcome(

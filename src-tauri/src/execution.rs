@@ -67,6 +67,10 @@ mod snowflake_console;
 mod snowflake_console_tests;
 mod snowflake_ddl;
 mod snowflake_dml;
+#[cfg(unix)]
+mod snowflake_grid;
+#[cfg(all(test, unix, feature = "test-harness"))]
+mod snowflake_grid_tests;
 mod snowflake_receipts;
 mod transaction_controls;
 
@@ -103,6 +107,15 @@ struct Session {
     info: SessionInfo,
     profile: ConnectionProfile,
     driver: Arc<dyn Driver>,
+    #[cfg(unix)]
+    #[cfg_attr(
+        not(all(test, feature = "test-harness")),
+        allow(
+            dead_code,
+            reason = "Studio grid run owner precedes public UI staging and IPC wiring"
+        )
+    )]
+    snowflake_external: Option<Arc<SnowflakeExternal>>,
     lane: tokio::sync::Mutex<()>,
     cancellation_gate: tokio::sync::Mutex<()>,
     active_run: Mutex<Option<String>>,
@@ -286,6 +299,8 @@ pub struct Studio {
     console: snowflake_console::State,
     #[cfg(unix)]
     batch_outcomes: batch_outcome_recording::State,
+    #[cfg(unix)]
+    snowflake_grid: snowflake_grid::State,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
@@ -407,6 +422,8 @@ impl Studio {
             console: snowflake_console::State::default(),
             #[cfg(unix)]
             batch_outcomes: batch_outcome_recording::State::default(),
+            #[cfg(unix)]
+            snowflake_grid: snowflake_grid::State::default(),
             tunnels: SshManager::default(),
             #[cfg(unix)]
             snowflake_runtime,
@@ -546,8 +563,8 @@ impl Studio {
         self.flush_console_recordings()?;
         #[cfg(unix)]
         {
-            self.flush_batch_outcomes()?;
-            if !self.batch_outcomes.is_empty() {
+            self.flush_snowflake_grid_outcomes()?;
+            if !self.batch_outcomes.is_empty() || !self.snowflake_grid.is_empty() {
                 return Err(AppError::new(
                     ErrorCode::Conflict,
                     "A Snowflake edit owner has not settled locally; finish or disconnect it before restoring metadata",
@@ -1013,6 +1030,10 @@ impl Studio {
             let mut console_owner = None;
             #[cfg(not(unix))]
             let console_owner = ();
+            #[cfg(unix)]
+            let mut snowflake_external = None;
+            #[cfg(not(unix))]
+            let snowflake_external = ();
             let (driver, info): (Arc<dyn Driver>, SessionInfo) = match profile.engine {
                 EngineKind::Redis => {
                     let (driver, info) = Redis::open(
@@ -1082,6 +1103,7 @@ impl Studio {
                                 let (d, mut i) =
                                     SnowflakeExternal::open(&profile, &session_id, launch, options)
                                         .await?;
+                                snowflake_external = Some(d.clone());
                                 if profile
                                     .snowflake
                                     .as_ref()
@@ -1100,9 +1122,9 @@ impl Studio {
                     }
                 }
             };
-            Ok::<_, AppError>((driver, info, tunnel, console_owner))
+            Ok::<_, AppError>((driver, info, tunnel, console_owner, snowflake_external))
         };
-        let (driver, info, tunnel, console_owner) = tokio::select! {
+        let (driver, info, tunnel, console_owner, snowflake_external) = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(connection_cancelled()),
             outcome = setup => outcome?,
@@ -1156,7 +1178,7 @@ impl Studio {
                     .insert(session_id.clone(), Arc::new(tokio::sync::Mutex::new(owner)));
             }
             #[cfg(not(unix))]
-            let _ = console_owner;
+            let _ = (console_owner, snowflake_external);
             sessions.insert(
                 session_id,
                 Arc::new(Session {
@@ -1164,6 +1186,8 @@ impl Studio {
                     info: info.clone(),
                     profile,
                     driver: driver.clone(),
+                    #[cfg(unix)]
+                    snowflake_external,
                     lane: tokio::sync::Mutex::new(()),
                     completion: Mutex::new(None),
                     metadata_gate: Mutex::new(MetadataGate::default()),
@@ -1274,6 +1298,7 @@ impl Studio {
         {
             self.console.owners.lock().remove(id);
             self.console.forget_session(id);
+            self.snowflake_grid.close_session_helpers(id);
         }
         if let Some(session) = self.sessions.lock().remove(id) {
             session.closed.store(true, Ordering::Release);
@@ -1318,6 +1343,8 @@ impl Studio {
         for id in ids {
             self.disconnect(&id);
         }
+        #[cfg(unix)]
+        self.snowflake_grid.close_profile_helpers(id);
     }
 
     pub fn set_passphrase(&self, passphrase: &str, previous: Option<&str>) -> AppResult<()> {
@@ -1399,6 +1426,8 @@ impl Studio {
                 "Use the whole-script review for this retained Snowflake console",
             ));
         }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if error_source.is_none() && snowflake_dml::sdk_profile(&session.profile) {
             let database = session.observed_runtime.lock().as_ref().map_or_else(
                 || session.profile.database.clone(),
@@ -1770,6 +1799,8 @@ impl Studio {
         }
         self.flush_pending_history()?;
         self.flush_pending_snowflake_receipts()?;
+        #[cfg(unix)]
+        self.flush_snowflake_grid_outcomes()?;
         let memory = self.outcome_memory.ordinary()?;
         let profile = self.persistence.profile(&session.profile.id)?;
         let seed = HistoryEntry {
@@ -2310,6 +2341,12 @@ impl Studio {
             )
             .with_completion_invalidated());
         }
+        #[cfg(unix)]
+        if resume_metadata {
+            let _ = self.flush_snowflake_grid_outcomes();
+        }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let result = self.build_session_contexts(&session).await;
         if resume_metadata
             && snowflake_dml::sdk_profile(&session.profile)
@@ -2357,6 +2394,8 @@ impl Studio {
                 "This database session is disconnected",
             ));
         }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         // A failed/lost response can still leave a changed server context.
         // Revoke every prepared target before dispatch, including on failure.
         *session.completion.lock() = None;
@@ -2393,6 +2432,8 @@ impl Studio {
                 "This database session is disconnected",
             ));
         }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         // Revoke targets before dispatch: an interrupted USE can change context.
         *session.observed_runtime.lock() = None;
         *session.completion.lock() = None;
@@ -2602,6 +2643,9 @@ impl Studio {
         &self,
         session: &Arc<Session>,
     ) -> AppResult<SessionContextOptions> {
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&session.info.id)?;
         self.ddl_preflights.lock().remove(&session.info.id);
         let options = session
             .driver
@@ -2894,6 +2938,8 @@ impl Studio {
     pub async fn relation_catalog(&self, session_id: &str) -> AppResult<BrowseCatalog> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         self.ddl_preflights.lock().remove(session_id);
         // Refresh revokes targets even if the outer console lane is busy.
         // Never let a failed refresh leave a previously granted target usable.
@@ -2909,6 +2955,8 @@ impl Studio {
     ) -> AppResult<RelationInspection> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.inspect_relation(request).await)
     }
@@ -2920,6 +2968,8 @@ impl Studio {
     ) -> AppResult<RelationDefinition> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.define_relation(request).await)
     }
@@ -2931,6 +2981,8 @@ impl Studio {
     ) -> AppResult<RelationConstraints> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
             &session,
@@ -2945,6 +2997,8 @@ impl Studio {
     ) -> AppResult<RelationCheckConstraints> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
             &session,
@@ -2962,6 +3016,8 @@ impl Studio {
     ) -> AppResult<RelationConstraintMappings> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(
             &session,
@@ -2979,6 +3035,8 @@ impl Studio {
     ) -> AppResult<RelationPreview> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = Self::relation_lane(&session).await?;
         Self::publish_relation(&session, session.driver.preview_relation(request).await)
     }
@@ -5277,6 +5335,8 @@ impl Studio {
         for id in ids {
             self.disconnect(&id);
         }
+        #[cfg(unix)]
+        self.snowflake_grid.close_all_helpers();
     }
 
     /// Await local setup owners after closing admission and existing sessions.
@@ -5319,8 +5379,8 @@ impl Studio {
         #[cfg(unix)]
         {
             // Reaping is an exact local retirement witness, never remote rollback.
-            self.flush_batch_outcomes()?;
-            if !self.batch_outcomes.is_empty() {
+            self.flush_snowflake_grid_outcomes()?;
+            if !self.batch_outcomes.is_empty() || !self.snowflake_grid.is_empty() {
                 return Err(AppError::new(
                     ErrorCode::Conflict,
                     "A Snowflake edit outcome or owner is still recording locally; keep Joinery open and try closing again",
@@ -6226,7 +6286,9 @@ mod browse_classification_tests {
     ) -> Arc<Session> {
         let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
         let session = Arc::new(Session {
-                    rollback_memory: Mutex::new(None),
+            rollback_memory: Mutex::new(None),
+            #[cfg(unix)]
+            snowflake_external: None,
             info: SessionInfo { console_mode: false, id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
             profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), metadata_gate: Mutex::new(MetadataGate::default()), observed_runtime: Mutex::new(None),
         });
@@ -6298,7 +6360,9 @@ mod browse_classification_tests {
             ..Default::default()
         });
         let session = Arc::new(Session {
-                    rollback_memory: Mutex::new(None),
+            rollback_memory: Mutex::new(None),
+            #[cfg(unix)]
+            snowflake_external: None,
             info: SessionInfo { console_mode: false, id: id.clone(), connection_id: profile.id.clone(), engine: EngineKind::Snowflake,
                 server_version: "synthetic".into(), latency_ms: 0, encrypted: true,
                 capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"explicitTransactionControls":true,"cancellation":true,"tableBrowsing":false,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
@@ -7236,6 +7300,8 @@ mod browse_classification_tests {
                         id.clone(),
                         Arc::new(Session {
                             rollback_memory: Mutex::new(None),
+                            #[cfg(unix)]
+                            snowflake_external: None,
                             info: SessionInfo {
                                 console_mode: false,
                                 id: id.clone(),
@@ -7335,6 +7401,8 @@ mod browse_classification_tests {
             session_id.clone(),
             Arc::new(Session {
                 rollback_memory: Mutex::new(None),
+                #[cfg(unix)]
+                snowflake_external: None,
                 info: SessionInfo {
                     console_mode: false,
                     id: session_id.clone(),
@@ -7529,6 +7597,8 @@ mod browse_classification_tests {
             session_id.clone(),
             Arc::new(Session {
                 rollback_memory: Mutex::new(None),
+                #[cfg(unix)]
+                snowflake_external: None,
                 info: SessionInfo {
                     console_mode: false,
                     id: session_id.clone(),

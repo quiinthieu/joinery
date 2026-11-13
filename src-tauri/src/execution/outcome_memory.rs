@@ -82,6 +82,17 @@ impl OutcomeMemory {
 }
 
 impl SafetySlot {
+    #[cfg_attr(
+        not(all(test, feature = "test-harness")),
+        allow(
+            dead_code,
+            reason = "Studio grid run owner precedes public UI staging and IPC wiring"
+        )
+    )]
+    pub(super) fn is_available(&self) -> bool {
+        self.0.lock().is_some()
+    }
+
     pub(super) fn claim(self: &Arc<Self>) -> AppResult<MemoryLease> {
         let lease = self.0.lock().take().ok_or_else(|| AppError::new(
             ErrorCode::Conflict,

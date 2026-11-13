@@ -152,6 +152,22 @@ impl SnowflakeExternal {
         self.edit_snapshots
             .prepare(&self.session_id, snapshot_id, &binding, mutations)
     }
+
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(crate) fn test_prepare_continuation_edits(
+        &self,
+        request: &PreviewRelationRequest,
+        rows: Vec<TextRow>,
+        mutations: &[SnapshotMutation],
+    ) -> AppResult<PreparedSnowflakeEdits> {
+        let state = self.browsing.lock();
+        let binding = self.edit_binding(&state, request)?;
+        let snapshot_id = self
+            .edit_snapshots
+            .retain(self.edit_binding(&state, request)?, rows)?;
+        self.edit_snapshots
+            .prepare(&self.session_id, &snapshot_id, &binding, mutations)
+    }
 }
 
 fn inspection_slot<'a>(

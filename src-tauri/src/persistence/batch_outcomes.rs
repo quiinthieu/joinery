@@ -1250,6 +1250,21 @@ impl std::fmt::Debug for PendingBatchRollbackAuthority {
     }
 }
 #[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct RejectedBatchRollbackAuthority {
+    authority: PendingBatchRollbackAuthority,
+    successor: BatchReservation,
+    capture_digest: String,
+}
+#[cfg(unix)]
+impl std::fmt::Debug for RejectedBatchRollbackAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RejectedBatchRollbackAuthority")
+            .field("operation_id", &self.successor.operation_id())
+            .finish_non_exhaustive()
+    }
+}
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ManualTransactionRetirement {
     Retired,
@@ -1775,28 +1790,21 @@ impl Persistence {
         Ok(token)
     }
 
-    /// An actual queued, zero-step admission refusal preserved prior Pending
-    /// work. Retain this refusal's own original and settle it before cleanup;
-    /// unlike no-queue proof this path never produces a noDispatch witness.
+    /// Mint a compact witness while the queued zero-step admission refusal's
+    /// completed Operation exists, without retaining the Operation or payload.
     #[cfg(unix)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Bind cleanup to prior authority, successor, exact original and native operation"
-    )]
-    pub(crate) fn make_rejected_batch_rollback_token(
+    pub(crate) fn authorize_rejected_batch_rollback(
         &self,
         owner: &Arc<HistoryOwner>,
         gate: &OperationGate,
-        descriptor: &BatchDescriptor,
         authority: &PendingBatchRollbackAuthority,
         successor: &BatchReservation,
         original: &OriginalBatchOutcome,
         operation: &Operation,
-    ) -> AppResult<VolatileBatchRollbackToken> {
+    ) -> AppResult<RejectedBatchRollbackAuthority> {
         let group = authority.reservation.group.as_ref().ok_or_else(conflict)?;
         let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
         gate.validate(owner, &self.root)?;
-        descriptor.validate()?;
         let prior = authority
             .reservation
             .data
@@ -1807,9 +1815,8 @@ impl Persistence {
         let (meta, evidence) = decode(original.as_bytes())?;
         let summary = evidence.summary.as_ref().ok_or_else(conflict)?;
         let state = group.memory.0.lock();
-        validate_pending_authority(owner, descriptor, authority, &state)?;
+        validate_pending_authority(owner, &successor.data.descriptor, authority, &state)?;
         if !state.open
-            || descriptor.operation_id == successor.operation_id()
             || !Arc::ptr_eq(owner, &successor._owner)
             || !successor
                 .group
@@ -1851,6 +1858,40 @@ impl Persistence {
         if !report.ok || report.retirement.is_some() || report.batch.as_ref() != Some(&evidence) {
             return Err(conflict());
         }
+        Ok(RejectedBatchRollbackAuthority {
+            authority: authority.clone(),
+            successor: successor.clone(),
+            capture_digest: hash(original.as_bytes()),
+        })
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn make_authorized_rejected_batch_rollback_token(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        descriptor: &BatchDescriptor,
+        rejected: &RejectedBatchRollbackAuthority,
+        original: &OriginalBatchOutcome,
+    ) -> AppResult<VolatileBatchRollbackToken> {
+        let authority = &rejected.authority;
+        let successor = &rejected.successor;
+        let group = authority.reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        descriptor.validate()?;
+        let m = successor.data.membership.as_ref().ok_or_else(conflict)?;
+        let state = group.memory.0.lock();
+        validate_pending_authority(owner, descriptor, authority, &state)?;
+        if !state.open
+            || descriptor.operation_id == successor.operation_id()
+            || hash(original.as_bytes()) != rejected.capture_digest
+            || state.ordinal != m.ordinal
+            || state.pending != m.prior_pending_count
+            || !(state.in_flight.as_ref() == Some(&successor.data) || state.in_flight.is_none())
+        {
+            return Err(conflict());
+        }
         let ordinal = m
             .ordinal
             .checked_add(1)
@@ -1872,6 +1913,32 @@ impl Persistence {
         }))));
         group.claim_rollback(descriptor)?;
         Ok(token)
+    }
+
+    /// An actual queued, zero-step admission refusal preserved prior Pending
+    /// work. Retain this refusal's own original and settle it before cleanup;
+    /// unlike no-queue proof this path never produces a noDispatch witness.
+    #[cfg(unix)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Bind cleanup to prior authority, successor, exact original and native operation"
+    )]
+    pub(crate) fn make_rejected_batch_rollback_token(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        descriptor: &BatchDescriptor,
+        authority: &PendingBatchRollbackAuthority,
+        successor: &BatchReservation,
+        original: &OriginalBatchOutcome,
+        operation: &Operation,
+    ) -> AppResult<VolatileBatchRollbackToken> {
+        let rejected = self.authorize_rejected_batch_rollback(
+            owner, gate, authority, successor, original, operation,
+        )?;
+        self.make_authorized_rejected_batch_rollback_token(
+            owner, gate, descriptor, &rejected, original,
+        )
     }
 
     /// A strict native no-queue proof permits only protected rollback after the

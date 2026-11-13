@@ -2,10 +2,10 @@
 //! This layer neither dispatches SQL nor grants a manual helper owner. The
 //! lane-bearing adapter must retain its separate native owner across Pending.
 #![cfg_attr(
-    not(test),
+    not(all(test, feature = "test-harness")),
     allow(
         dead_code,
-        reason = "Retained batch recording foundation precedes the application grid dispatcher"
+        reason = "Studio grid recording precedes public UI staging and IPC wiring"
     )
 )]
 use super::outcome_memory::{MemoryLease, SafetySlot};
@@ -19,7 +19,8 @@ use crate::{
         OperationGate,
         batch_outcomes::{
             BatchDescriptor, BatchPlan, BatchReservation, BatchTermination, ManualTransactionLease,
-            OriginalBatchOutcome, VolatileBatchRollbackToken,
+            OriginalBatchOutcome, PendingBatchRollbackAuthority, RejectedBatchRollbackAuthority,
+            VolatileBatchRollbackToken,
         },
     },
 };
@@ -36,6 +37,11 @@ pub(super) struct State {
 impl State {
     pub(super) fn is_empty(&self) -> bool {
         self.pending.lock().is_empty() && self.groups.lock().is_empty()
+    }
+
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(super) fn pending_count(&self) -> usize {
+        self.pending.lock().len()
     }
 }
 struct IdleGroup {
@@ -102,6 +108,12 @@ impl BatchOutcomeCell {
     pub(super) fn manual_transaction(&self) -> Option<ManualTransactionLease> {
         self.state.lock().group.clone()
     }
+    pub(super) fn reservation(&self) -> Option<BatchReservation> {
+        self.state.lock().reservation.clone()
+    }
+    pub(super) fn was_dispatched(&self) -> bool {
+        self.state.lock().dispatched
+    }
     pub(super) fn recording_state(&self) -> RecordingState {
         let s = self.state.lock();
         RecordingState {
@@ -133,6 +145,28 @@ fn conflict() -> AppError {
         ErrorCode::Conflict,
         "The batch owner or recording state changed; no new SQL was admitted",
     )
+}
+
+pub(super) enum MintedGridAuthority {
+    Pending(Box<PendingBatchRollbackAuthority>),
+    Rejected(Box<RejectedBatchRollbackAuthority>),
+}
+
+pub(super) enum ProtectedRollbackSource<'a> {
+    NoDispatch {
+        authority: &'a PendingBatchRollbackAuthority,
+        successor: &'a BatchReservation,
+        request: &'a BatchRequest,
+        proof: &'a crate::drivers::snowflake_external::grid::GridNoDispatch,
+    },
+    RejectedAdmission {
+        rejected: &'a RejectedBatchRollbackAuthority,
+        cell: &'a Arc<BatchOutcomeCell>,
+    },
+    UnsettledPending {
+        authority: &'a PendingBatchRollbackAuthority,
+        cell: &'a Arc<BatchOutcomeCell>,
+    },
 }
 
 impl Studio {
@@ -187,13 +221,10 @@ impl Studio {
             observer,
         )
     }
-    fn admit_batch_cell(
-        &self,
-        memory: MemoryLease,
-        descriptor: BatchDescriptor,
-        attempt: Attempt,
-        observer: HelperRetirementObserver,
-    ) -> AppResult<Arc<BatchOutcomeCell>> {
+    fn validate_batch_descriptor(
+        descriptor: &BatchDescriptor,
+        observer: &HelperRetirementObserver,
+    ) -> AppResult<()> {
         let canonical =
             |value: &str| uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value);
         if !canonical(&descriptor.operation_id)
@@ -214,6 +245,117 @@ impl Studio {
         if descriptor.helper_generation != observer.helper_generation().generation() {
             return Err(conflict());
         }
+        Ok(())
+    }
+
+    pub(super) fn admit_protected_grid_rollback(
+        &self,
+        memory: MemoryLease,
+        descriptor: BatchDescriptor,
+        group: &ManualTransactionLease,
+        helper_owner: uuid::Uuid,
+        observer: HelperRetirementObserver,
+        source: ProtectedRollbackSource<'_>,
+    ) -> AppResult<Arc<BatchOutcomeCell>> {
+        Self::validate_batch_descriptor(&descriptor, &observer)?;
+        {
+            let groups = self.batch_outcomes.groups.lock();
+            let retained = groups.get(group.id()).ok_or_else(conflict)?;
+            if !retained
+                .observer
+                .helper_generation()
+                .same_helper(&observer.helper_generation())
+            {
+                return Err(conflict());
+            }
+        }
+        {
+            let pending = self.batch_outcomes.pending.lock();
+            if pending.len() >= MAX_CELLS || pending.contains_key(&descriptor.operation_id) {
+                return Err(conflict());
+            }
+        }
+        let gate = self.persistence.operation_gate(&self.history_owner)?;
+        let token = match source {
+            ProtectedRollbackSource::NoDispatch {
+                authority,
+                successor,
+                request,
+                proof,
+            } => self.persistence.make_undispatched_batch_rollback_token(
+                &self.history_owner,
+                &gate,
+                &descriptor,
+                authority,
+                successor,
+                request,
+                proof,
+            )?,
+            ProtectedRollbackSource::RejectedAdmission { rejected, cell } => {
+                let s = cell.state.lock();
+                let original = s.original.as_ref().ok_or_else(conflict)?;
+                self.persistence
+                    .make_authorized_rejected_batch_rollback_token(
+                        &self.history_owner,
+                        &gate,
+                        &descriptor,
+                        rejected,
+                        original,
+                    )?
+            }
+            ProtectedRollbackSource::UnsettledPending { authority, cell } => {
+                let s = cell.state.lock();
+                let original = s.original.as_ref().ok_or_else(conflict)?;
+                self.persistence.make_pending_batch_rollback_token(
+                    &self.history_owner,
+                    &gate,
+                    &descriptor,
+                    authority,
+                    original,
+                )?
+            }
+        };
+        let cell = Arc::new(BatchOutcomeCell {
+            descriptor,
+            observer,
+            state: Mutex::new(Cell {
+                attempt: Attempt::Finish {
+                    group: group.clone(),
+                    owner: helper_owner,
+                    action: FinishAction::Rollback,
+                },
+                memory: Some(memory),
+                gate: Some(gate),
+                reservation: None,
+                volatile: Some(token),
+                group: Some(group.clone()),
+                terminal: None,
+                original: None,
+                ready: true,
+                dispatched: false,
+                no_original: false,
+                encoding_failed: false,
+                captured: false,
+                settled: false,
+                close_group: false,
+            }),
+        });
+        let mut pending = self.batch_outcomes.pending.lock();
+        if pending.len() >= MAX_CELLS || pending.contains_key(cell.operation_id()) {
+            return Err(conflict());
+        }
+        pending.insert(cell.operation_id().into(), cell.clone());
+        Ok(cell)
+    }
+
+    fn admit_batch_cell(
+        &self,
+        memory: MemoryLease,
+        descriptor: BatchDescriptor,
+        attempt: Attempt,
+        observer: HelperRetirementObserver,
+    ) -> AppResult<Arc<BatchOutcomeCell>> {
+        Self::validate_batch_descriptor(&descriptor, &observer)?;
         if let Some(group) = attempt.group() {
             let groups = self.batch_outcomes.groups.lock();
             let retained = groups.get(group.id()).ok_or_else(conflict)?;
@@ -456,6 +598,92 @@ impl Studio {
         self.forget_batch_cell(cell);
         result
     }
+
+    pub(super) fn record_grid_batch_outcome(
+        &self,
+        cell: &Arc<BatchOutcomeCell>,
+        report: &Report,
+        operation: &Operation,
+        prior_pending: Option<&PendingBatchRollbackAuthority>,
+        on_encoded: impl FnOnce(Option<MintedGridAuthority>),
+    ) -> AppResult<()> {
+        let mut minted = None;
+        if let Some(evidence) = &report.batch {
+            let termination = report_termination(report, evidence);
+            self.encode_batch_cell(cell, evidence, termination)?;
+            if report.ok && report.retirement.is_none() {
+                let s = cell.state.lock();
+                if let (Some(gate), Some(reservation), Some(original)) =
+                    (s.gate.as_ref(), s.reservation.as_ref(), s.original.as_ref())
+                {
+                    if evidence
+                        .summary
+                        .as_ref()
+                        .is_some_and(|summary| summary.outcome == Outcome::Pending)
+                    {
+                        minted = Some(MintedGridAuthority::Pending(Box::new(
+                            self.persistence.authorize_pending_batch_rollback(
+                                &self.history_owner,
+                                gate,
+                                reservation,
+                                original,
+                                operation,
+                            )?,
+                        )));
+                    } else if let Some(prior) = prior_pending
+                        && evidence.steps.is_empty()
+                        && evidence.summary.as_ref().is_some_and(|summary| {
+                            summary.outcome == Outcome::Rejected
+                                && summary.failure
+                                    == Some(crate::drivers::snowflake_batch::Failure::Admission)
+                        })
+                        && let Ok(rejected) = self.persistence.authorize_rejected_batch_rollback(
+                            &self.history_owner,
+                            gate,
+                            prior,
+                            reservation,
+                            original,
+                            operation,
+                        )
+                    {
+                        minted = Some(MintedGridAuthority::Rejected(Box::new(rejected)));
+                    }
+                }
+            }
+        } else {
+            let mut s = cell.state.lock();
+            if s.original.is_none() && !s.encoding_failed {
+                s.no_original = true;
+                s.terminal.take();
+            }
+        }
+        on_encoded(minted);
+        let result = self.flush_batch_cell(cell);
+        self.forget_batch_cell(cell);
+        result
+    }
+
+    pub(super) fn flush_and_forget_batch_cell(
+        &self,
+        cell: &Arc<BatchOutcomeCell>,
+    ) -> AppResult<()> {
+        let result = self.flush_batch_cell(cell);
+        self.forget_batch_cell(cell);
+        result
+    }
+
+    pub(super) fn has_manual_batch_group(&self, group_id: &str) -> bool {
+        if self.batch_outcomes.groups.lock().contains_key(group_id) {
+            return true;
+        }
+        self.batch_outcomes.pending.lock().values().any(|cell| {
+            let s = cell.state.lock();
+            s.group
+                .as_ref()
+                .or(s.attempt.group())
+                .is_some_and(|g| g.id() == group_id)
+        })
+    }
     fn encode_batch_cell(
         &self,
         cell: &BatchOutcomeCell,
@@ -529,15 +757,7 @@ impl Studio {
             return Ok(());
         };
         if let Some(evidence) = &report.batch {
-            let termination = match report.retirement {
-                Some(Retirement::Eof) => BatchTermination::Eof,
-                Some(Retirement::Deadline) => BatchTermination::Deadline,
-                Some(Retirement::Protocol | Retirement::Write) => BatchTermination::ProtocolFailure,
-                Some(Retirement::Requested | Retirement::Dropped) => BatchTermination::Cancelled,
-                None if evidence.summary.is_some() => BatchTermination::Complete,
-                None => BatchTermination::ProtocolFailure,
-            };
-            self.encode_batch_cell(cell, evidence, termination)
+            self.encode_batch_cell(cell, evidence, report_termination(&report, evidence))
         } else {
             // A genuine final report with no batch evidence is a negative
             // witness. An empty/closed watch by itself is never sufficient.
@@ -637,13 +857,16 @@ impl Studio {
     }
     /// Retry local storage only. Never reconnect, replay SQL, or infer rollback.
     pub(super) fn flush_batch_outcomes(&self) -> AppResult<()> {
-        let cells = self
+        let mut cells = self
             .batch_outcomes
             .pending
             .lock()
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        // Promote volatile rollbacks before flushing predecessor cells so any
+        // shared prerequisite payload Arc is dropped prior to buffer reclaim.
+        cells.sort_by_key(|cell| cell.state.lock().volatile.is_none());
         let mut failed = false;
         for cell in cells {
             if self.flush_batch_cell(&cell).is_err() {
@@ -693,6 +916,17 @@ impl Studio {
         } else {
             Ok(())
         }
+    }
+}
+
+fn report_termination(report: &Report, evidence: &BatchEvidence) -> BatchTermination {
+    match report.retirement {
+        Some(Retirement::Eof) => BatchTermination::Eof,
+        Some(Retirement::Deadline) => BatchTermination::Deadline,
+        Some(Retirement::Protocol | Retirement::Write) => BatchTermination::ProtocolFailure,
+        Some(Retirement::Requested | Retirement::Dropped) => BatchTermination::Cancelled,
+        None if evidence.summary.is_some() => BatchTermination::Complete,
+        None => BatchTermination::ProtocolFailure,
     }
 }
 

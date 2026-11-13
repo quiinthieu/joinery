@@ -251,6 +251,8 @@ impl Fixture {
         }
         let session = Arc::new(Session {
             rollback_memory: Mutex::new(None),
+            #[cfg(unix)]
+            snowflake_external: None,
             info,
             profile,
             driver: driver.clone(),
