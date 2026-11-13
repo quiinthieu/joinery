@@ -8,6 +8,33 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Batch submission capacity (13 November 2026)
+
+Base `cd5da45`, task branch `feat/datagrip-replacement`. A regression first fails
+with `TypeError: guard.reserveCapacity is not a function` before the additive
+reservation API is implemented. The guard now reserves a whole batch's maximum
+statement allowance before dispatch, and can retain a separate manual-finish
+allowance between operations. Capacity refusal preserves existing reservations;
+only successful registration consumes a slot. Release never refunds spent IDs.
+Unreserved work cannot consume protected capacity.
+
+`node --test snowflake-helper/test/query-submit-guard.test.mjs` passes all 66
+cases, including six new reservation regressions: retained finish across
+operations, non-poisoning insufficient capacity, protected legacy admission,
+invalid/exhausted lease, active-ticket release rejection and retirement cleanup.
+The immutable receipt and log are
+`.cache/verification/snowflake-mutation-batch/guard-reservations.json` and
+`guard-reservations-0.log`; both source hashes remain unchanged during the run.
+No SQL, authentication or real-account behavior is exercised. Independent
+read-only review finds no material issue in slot conservation, lifecycle or
+release; the suggested retirement-cleanup regression is added and passes.
+
+This guard-only increment has no changed UI workflow. It does not enable grid
+editing, establish remote transaction effects or complete the owned-batch
+runtime. The existing application, storage schema and release artifacts remain
+unchanged. The helper, Rust protocol and packaging integration are subsequent
+work and require their own checks.
+
 ### Snowflake mutation compiler (13 November 2026)
 
 Base `fd211b5` on `feat/datagrip-replacement`. The lead owns shared docs,

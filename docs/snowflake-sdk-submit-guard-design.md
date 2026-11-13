@@ -236,6 +236,21 @@ work reports unknown outcome; established database errors and acknowledged
 outcomes keep their existing classification. Retiring the helper is not a
 rollback assertion. Read-only operations are guarded too.
 
+Generated batch execution can reserve the maximum number of statement
+registrations before its first SQL request. Opaque capacity leases span helper
+operations, allowing a pending manual transaction to retain a separate allowance
+for its later finish. An insufficient reservation returns an admission refusal
+without poisoning an existing owner's guard. Registration consumes a reserved
+slot; an abandoned unregistered ticket consumes none. Releasing a lease returns
+only unused slots, including during retirement cleanup. Unreserved operations
+cannot consume those protected slots. The helper must release batch allowances
+in `finally` and retain/release the manual finish allowance explicitly; garbage
+collection does not reclaim capacity. These leases reserve local submission
+capacity, not server resources or evidence of transaction disposition. The
+[verification ledger](replacement-verification.md#batch-submission-capacity-13-november-2026)
+records the focused regressions. Batch runtime, durable evidence and application
+acceptance remain separate required gates.
+
 Review regressions cover native target ambiguity (header accessors, default
 ports and URL-owned properties), exact dependency importer shadowing, preserved
 acknowledgement/database-error classification and legitimate encoded-percent

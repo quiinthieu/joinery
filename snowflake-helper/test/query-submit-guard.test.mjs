@@ -269,6 +269,69 @@ async function scenario(name, variant) {
     fixedError(() => guard.beginOperation());
     return;
   }
+  if (name === "reservation") {
+    fakeNative();
+    const reports = [];
+    const { guard, owner, ticket } = configure((r) => reports.push(r));
+    guard.endStatement(ticket);
+    const finish = guard.reserveCapacity(2);
+    const batch = guard.reserveCapacity(65_534);
+    assert.ok(finish);
+    assert.ok(batch);
+    assert.equal(guard.reserveCapacity(1), null);
+    assert.equal(guard.snapshot().failed, false);
+    if (variant === "legacy") {
+      const unreserved = guard.beginStatement(owner);
+      fixedError(() => guard.registerRequestId(unreserved, A));
+      assert.equal(reports[0].category, "capacity");
+      assert.equal(guard.snapshot().registered, 0);
+      return;
+    }
+    if (variant === "invalidLease") {
+      fixedError(() => guard.beginStatement(owner, {}));
+      return;
+    }
+    const reserved = guard.beginStatement(owner, batch);
+    if (variant === "releaseActive") {
+      fixedError(() => guard.releaseCapacity(batch));
+      return;
+    }
+    // A ticket abandoned before registration must not spend its reservation.
+    guard.endStatement(reserved);
+    const used = guard.beginStatement(owner, batch);
+    guard.registerRequestId(used, A);
+    if (variant === "retired") {
+      fixedError(() => guard.registerRequestId(used, B));
+      guard.endStatement(used);
+      guard.releaseCapacity(batch);
+      guard.releaseCapacity(finish);
+      assert.deepEqual(guard.snapshot(), { failed: true, registered: 1, admitted: 0 });
+      return;
+    }
+    guard.endStatement(used);
+    guard.releaseCapacity(batch);
+    assert.equal(guard.reserveCapacity(65_534), null, "spent IDs cannot be returned");
+    const rest = guard.reserveCapacity(65_533);
+    assert.ok(rest, "only unused reserved slots were returned");
+    guard.endOperation(owner);
+    const nextOwner = guard.beginOperation();
+    const finishTicket = guard.beginStatement(nextOwner, finish);
+    guard.registerRequestId(finishTicket, B);
+    guard.endStatement(finishTicket);
+    const finalTicket = guard.beginStatement(nextOwner, finish);
+    guard.registerRequestId(finalTicket, "33333333-3333-4333-8333-333333333333");
+    guard.endStatement(finalTicket);
+    if (variant === "empty") {
+      fixedError(() => guard.beginStatement(nextOwner, finish));
+      return;
+    }
+    guard.releaseCapacity(finish);
+    guard.releaseCapacity(rest);
+    guard.endOperation(nextOwner);
+    assert.deepEqual(guard.snapshot(), { failed: false, registered: 3, admitted: 0 });
+    assert.equal(reports.length, 0);
+    return;
+  }
   if (name === "https-wrapper" || name === "callback-throw" || name === "immutable-authority") {
     const calls = fakeNative();
     const reports = [];
@@ -476,6 +539,10 @@ if (process.argv[2] === "guard-child") {
     ["sdk-parameters"],
     ["native-throw"],
     ["capacity"],
+    ...["retained", "legacy", "invalidLease", "releaseActive", "empty", "retired"].map((v) => [
+      "reservation",
+      v,
+    ]),
     ["loopback"],
     ["encoded-nonquery", "options"],
     ["encoded-nonquery", "url"],

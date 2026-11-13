@@ -239,6 +239,8 @@ function requestIdentity(description) {
  * Keep the ticket through original acknowledgement, drain and terminal decision.
  * Lifecycle handles never contain request IDs or caller-selected generations.
  * 65,536 distinct registrations is a fail-closed helper lifetime ceiling.
+ * Capacity leases reserve future registrations before an owned transaction
+ * starts. Unused slots can be released; spent IDs can never be returned.
  */
 export function installQuerySubmitGuard({ onViolation } = {}) {
   if (installed) return installed.rejectInstallation();
@@ -246,8 +248,10 @@ export function installQuerySubmitGuard({ onViolation } = {}) {
   const originals = { "http:": http.request, "https:": https.request };
   let expected, operation, statement, failure;
   let registered = 0,
-    admitted = 0;
+    admitted = 0,
+    reserved = 0;
   const ids = new Set();
+  const reservations = new WeakMap();
   const snapshot = () => Object.freeze({ failed: failure !== undefined, registered, admitted });
   const fail = (category) => {
     if (failure === undefined) {
@@ -338,11 +342,32 @@ export function installQuerySubmitGuard({ onViolation } = {}) {
       operation = Object.freeze({});
       return operation;
     },
-    beginStatement(owner) {
+    reserveCapacity(count) {
+      healthy();
+      if (!expected || statement || !Number.isSafeInteger(count) || count < 1 || count > MAX_IDS)
+        return reject("reservation");
+      // Ordinary capacity refusal is admission failure, not a guard violation:
+      // an existing manual owner must retain its reserved rollback capacity.
+      if (count > MAX_IDS - registered - reserved) return null;
+      const lease = Object.freeze({});
+      reservations.set(lease, count);
+      reserved += count;
+      return lease;
+    },
+    releaseCapacity(lease) {
+      // Cleanup is permitted after retirement, but cannot revoke a live ticket.
+      if (!reservations.has(lease) || (statement && statement.lease === lease))
+        return reject("reservation");
+      reserved -= reservations.get(lease);
+      reservations.delete(lease);
+    },
+    beginStatement(owner, lease) {
       healthy();
       if (!operation || operation !== owner || statement) return reject("lifecycle");
+      if (lease !== undefined && (!reservations.has(lease) || reservations.get(lease) < 1))
+        return reject("reservation");
       const ticket = Object.freeze({});
-      statement = { ticket, id: undefined, spent: false };
+      statement = { ticket, id: undefined, spent: false, lease };
       return ticket;
     },
     registerRequestId(ticket, id) {
@@ -351,7 +376,14 @@ export function installQuerySubmitGuard({ onViolation } = {}) {
         return reject("lifecycle");
       if (typeof id !== "string" || !ID.test(id)) return reject("requestId");
       if (ids.has(id.toLowerCase())) return reject("reusedId");
-      if (registered === MAX_IDS) return reject("capacity");
+      if (statement.lease === undefined) {
+        if (registered + reserved === MAX_IDS) return reject("capacity");
+      } else {
+        const remaining = reservations.get(statement.lease);
+        if (!remaining) return reject("reservation");
+        reservations.set(statement.lease, remaining - 1);
+        reserved--;
+      }
       ids.add(id.toLowerCase());
       statement.id = id;
       registered++;
