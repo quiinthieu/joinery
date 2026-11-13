@@ -142,40 +142,46 @@ reap. A refusal before any durable reservation has no such obligation. Neither
 case may silently discard known originals. These application policies remain
 integration work; the adapter is not a public grid command.
 
+## Studio TaskTracker grid run owner
+
+`execution/snowflake_grid.rs` now owns generated-edit execution on `dml_tasks`
+independently of the initiating IPC caller or tab:
+
+1. Sessions retain the typed `Arc<SnowflakeExternal>` alongside `Arc<dyn Driver>`
+   so generated-edit preparation, retirement observation and physical helper
+   closure remain available without widening the generic driver trait.
+2. Each run claims logical outcome memory and recovery activity before spawning
+   into `dml_tasks`, acquires the session/manual-owner lane, runs native
+   preparation and freshness bracketing, reserves and pins the exact immutable
+   operation ID/request/digest in SQLite, and registers `ManualOwner` before
+   dispatch. Unpolled or detached callers leave admitted runs and durable
+   evidence alive.
+3. `StudioGridRecorder` encodes the compact original synchronously while the
+   genuine native `Operation` is borrowed, minting compact pending or
+   queued-admission-rejection rollback authority without retaining `Operation`
+   or cloning `OriginalBatchOutcome`. Storage faults retain both the predecessor
+   and rollback originals across ordered settlement.
+4. Initial manual `NoDispatch` after durable reservation retires the exact
+   physical helper before abandoning the no-original membership so post-reap
+   reconciliation releases the group truthfully. Post-`Pending` `Continue` or
+   `Commit` `NoDispatch` retains proof for protected SQLite rollback; queued
+   zero-step `Admission` rejection retains its compact original and prior
+   transaction authority for protected rollback.
+5. `reconcile_snowflake_grid_owners` notifies `GridManualTransaction` only for
+   the exact settled blocked operation ID, drains/retires owners across profile
+   save, disconnect and shutdown, blocks metadata restore while any run or manual
+   owner remains, and blocks ordinary Studio SQL, context/schema switches and
+   relation browsing before they can invalidate `BrowseState` on a live `Pending`
+   owner.
+
 ## Required next integration and acceptance
 
-Connect the typed lane-bearing adapter to the atomic recording handoff and a
-TaskTracker-owned Studio run owner. Retain the native manual owner even when
-recording fails or the initiating caller vanishes. Implement owner-scoped data
-refresh before enabling later submissions. Then expose staging/review/submit and truthful pending
-commit/rollback states, CSV batching and broader lossless codecs.
-
-The next bounded application increment belongs in `execution/snowflake_grid.rs`
-with dedicated tests and narrow `execution/batch_outcome_recording.rs` extensions:
-
-1. Preserve the typed external-driver handle when publishing a session, and
-   expose only its helper/retirement identity needed by recording. The generic
-   `Arc<dyn Driver>` has no generated-edit preparation API.
-2. Construct an owned run before spawning into `dml_tasks`; acquire the existing
-   session lane, prepare/freshness-check natively, then reserve/pin from the
-   prepared immutable ID/request/digest. Register the manual handle before
-   dispatch. A detached IPC waiter must leave the run and evidence alive.
-3. Record the genuine terminal with its actual `Operation`: encode the compact
-   original first, mint pending authority while the operation exists, then flush.
-   Retain the compact original and authority through any storage failure.
-4. Retain actual no-dispatch proof before automatic abandonment can forget a
-   manual successor. Select protected rollback from the existing volatile,
-   unsettled-Pending, queued-refusal or no-dispatch path as appropriate. Retain
-   predecessor cells through ordered settlement; reuse the existing safety slot.
-5. Notify the native owner of durable settlement only for the matching blocked
-   operation. Keep its registry independent of a tab or removed session-map entry;
-   drain recording/reaping during shutdown and exclude restore while it remains.
-
-Acceptance for that increment includes an unpolled/detached caller, panic after
-admission, both originals retained across SQLite failure, truthful Pending and
-verified Committed/RolledBack, both kinds of refusal, stale settlement callbacks,
-session removal and shutdown/reap retry. Full UI/native/account acceptance is a
-subsequent gate; none of these internal APIs alone enables editing.
+Implement owner-scoped relation data preview/refresh so manual continuation can
+prepare new snapshots without test-only hooks. Then expose application
+staging/review/submit, truthful pending commit/rollback UI states, CSV batching
+and broader lossless codecs beyond the current narrow scalar/text/integer
+subset. None of the internal driver/Studio APIs alone enables public user
+editing.
 
 Run real disposable-table acceptance only under a fresh reviewed account plan;
 earlier approvals are consumed or expired. The owner identified

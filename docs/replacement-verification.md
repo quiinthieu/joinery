@@ -8,6 +8,74 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Studio Snowflake grid run owner (13 November 2026, local foundation)
+
+Base `f5c82b1` (native dispatch source `435faa1`), feature branch
+`feat/datagrip-replacement`, implementation commit `60eebcf`. Bounded
+direct-source inspection and serialized host verification establish local
+evidence.
+
+`execution/snowflake_grid.rs` implements the `TaskTracker`-owned Studio grid
+run owner specified in the
+[integration contract](snowflake-owned-edit-integration.md#studio-tasktracker-grid-run-owner):
+typed `Arc<SnowflakeExternal>` session retention, pre-spawn logical memory and
+recovery-activity guards on `dml_tasks`, native preparation/freshness before
+durable SQLite reservation/pinning, `ManualOwner` registration before dispatch,
+synchronous compact original encoding with borrowed-&`Operation` pending and
+queued-rejection rollback authority (`persistence/batch_outcomes.rs`,
+`execution/batch_outcome_recording.rs`), ordered predecessor-before-volatile
+promotion during `flush_batch_outcomes`, exact helper retirement when initial
+manual admission hits `NoDispatch` after durable reservation, `catch_unwind`
+helper retirement and post-reap reconciliation, and shutdown/disconnect/restore
+integration (`execution.rs`, `execution/recovery_jobs.rs`).
+
+End-to-end manual-pending verification reproduced a real Studio/driver
+invalidation bug: forbidden ordinary `session_contexts_with_refresh`,
+`switch_session_context`, `switch_session_schema`, `inspect_relation` and
+`preview_relation` calls while a manual grid transaction was `Pending` invoked
+`invalidate_relation_catalog()` or mutated `InspectionSlot` before rejecting the
+call, wiping retained `BrowseState` on the live `Pending` owner. Guarding those
+entry points with `snowflake_grid.require_ordinary_session` (`execution.rs`,
+`execution/snowflake_ddl.rs`) and `self.grid.require_ordinary()`
+(`drivers/snowflake_external.rs`) fixed the defect, and
+`grid_studio_manual_pending_blocks_ordinary_work_continues_and_finishes` now
+asserts that blocked ordinary SQL, catalog, inspection, preview, context switch
+and refresh emit zero SQL and preserve `BrowseState`.
+
+Reproduce with pinned Rust `1.99.1` and `JOINERY_TEST_NODE` pointing to the
+isolated Node `24.22.2` binary:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness snowflake_grid_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness batch_outcome -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness session_tests::grid_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness edit_snapshots_tests -- --test-threads=1
+pnpm test:snowflake:helper
+pnpm test:snowflake:process
+pnpm validate
+```
+
+Frozen verification on `60eebcf` passes all `9` Studio grid cases (real SQLite
+and real Node helper subprocesses covering automatic commit and policy
+refusals, unpolled spawn drop, detached caller completion, manual `Pending`
+blocking/continuation/commit/rollback, both `Pending` and `Rollback` originals
+across SQLite read-only faults with saturated ordinary slots and stale
+settlement, initial and post-`Pending` `NoDispatch`, queued zero-step
+`Rejected`/`Admission` continuation before protected rollback, panics after
+durable admission/queue/capture, and session removal/disconnect), `54` batch
+recording/storage cases (`1` child-only process fixture ignored), `16` native
+grid adapter/freshness cases, `6` edit-snapshot cases, `439` helper cases,
+`pnpm test:snowflake:process` (`301` unit, `36` connection, `43` process and
+`32` external cases), `27` console cases, and full `pnpm validate` (`1,038`
+frontend tests across `72` files, `829` standard Rust tests with `146` fixture
+ignores, `cargo fmt --check`, `cargo check` and strict
+`cargo clippy --all-targets --all-features -- -D warnings` with zero `dead_code`
+warnings). Notice that `test_prepare_continuation_edits` remains `#[cfg(all(test, unix, feature = "test-harness"))]`
+only: public manual continuation snapshots still require the owner-scoped
+relation data-preview route. No live Snowflake query, authentication, packaging,
+installation or publication occurred, ~185 GiB disk space remains free, and the
+prior schema7 normal app is preserved. Full DataGrip replacement remains open.
+
 ### Native Snowflake edit dispatch (13 November 2026, local foundation)
 
 Base `1d94997`, existing feature branch. Three reused `gpt-6.1-sol` high-effort

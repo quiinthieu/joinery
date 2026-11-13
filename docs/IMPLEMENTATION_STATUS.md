@@ -1,5 +1,26 @@
 # Implementation and release status
 
+## Studio Snowflake grid run owner (13 November 2026, local foundation)
+
+`execution/snowflake_grid.rs` (`60eebcf`) now connects the lane-bearing native
+adapter to Studio `dml_tasks` ownership, atomic batch recording, compact
+pending/rejected-admission rollback authority, ordered predecessor settlement
+and exact post-reap manual-owner release. Ordinary Studio metadata, context and
+browsing entry points reject active manual grid sessions before invalidating
+retained browse state. All nine end-to-end real-helper/real-SQLite Studio grid
+cases, 54 batch recording/storage cases (one child-only process fixture ignored),
+16 native grid adapter/freshness cases, six edit-snapshot cases, 439 helper
+cases, `pnpm test:snowflake:process`, 27 console cases and full `pnpm validate`
+(1,038 frontend and 829 standard Rust cases with 146 fixture ignores, desktop
+check and strict Clippy) pass; see the
+[source-scoped ledger](replacement-verification.md#studio-snowflake-grid-run-owner-13-november-2026-local-foundation)
+and [contract](snowflake-owned-edit-integration.md#studio-tasktracker-grid-run-owner).
+Owner-scoped pending data preview/refresh, public UI grid/CSV staging and IPC,
+broader lossless codecs, fresh-plan `SANDBOX.BILLIE_TESTING` qualification and
+normal packaged/million-row/hands-on acceptance remain required. No public
+editing capability is enabled and the prior schema7 normal app is preserved.
+Replacement remains incomplete.
+
 ## Native Snowflake edit dispatch (13 November 2026, local foundation)
 
 One-use native plans now dispatch through a private lane-bearing adapter and

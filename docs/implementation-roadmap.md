@@ -80,18 +80,23 @@ six-observation commit context check. Protected rollback remains available after
 local original recording fails; authentic nonadmission and queued refusal take
 separate recovery paths. A refused rollback retires its helper even if the proof
 recorder panics. See the [native dispatch contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback).
-The next product step is the TaskTracker-owned Studio run owner, connecting
-initial pin, retained originals, native manual owner, protected credit and
-post-reap release. In particular, initial pinned/noqueue refusal requires exact
-helper retirement before group release. No native adapter-only test enables a
-user editing capability.
+The `TaskTracker`-owned Studio run owner (`execution/snowflake_grid.rs`,
+`60eebcf`) now connects initial pin, retained compact originals, the native
+manual owner, standby safety-slot rollback credit, ordered predecessor
+settlement and post-reap release, including exact helper retirement on initial
+pinned `NoDispatch` and ordinary-route browse-state protection while `Pending`.
+Nine real-helper/real-SQLite Studio regressions and full `pnpm validate` pass;
+see the [Studio owner ledger](replacement-verification.md#studio-snowflake-grid-run-owner-13-november-2026-local-foundation).
+No internal Studio/adapter test enables a user editing capability.
 The generic grid's committed-success return cannot represent pending work, and
 its primary-key deduplication cannot represent distinct keyless originals.
-Complete native review/dispatch integration. Add a reviewed owner-scoped
-read/refresh contract during pending manual ownership; ordinary metadata reads
-remain correctly excluded. Integrate application staging and CSV, and qualify the
-whole workflow against Snowflake and the normal packaged app. Broader codecs remain
-required, not optional follow-up work.
+Next, add a reviewed owner-scoped data-preview/refresh route during pending
+manual ownership so continuation snapshots do not rely on test-only hooks;
+ordinary metadata reads remain excluded. Then integrate application UI
+staging/review/submit, truthful pending commit/rollback controls, CSV batching
+and broader lossless codecs, and qualify the whole workflow against Snowflake
+(`SANDBOX.BILLIE_TESTING` under a fresh approved plan) and the normal packaged
+app. Broader codecs remain required, not optional follow-up work.
 
 ## Durable original outcomes (13 November 2026, local verification)
 
