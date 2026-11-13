@@ -68,6 +68,33 @@ fn summary(outcome: Outcome, failure: Option<Failure>) -> Value {
     json!({"outcome":outcome,"owner":null,"transactionId":"1234567890123456789","failure":failure,"priorBatches":0})
 }
 
+fn largest_summary(request: &BatchRequest, outcome: Outcome, failure: Option<Failure>) -> Value {
+    let owner = match request {
+        BatchRequest::Batch {
+            mode: Mode::Automatic,
+            ..
+        } => None,
+        _ => Some(
+            request
+                .owner()
+                .unwrap_or_else(|| Uuid::from_u128(0x99990000000040008000000000000000)),
+        ),
+    };
+    json!({"outcome":outcome,"owner":owner,"transactionId":i64::MIN.to_string(),
+        "failure":failure,"priorBatches":MAX_MANUAL_BATCHES})
+}
+
+fn assert_capture_fits_request(evidence: &BatchEvidence) -> Vec<u8> {
+    let bound = BatchCapture::maximum_encoded_len(&evidence.request).unwrap();
+    let base64_bound = BatchCapture::maximum_base64_len(&evidence.request).unwrap();
+    let bytes = BatchCapture::encode(evidence).unwrap();
+    assert!(bytes.len() <= bound, "{} exceeds {bound}", bytes.len());
+    assert!(STANDARD.encode(&bytes).len() <= base64_bound);
+    assert_eq!(base64_bound, bound.div_ceil(3) * 4);
+    assert_eq!(BatchCapture::decode(&bytes).unwrap(), *evidence);
+    bytes
+}
+
 #[test]
 fn batch_request_rejects_unbounded_or_ambiguous_payload_before_dispatch() {
     for count in [0, MAX_UNITS + 1] {
@@ -275,10 +302,7 @@ fn unavailable_drained_count_allows_only_verified_rollback_and_preserves_absence
         Outcome::RolledBack,
         Some(Failure::SummaryUnavailable)
     )));
-    assert_eq!(
-        BatchCapture::decode(&BatchCapture::encode(&evidence).unwrap()).unwrap(),
-        evidence
-    );
+    assert_capture_fits_request(&evidence);
 }
 
 #[test]
@@ -329,6 +353,14 @@ fn optional_update_multi_count_preserves_absence_and_present_nonzero_conflicts()
 #[test]
 fn maximum_batch_capture_keeps_every_uuid_pair_and_exact_failed_counts_below_32k_base64() {
     let mut evidence = evidence(MAX_UNITS);
+    assert_eq!(
+        BatchCapture::maximum_encoded_len(&evidence.request).unwrap(),
+        21_819
+    );
+    assert_eq!(
+        BatchCapture::maximum_base64_len(&evidence.request).unwrap(),
+        29_092
+    );
     preflight(&mut evidence);
     let huge = "99999999999999999999999999999999999999";
     for unit in 0..MAX_UNITS {
@@ -347,9 +379,9 @@ fn maximum_batch_capture_keeps_every_uuid_pair_and_exact_failed_counts_below_32k
         complete(&mut evidence, role, None, None);
     }
     assert!(evidence.accept_terminal(&summary(Outcome::RolledBack, Some(Failure::Cardinality))));
-    let bytes = BatchCapture::encode(&evidence).unwrap();
+    let bytes = assert_capture_fits_request(&evidence);
     let encoded = STANDARD.encode(&bytes);
-    // Leave more than 2KiB for the durable descriptor envelope.
+    // This is the evidence-only bound; storage must size the complete envelope.
     assert!(
         encoded.len() <= 30 * 1024,
         "{} binary / {} base64 bytes",
@@ -371,6 +403,258 @@ fn maximum_batch_capture_keeps_every_uuid_pair_and_exact_failed_counts_below_32k
 }
 
 #[test]
+fn capture_size_bound_rejects_malformed_public_descriptors_before_dispatch() {
+    let owner = Uuid::from_u128(0x99990000000040008000000000000000);
+    for request in [
+        BatchRequest::Batch {
+            mode: Mode::Automatic,
+            owner: None,
+            rollback_prior: false,
+            units: vec![],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Automatic,
+            owner: None,
+            rollback_prior: false,
+            units: vec![UnitKind::Update; MAX_UNITS + 1],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Automatic,
+            owner: Some(owner),
+            rollback_prior: false,
+            units: vec![UnitKind::Update],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Automatic,
+            owner: None,
+            rollback_prior: true,
+            units: vec![UnitKind::Update],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Manual,
+            owner: Some(owner),
+            rollback_prior: false,
+            units: vec![UnitKind::Update],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Manual,
+            owner: None,
+            rollback_prior: true,
+            units: vec![UnitKind::Update],
+        },
+        BatchRequest::Batch {
+            mode: Mode::Manual,
+            owner: Some(Uuid::nil()),
+            rollback_prior: true,
+            units: vec![UnitKind::Update],
+        },
+        BatchRequest::Finish {
+            owner: Uuid::nil(),
+            action: FinishAction::Rollback,
+        },
+    ] {
+        assert!(BatchCapture::maximum_encoded_len(&request).is_err());
+        assert!(BatchCapture::maximum_base64_len(&request).is_err());
+        assert!(BatchCapture::encode(&BatchEvidence::new(request)).is_err());
+    }
+}
+
+#[test]
+fn capture_size_bound_covers_500_manual_new_and_continued_units_and_both_finishes() {
+    let owner = Uuid::from_u128(0x99990000000040008000000000000000);
+    let huge = "99999999999999999999999999999999999999";
+    for prior_owner in [None, Some(owner)] {
+        let request = BatchRequest::parse(
+            "mutationBatch",
+            &payload(MAX_UNITS, Mode::Manual, prior_owner),
+        )
+        .unwrap()
+        .unwrap();
+        let binary_bound = BatchCapture::maximum_encoded_len(&request).unwrap();
+        assert_eq!(
+            binary_bound,
+            if prior_owner.is_some() {
+                21_851
+            } else {
+                21_835
+            }
+        );
+        assert!(BatchCapture::maximum_base64_len(&request).unwrap() < 30 * 1024);
+        let mut evidence = BatchEvidence::new(request);
+        if prior_owner.is_some() {
+            for role in [Role::Context, Role::Settings] {
+                complete(&mut evidence, role, None, None);
+            }
+        } else {
+            preflight(&mut evidence);
+        }
+        for unit in 0..MAX_UNITS {
+            complete(
+                &mut evidence,
+                Role::Unit,
+                Some(unit),
+                Some(if unit == MAX_UNITS - 1 {
+                    (huge, Some(huge))
+                } else {
+                    ("1", Some("0"))
+                }),
+            );
+        }
+        for role in [Role::Rollback, Role::Idle, Role::Disposition] {
+            complete(&mut evidence, role, None, None);
+        }
+        assert!(evidence.accept_terminal(&largest_summary(
+            &evidence.request,
+            Outcome::RolledBack,
+            Some(Failure::Cardinality)
+        )));
+        let original = assert_capture_fits_request(&evidence);
+        let last = evidence
+            .steps
+            .iter()
+            .rfind(|step| step.role == Role::Unit)
+            .unwrap();
+        assert_eq!(last.count.as_ref().unwrap().affected_rows, huge);
+        assert_eq!(
+            last.count.as_ref().unwrap().multi_joined_rows.as_deref(),
+            Some(huge)
+        );
+        // Two large unit results cannot fit the admitted prefix contract:
+        // dispatch of the second unit requires the first's exact successful count.
+        evidence
+            .steps
+            .iter_mut()
+            .find(|step| step.role == Role::Unit)
+            .unwrap()
+            .count
+            .as_mut()
+            .unwrap()
+            .affected_rows = huge.into();
+        assert!(BatchCapture::encode(&evidence).is_err());
+        assert_eq!(
+            BatchCapture::decode(&original).unwrap().steps.len(),
+            MAX_UNITS + if prior_owner.is_some() { 5 } else { 7 }
+        );
+    }
+    for action in [FinishAction::Commit, FinishAction::Rollback] {
+        let request = BatchRequest::Finish { owner, action };
+        assert_eq!(BatchCapture::maximum_encoded_len(&request).unwrap(), 438);
+        assert_eq!(BatchCapture::maximum_base64_len(&request).unwrap(), 584);
+        let mut evidence = BatchEvidence::new(request);
+        let roles: &[Role] = if action == FinishAction::Commit {
+            &[
+                Role::Context,
+                Role::Settings,
+                Role::Commit,
+                Role::Idle,
+                Role::Disposition,
+            ]
+        } else {
+            &[Role::Rollback, Role::Idle, Role::Disposition]
+        };
+        for &role in roles {
+            complete(&mut evidence, role, None, None);
+        }
+        let outcome = if action == FinishAction::Commit {
+            Outcome::Committed
+        } else {
+            Outcome::RolledBack
+        };
+        assert!(evidence.accept_terminal(&largest_summary(&evidence.request, outcome, None)));
+        assert_capture_fits_request(&evidence);
+    }
+}
+
+#[test]
+fn capture_size_bound_covers_index_varints_and_exact_large_insert_delete_counts() {
+    let mut previous = 0;
+    let mut bounds = Vec::new();
+    for count in [1, 117, 118, 127, 128, MAX_UNITS] {
+        for kind in [UnitKind::Insert, UnitKind::Delete] {
+            let request = BatchRequest::Batch {
+                mode: Mode::Automatic,
+                owner: None,
+                rollback_prior: false,
+                units: vec![kind; count],
+            };
+            let bound = BatchCapture::maximum_encoded_len(&request).unwrap();
+            assert!(bound >= previous);
+            previous = bound;
+            if kind == UnitKind::Insert {
+                bounds.push(bound);
+            }
+            let mut evidence = BatchEvidence::new(request);
+            preflight(&mut evidence);
+            for unit in 0..count {
+                complete(
+                    &mut evidence,
+                    Role::Unit,
+                    Some(unit),
+                    Some((
+                        if unit == count - 1 {
+                            "99999999999999999999999999999999999999"
+                        } else {
+                            "1"
+                        },
+                        None,
+                    )),
+                );
+            }
+            let terminal =
+                largest_summary(&evidence.request, Outcome::Unknown, Some(Failure::Observer));
+            assert!(evidence.accept_terminal(&terminal));
+            assert_capture_fits_request(&evidence);
+        }
+    }
+    // The 118th unit crosses the conservative step-count varint boundary;
+    // the 128th crosses both descriptor count and unit-index boundaries.
+    assert_eq!(bounds[2] - bounds[1], 42);
+    assert_eq!(bounds[4] - bounds[3], 43);
+}
+
+#[test]
+fn capture_size_bound_covers_every_observed_prefix_including_ack_without_identity() {
+    let mut evidence = evidence(2);
+    assert_capture_fits_request(&evidence);
+    for (role, unit) in [
+        (Role::Context, None),
+        (Role::Settings, None),
+        (Role::Begin, None),
+        (Role::Transaction, None),
+        (Role::Unit, Some(0)),
+        (Role::Unit, Some(1)),
+        (Role::Verify, None),
+        (Role::Commit, None),
+        (Role::Idle, None),
+        (Role::Disposition, None),
+    ] {
+        let step = evidence.steps.len() + 1;
+        let mut events = vec![
+            phase(step, role, unit, StepPhase::Dispatching),
+            phase(step, role, unit, StepPhase::Acknowledged),
+            identity(step, false),
+            identity(step, true),
+        ];
+        if role == Role::Unit {
+            events.push(frame(json!({"type":"batchCount","step":step,"unit":unit,
+                "affectedRows":"1","multiJoinedRows":"0"})));
+        }
+        events.push(phase(step, role, unit, StepPhase::Drained));
+        for event in events {
+            assert!(evidence.apply_event(&event));
+            assert_capture_fits_request(&evidence);
+            let mut unknown = evidence.clone();
+            assert!(unknown.accept_terminal(&largest_summary(
+                &unknown.request,
+                Outcome::Unknown,
+                Some(Failure::Transport)
+            )));
+            assert_capture_fits_request(&unknown);
+        }
+    }
+}
+
+#[test]
 fn manual_pending_and_separate_finish_keep_stable_owner_without_overwriting_original() {
     let owner = Uuid::new_v4();
     let mut pending = BatchEvidence::new(
@@ -383,7 +667,7 @@ fn manual_pending_and_separate_finish_keep_stable_owner_without_overwriting_orig
     complete(&mut pending, Role::Verify, None, None);
     let pending_summary = json!({"outcome":"pending","owner":owner,"transactionId":"-123","failure":null,"priorBatches":0});
     assert!(pending.accept_terminal(&pending_summary));
-    let original = BatchCapture::encode(&pending).unwrap();
+    let original = assert_capture_fits_request(&pending);
     let mut finish = BatchEvidence::new(BatchRequest::Finish {
         owner,
         action: FinishAction::Rollback,
@@ -395,8 +679,5 @@ fn manual_pending_and_separate_finish_keep_stable_owner_without_overwriting_orig
     assert!(finish.accept_terminal(&finished));
     assert_eq!(BatchCapture::encode(&pending).unwrap(), original);
     assert_eq!(BatchCapture::decode(&original).unwrap(), pending);
-    assert_eq!(
-        BatchCapture::decode(&BatchCapture::encode(&finish).unwrap()).unwrap(),
-        finish
-    );
+    assert_capture_fits_request(&finish);
 }

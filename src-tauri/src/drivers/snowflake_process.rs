@@ -632,11 +632,7 @@ pub struct Report {
     /// from ordinary statement events or lost when the process is retired.
     pub batch: Option<BatchEvidence>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StatementIdentity {
-    pub sdk_request_id: String,
-    pub query_id: Option<String>,
-}
+pub use super::snowflake_batch::StatementIdentity;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Column {
     pub name: String,

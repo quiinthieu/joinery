@@ -9,7 +9,6 @@ pub mod postgres;
 pub mod redis;
 pub mod snowflake;
 pub mod snowflake_auth;
-#[cfg(unix)]
 pub(crate) mod snowflake_batch;
 #[cfg(unix)]
 pub(crate) mod snowflake_browsing;

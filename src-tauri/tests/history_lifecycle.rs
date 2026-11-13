@@ -138,7 +138,7 @@ fn insert_raw(root: &Path, value: &Value) {
     let connection = rusqlite::Connection::open(root.join("joinery.sqlite")).unwrap();
     connection
         .execute(
-            "INSERT INTO history_v7(id,started_at,json) VALUES(?1,?2,?3)",
+            "INSERT INTO history_v8(id,started_at,json) VALUES(?1,?2,?3)",
             rusqlite::params![
                 value["id"].as_str().unwrap(),
                 i64::try_from(value["startedAt"].as_u64().unwrap()).unwrap(),
@@ -465,7 +465,7 @@ fn history_lifecycle_backup_copy_reopens_with_exact_sql_and_nullable_evidence() 
     for entry in &originals {
         let raw: String = snapshot
             .query_row(
-                "SELECT json FROM history_v7 WHERE id=?1",
+                "SELECT json FROM history_v8 WHERE id=?1",
                 [&entry.id],
                 |row| row.get(0),
             )

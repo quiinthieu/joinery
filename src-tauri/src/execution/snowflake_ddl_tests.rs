@@ -185,7 +185,7 @@ async fn ddl_studio_failed_start_audit_does_not_dispatch_or_claim_terminal_outco
     let plan = ddl_review(&studio, &request).await;
     let token = ddl_approve(&studio, &plan);
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v8 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
     assert!(
         studio
             .execute_snowflake_ddl(&plan.id, Some(&token))
@@ -911,7 +911,7 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, original.0);
         assert_eq!(history[0].snowflake_ddl, original.1.snowflake_ddl);
-        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v7 WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
+        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v8 WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
         assert_eq!(terminal_audits, 1);
         assert_eq!(driver.ddl_calls.lock().len(), 1);
         assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);

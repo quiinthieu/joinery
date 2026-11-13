@@ -123,7 +123,7 @@ fn history_ticket_finish_and_readback_reject_changed_immutable_rows_without_over
             .connection
             .lock()
             .execute(
-                "UPDATE history_v7 SET json=?1 WHERE id=?2",
+                "UPDATE history_v8 SET json=?1 WHERE id=?2",
                 params![raw, original.id],
             )
             .unwrap();
@@ -136,7 +136,7 @@ fn history_ticket_finish_and_readback_reject_changed_immutable_rows_without_over
         assert!(lookup(&connection, &original.id).is_err(), "{field}");
         let unchanged: String = connection
             .query_row(
-                "SELECT json FROM history_v7 WHERE id=?1",
+                "SELECT json FROM history_v8 WHERE id=?1",
                 [&original.id],
                 |r| r.get(0),
             )
@@ -151,7 +151,7 @@ fn history_ticket_finish_and_readback_reject_changed_immutable_rows_without_over
         );
         connection
             .execute(
-                "UPDATE history_v7 SET json=?1 WHERE id=?2",
+                "UPDATE history_v8 SET json=?1 WHERE id=?2",
                 params![encode(&original).unwrap(), original.id],
             )
             .unwrap();
@@ -196,7 +196,7 @@ fn history_ticket_clear_prune_and_text_revocation_cannot_be_undone_by_retries() 
                 store
                     .connection
                     .lock()
-                    .execute("DELETE FROM history_v7 WHERE id=?1", [&original.id])
+                    .execute("DELETE FROM history_v8 WHERE id=?1", [&original.id])
                     .unwrap();
             }
             "optout" => {
@@ -245,7 +245,7 @@ fn history_console_prepare_and_complete_rollback_all_obligations_on_audit_failur
     let owner = store.claim_console_journal_owner().unwrap();
     let original = seed(&new_id(), Some("SELECT 'exact original'"));
     let meta = metadata(&original);
-    store.connection.lock().execute_batch("CREATE TRIGGER fail_start BEFORE INSERT ON audit_v7 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT,'fixture'); END").unwrap();
+    store.connection.lock().execute_batch("CREATE TRIGGER fail_start BEFORE INSERT ON audit_v8 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT,'fixture'); END").unwrap();
     assert_eq!(
         store
             .console_prepare_lifecycle(&owner, meta.clone(), &original)
@@ -288,7 +288,7 @@ fn history_console_prepare_and_complete_rollback_all_obligations_on_audit_failur
             )
             .is_err()
     );
-    store.connection.lock().execute_batch("CREATE TRIGGER fail_finish BEFORE INSERT ON audit_v7 WHEN NEW.outcome='Completed' BEGIN SELECT RAISE(ABORT,'fixture'); END").unwrap();
+    store.connection.lock().execute_batch("CREATE TRIGGER fail_finish BEFORE INSERT ON audit_v8 WHEN NEW.outcome='Completed' BEGIN SELECT RAISE(ABORT,'fixture'); END").unwrap();
     let finished_at = now_ms();
     assert!(
         store
@@ -443,7 +443,7 @@ fn history_console_seal_retains_late_observations_and_original_ack_then_closes_p
         .connection
         .lock()
         .execute(
-            "UPDATE history_v7 SET json=json_set(json,'$.status','cancelled') WHERE id=?1",
+            "UPDATE history_v8 SET json=json_set(json,'$.status','cancelled') WHERE id=?1",
             [&original.id],
         )
         .unwrap();

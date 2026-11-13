@@ -671,10 +671,10 @@ fn finished(p: &Payload) -> AuditEntry {
 }
 pub(super) fn audit_once(c: &Connection, a: &AuditEntry) -> AppResult<()> {
     let timestamp = i64::try_from(a.occurred_at).map_err(|_| invalid())?;
-    c.execute("INSERT INTO audit_v7(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![a.id,timestamp,a.connection_id,a.action,a.digest,a.outcome]).map_err(db_error)?;
+    c.execute("INSERT INTO audit_v8(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![a.id,timestamp,a.connection_id,a.action,a.digest,a.outcome]).map_err(db_error)?;
     let old: (i64, String, String, String, String) = c
         .query_row(
-            "SELECT occurred_at,CASE WHEN length(CAST(connection_id AS BLOB))<=256 THEN connection_id ELSE '' END,CASE WHEN length(CAST(action AS BLOB))<=32 THEN action ELSE '' END,CASE WHEN length(CAST(digest AS BLOB))<=64 THEN digest ELSE '' END,CASE WHEN length(CAST(outcome AS BLOB))<=32 THEN outcome ELSE '' END FROM audit_v7 WHERE id=?1",
+            "SELECT occurred_at,CASE WHEN length(CAST(connection_id AS BLOB))<=256 THEN connection_id ELSE '' END,CASE WHEN length(CAST(action AS BLOB))<=32 THEN action ELSE '' END,CASE WHEN length(CAST(digest AS BLOB))<=64 THEN digest ELSE '' END,CASE WHEN length(CAST(outcome AS BLOB))<=32 THEN outcome ELSE '' END FROM audit_v8 WHERE id=?1",
             [&a.id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -913,7 +913,12 @@ fn verify_binding(c: &Connection, data: &ReservationData) -> AppResult<()> {
 }
 fn quota(c: &Connection, owner: &str, pool: OutcomePool) -> AppResult<()> {
     let (all,root,local):(i64,i64,i64)=c.query_row("SELECT count(*),coalesce(sum(CASE WHEN phase!='settled' AND pool=?1 THEN 1 ELSE 0 END),0),coalesce(sum(CASE WHEN phase!='settled' AND pool=?1 AND owner_nonce=?2 THEN 1 ELSE 0 END),0) FROM outcome_operations_v7",params![pool.text(),owner],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(db_error)?;
-    if all >= MAX_MARKERS || root >= MAX_POOL_ROOT || local >= MAX_POOL_OWNER {
+    let (batch_all, batch_root, batch_local) =
+        super::batch_outcomes::counts(c, owner, pool.text())?;
+    if all + batch_all >= MAX_MARKERS
+        || root + batch_root >= MAX_POOL_ROOT
+        || local + batch_local >= MAX_POOL_OWNER
+    {
         return Err(full());
     }
     Ok(())
@@ -930,6 +935,9 @@ fn reserve(
     d.validate()?;
     if pool == OutcomePool::EmergencyRollback && !d.rollback() {
         return Err(invalid());
+    }
+    if super::batch_outcomes::namespace_exists(c, &d.operation_id)? {
+        return Err(conflict());
     }
     if let Some(row) = read_row(c, &d.operation_id)? {
         let state = phase(&row)?;
@@ -977,7 +985,7 @@ fn reserve(
     quota(c, owner, pool)?;
     let previous_audit: bool = c
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM audit_v7 WHERE id=?1)",
+            "SELECT EXISTS(SELECT 1 FROM audit_v8 WHERE id=?1)",
             [format!("{}:started", d.operation_id)],
             |r| r.get(0),
         )
@@ -1362,9 +1370,10 @@ pub(crate) struct SettledBoundaryEvidence {
     pub started_audit_id: String,
     pub finished_audit_id: String,
 }
-fn read_audit(c: &Connection, id: &str) -> AppResult<AuditEntry> {
+pub(super) fn read_audit(c: &Connection, id: &str) -> AppResult<AuditEntry> {
+    let table = super::metadata_table(c, "audit")?;
     c.query_row(
-        "SELECT CASE WHEN length(CAST(id AS BLOB))<=45 THEN id ELSE '' END,occurred_at,CASE WHEN length(CAST(connection_id AS BLOB))<=256 THEN connection_id ELSE '' END,CASE WHEN length(CAST(action AS BLOB))<=32 THEN action ELSE '' END,CASE WHEN length(CAST(digest AS BLOB))<=64 THEN digest ELSE '' END,CASE WHEN length(CAST(outcome AS BLOB))<=32 THEN outcome ELSE '' END FROM audit_v7 WHERE id=?1",
+        &format!("SELECT CASE WHEN length(CAST(id AS BLOB))<=45 THEN id ELSE '' END,occurred_at,CASE WHEN length(CAST(connection_id AS BLOB))<=256 THEN connection_id ELSE '' END,CASE WHEN length(CAST(action AS BLOB))<=32 THEN action ELSE '' END,CASE WHEN length(CAST(digest AS BLOB))<=64 THEN digest ELSE '' END,CASE WHEN length(CAST(outcome AS BLOB))<=32 THEN outcome ELSE '' END FROM {table} WHERE id=?1"),
         [id],
         |r| {
             let timestamp: i64 = r.get(1)?;

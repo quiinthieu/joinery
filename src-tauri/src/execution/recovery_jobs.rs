@@ -745,7 +745,7 @@ mod tests {
             )
             .unwrap();
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v8 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
         let completion = HistoryCompletion {
             provenance: HistoryProvenance::Recorded,
             status: Some(RunStatus::Completed),

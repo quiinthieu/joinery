@@ -41,8 +41,17 @@ test("captured query outcome survives backend death and reopens in history witho
   const base = `http://127.0.0.1:${port}`;
   let child: ChildProcess | undefined;
   let generation = 0;
+  let activeGeneration: number | undefined;
+  const retiredGenerations = new Set<number>();
+  const forwarding = new Set<Promise<void>>();
+  let tearingDown = false;
+  async function retire() {
+    if (activeGeneration !== undefined) retiredGenerations.add(activeGeneration);
+    await stop(child);
+  }
   async function start() {
-    const log = openSync(path.join(root, `harness-${generation++}.log`), "wx");
+    const nextGeneration = generation++;
+    const log = openSync(path.join(root, `harness-${nextGeneration}.log`), "wx");
     try {
       child = spawn(path.resolve("src-tauri/target/debug/test-harness"), [], {
         env: {
@@ -66,6 +75,7 @@ test("captured query outcome survives backend death and reopens in history witho
           .catch(() => false);
       })
       .toBe(true);
+    activeGeneration = nextGeneration;
   }
   async function rpc<T>(command: string, args = {}): Promise<T> {
     const response = await fetch(`${base}/rpc/${command}`, {
@@ -82,11 +92,48 @@ test("captured query outcome survives backend death and reopens in history witho
     await start();
     // Route only this page to our explicitly owned, restartable backend. The
     // shared Playwright server and all user processes remain untouched.
-    await page.route("http://127.0.0.1:1422/**", async (route) => {
-      const response = await route.fetch({
-        url: route.request().url().replace("http://127.0.0.1:1422", base),
-      });
-      await route.fulfill({ response });
+    await page.route("http://127.0.0.1:1422/**", (route) => {
+      // A failed fetch may finish after restart; retain the generation it used.
+      const ownedGeneration = activeGeneration;
+      const retired = () =>
+        ownedGeneration !== undefined && retiredGenerations.has(ownedGeneration);
+      const task = (async () => {
+        try {
+          if (retired()) {
+            await route.abort("connectionfailed");
+            return;
+          }
+          let response;
+          try {
+            response = await route.fetch({
+              url: route.request().url().replace("http://127.0.0.1:1422", base),
+            });
+          } catch (error) {
+            if (
+              !retired() ||
+              !(error instanceof Error) ||
+              !/\b(?:ECONNRESET|ECONNREFUSED|EPIPE)\b|socket hang up/.test(error.message)
+            ) {
+              throw error;
+            }
+            await route.abort("connectionfailed");
+            return;
+          }
+          await route.fulfill({ response });
+        } catch (error) {
+          if (
+            !tearingDown ||
+            !page.isClosed() ||
+            !retired() ||
+            !(error instanceof Error) ||
+            !/Target page, context or browser has been closed/.test(error.message)
+          ) {
+            throw error;
+          }
+        }
+      })();
+      forwarding.add(task);
+      return task.finally(() => forwarding.delete(task));
     });
     await page.goto("/");
     await page.getByRole("button", { name: "New connection", exact: true }).click();
@@ -111,7 +158,7 @@ test("captured query outcome survives backend death and reopens in history witho
     const database = new DatabaseSync(dbPath);
     try {
       database.exec(
-        "CREATE TRIGGER reject_browser_history BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT,'isolated browser fault'); END;",
+        "CREATE TRIGGER reject_browser_history BEFORE UPDATE ON history_v8 BEGIN SELECT RAISE(ABORT,'isolated browser fault'); END;",
       );
     } finally {
       database.close();
@@ -138,7 +185,7 @@ test("captured query outcome survives backend death and reopens in history witho
     } finally {
       before.close();
     }
-    await stop(child);
+    await retire();
     const repair = new DatabaseSync(dbPath);
     try {
       repair.exec("DROP TRIGGER reject_browser_history;");
@@ -188,11 +235,22 @@ test("captured query outcome survives backend death and reopens in history witho
       expect(audits.filter((a) => a.id === `${id}:finished`)).toHaveLength(1);
       expect(await rpc("history_entry", { id })).toEqual(restored);
       if (restart === 0) {
-        await stop(child);
+        await retire();
         await start();
       }
     }
   } finally {
-    await stop(child);
+    tearingDown = true;
+    try {
+      await retire();
+    } finally {
+      try {
+        // Keep interception installed until this page closes: no cleanup request
+        // may fall through to the shared backend while owned routes drain.
+        await page.close();
+      } finally {
+        await Promise.all([...forwarding]);
+      }
+    }
   }
 });

@@ -179,7 +179,7 @@ fn history_owner_recovery_respects_clear_optout_delete_and_missing_visible_row()
                 store
                     .connection
                     .lock()
-                    .execute("DELETE FROM history_v7 WHERE id=?1", [&entry.id])
+                    .execute("DELETE FROM history_v8 WHERE id=?1", [&entry.id])
                     .unwrap();
             }
         }
@@ -456,7 +456,8 @@ fn history_owner_v6_migration_fences_cached_v5_privacy_and_preserves_unbound_his
     store.begin_history(&legacy).unwrap();
     drop(store);
     let old = Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; DROP TABLE history_owners_v6; ALTER TABLE profiles_v7 RENAME TO profiles_v5; ALTER TABLE history_v7 RENAME TO history_v5; ALTER TABLE audit_v7 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
+    super::super::batch_outcomes::drop_schema(&old);
+    old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; DROP TABLE history_owners_v6; ALTER TABLE profiles_v8 RENAME TO profiles_v5; ALTER TABLE history_v8 RENAME TO history_v5; ALTER TABLE audit_v8 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
     super::super::recovery::validate(&old).unwrap();
     let mut clear = old.prepare("DELETE FROM history_v5").unwrap();
     let mut save = old.prepare("UPDATE profiles_v5 SET json=json").unwrap();

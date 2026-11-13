@@ -8,6 +8,7 @@ pub(super) mod history;
 pub use history::{HistoryCompletion, HistoryDisposition, HistoryTicket};
 mod history_owner;
 pub(crate) use history_owner::{HistoryOwner, OperationGate};
+pub(crate) mod batch_outcomes;
 mod outcomes;
 pub(crate) use outcomes::{
     BoundaryEvidence, OriginalOutcome, OutcomeDescriptor, OutcomeKind, OutcomePool,
@@ -62,7 +63,7 @@ impl Persistence {
     }
 
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
-        self.json_rows("SELECT json FROM profiles_v7 ORDER BY id")
+        self.json_rows("SELECT json FROM profiles_v8 ORDER BY id")
     }
     pub fn groups(&self) -> AppResult<Vec<ConnectionGroup>> {
         self.json_rows("SELECT json FROM groups ORDER BY id")
@@ -96,7 +97,7 @@ impl Persistence {
             .map_err(|_| AppError::internal("Could not encode profile"))?;
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
-        tx.execute("INSERT INTO profiles_v7(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
+        tx.execute("INSERT INTO profiles_v8(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
         history::lifecycle::ensure_profile(&tx, &profile.id)?;
         if !profile.store_query_text {
             history::lifecycle::redact_profile(&tx, &profile.id)?;
@@ -112,7 +113,7 @@ impl Persistence {
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
         let existing_json: Option<String> = tx
-            .query_row("SELECT json FROM profiles_v7 WHERE id=?1", [id], |r| {
+            .query_row("SELECT json FROM profiles_v8 WHERE id=?1", [id], |r| {
                 r.get(0)
             })
             .optional()
@@ -123,7 +124,7 @@ impl Persistence {
                 .unwrap_or(true),
             None => true,
         };
-        tx.execute("DELETE FROM profiles_v7 WHERE id=?1", [id])
+        tx.execute("DELETE FROM profiles_v8 WHERE id=?1", [id])
             .map_err(db_error)?;
         history::lifecycle::redact_profile(&tx, id)?;
         workspace::purge_connection(&tx, id)?;
@@ -148,7 +149,7 @@ impl Persistence {
 
     pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
         let conn = self.connection.lock();
-        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit_v7 ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
+        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit_v8 ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
         statement
             .query_map([], |row| {
                 Ok(AuditEntry {
@@ -231,7 +232,7 @@ impl Persistence {
         self.connection
             .lock()
             .execute(
-                "INSERT INTO audit_v7 VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO audit_v8 VALUES(?1,?2,?3,?4,?5,?6)",
                 params![
                     new_id(),
                     now_ms() as i64,
@@ -252,12 +253,12 @@ impl Persistence {
         let mut conn = self.connection.lock();
         let tx = conn.transaction().map_err(db_error)?;
         tx.execute(
-            "INSERT INTO audit_v7(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO audit_v8(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
             params![entry.id, timestamp, entry.connection_id, entry.action, entry.digest, entry.outcome],
         ).map_err(db_error)?;
         let stored: (i64, String, String, String, String) = tx
             .query_row(
-                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v7 WHERE id=?1",
+                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v8 WHERE id=?1",
                 [&entry.id],
                 |row| {
                     Ok((
@@ -323,14 +324,17 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub(super) fn metadata_table(connection: &Connection, base: &str) -> AppResult<&'static str> {
     let version = schema_version(connection)?;
     match (base, version) {
-        ("profiles", 7..) => Ok("profiles_v7"),
-        ("history", 7..) => Ok("history_v7"),
-        ("audit", 7..) => Ok("audit_v7"),
+        ("profiles", 8..) => Ok("profiles_v8"),
+        ("history", 8..) => Ok("history_v8"),
+        ("audit", 8..) => Ok("audit_v8"),
+        ("profiles", 7) => Ok("profiles_v7"),
+        ("history", 7) => Ok("history_v7"),
+        ("audit", 7) => Ok("audit_v7"),
         ("profiles", 6) => Ok("profiles_v6"),
         ("history", 6) => Ok("history_v6"),
         ("audit", 6) => Ok("audit_v6"),
@@ -452,6 +456,12 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
         transaction
             .execute_batch(outcomes::BINDING_SCHEMA)
             .map_err(db_error)?;
+    }
+    if version < 8 {
+        transaction.execute_batch("ALTER TABLE profiles_v7 RENAME TO profiles_v8; ALTER TABLE history_v7 RENAME TO history_v8; ALTER TABLE audit_v7 RENAME TO audit_v8;").map_err(db_error)?;
+        for (_, sql) in batch_outcomes::SCHEMAS {
+            transaction.execute_batch(sql).map_err(db_error)?;
+        }
     }
     if version < SCHEMA_VERSION {
         transaction
@@ -634,6 +644,29 @@ mod tests {
     }
 
     #[test]
+    fn batch_originals_have_archive_membership_and_idle_owner_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Persistence::open(root.path()).unwrap();
+        let connection = store.connection.lock();
+        for name in [
+            "batch_operations_v8",
+            "batch_captures_v8",
+            "manual_transactions_v8",
+            "manual_transaction_members_v8",
+            "manual_transaction_bindings_v8",
+        ] {
+            let exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                    [name],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "missing durable batch recording facility {name}");
+        }
+    }
+
+    #[test]
     fn current_metadata_missing_journal_is_rejected_without_recreating_it() {
         let root = tempfile::tempdir().unwrap();
         let db = Persistence::open(root.path()).unwrap();
@@ -771,7 +804,10 @@ mod tests {
                     barrier.wait();
                     Persistence::open(&root).map(|db| {
                         assert_eq!(db.groups().unwrap().len(), 3);
-                        assert_eq!(schema_version(&db.connection.lock()).unwrap(), 7);
+                        assert_eq!(
+                            schema_version(&db.connection.lock()).unwrap(),
+                            SCHEMA_VERSION
+                        );
                     })
                 })
             })
@@ -791,12 +827,18 @@ mod tests {
                 assert!(error.message.contains("History ownership is busy"));
                 let db = Persistence::open(root.path()).unwrap();
                 assert_eq!(db.groups().unwrap().len(), 3);
-                assert_eq!(schema_version(&db.connection.lock()).unwrap(), 7);
+                assert_eq!(
+                    schema_version(&db.connection.lock()).unwrap(),
+                    SCHEMA_VERSION
+                );
             }
         }
         let db = Persistence::open(root.path()).unwrap();
         assert_eq!(db.groups().unwrap().len(), 3);
-        assert_eq!(schema_version(&db.connection.lock()).unwrap(), 7);
+        assert_eq!(
+            schema_version(&db.connection.lock()).unwrap(),
+            SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -811,7 +853,10 @@ mod tests {
                 std::thread::spawn(move || {
                     barrier.wait();
                     let db = Persistence::open(&root).unwrap();
-                    assert_eq!(schema_version(&db.connection.lock()).unwrap(), 7);
+                    assert_eq!(
+                        schema_version(&db.connection.lock()).unwrap(),
+                        SCHEMA_VERSION
+                    );
                     assert_eq!(db.groups().unwrap().len(), 3);
                 })
             })
@@ -955,7 +1000,7 @@ mod tests {
         db.connection
             .lock()
             .execute(
-                "UPDATE history_v7 SET json=?1 WHERE id='legacy-script'",
+                "UPDATE history_v8 SET json=?1 WHERE id='legacy-script'",
                 [legacy.to_string()],
             )
             .unwrap();

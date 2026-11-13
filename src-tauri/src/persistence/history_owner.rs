@@ -33,6 +33,9 @@ pub(crate) struct HistoryOwner {
     pub(super) nonce: String,
     lease: PrivateFile,
     operation_gate: Arc<OperationGateState>,
+    pub(super) batch_credits: parking_lot::Mutex<
+        std::collections::BTreeMap<String, std::sync::Weak<super::batch_outcomes::GroupMemory>>,
+    >,
 }
 
 /// All operation guards in one Studio share one open description and lock.
@@ -401,7 +404,9 @@ fn recover_proven(connection: &mut Connection, nonce: &str, lease: &PrivateFile)
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        let more = super::outcomes::recover_batch(&tx, nonce)?;
+        let ordinary_more = super::outcomes::recover_batch(&tx, nonce)?;
+        let batch_more = super::batch_outcomes::recover_batch(&tx, nonce)?;
+        let more = ordinary_more || batch_more;
         if !more {
             recover_legacy_nonce(&tx, nonce)?;
         }
@@ -449,10 +454,11 @@ fn visit_owners(
 ) -> AppResult<()> {
     validate_records(connection)?;
     super::outcomes::validate_records(connection)?;
+    super::batch_outcomes::validate_records(connection)?;
     let mut after = String::new();
     loop {
         let nonce: Option<String> = connection.query_row(
-            "SELECT owner_nonce FROM (SELECT owner_nonce FROM history_owners_v6 UNION SELECT owner_nonce FROM outcome_operations_v7 WHERE phase!='settled') WHERE owner_nonce>?1 ORDER BY owner_nonce LIMIT 1",
+            "SELECT owner_nonce FROM (SELECT owner_nonce FROM history_owners_v6 UNION SELECT owner_nonce FROM outcome_operations_v7 WHERE phase!='settled' UNION SELECT owner_nonce FROM batch_operations_v8 WHERE phase!='settled' UNION SELECT owner_nonce FROM manual_transaction_bindings_v8) WHERE owner_nonce>?1 ORDER BY owner_nonce LIMIT 1",
             [&after], |row| row.get(0),
         ).optional().map_err(db_error)?;
         let Some(nonce) = nonce else {
@@ -485,6 +491,7 @@ impl Persistence {
             nonce,
             lease,
             operation_gate,
+            batch_credits: parking_lot::Mutex::new(std::collections::BTreeMap::new()),
         };
         drop(registration);
         let mut connection = self.connection.lock();

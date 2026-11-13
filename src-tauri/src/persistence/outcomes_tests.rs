@@ -88,7 +88,7 @@ fn outcomes_capture_survives_history_update_failure_and_dead_owner_recovery() {
     store
         .capture_original_outcome(&owner, &gate, &r, &original)
         .unwrap();
-    store.connection.lock().execute_batch("CREATE TEMP TRIGGER fail_outcome_history BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT,'fixture history failure'); END;").unwrap();
+    store.connection.lock().execute_batch("CREATE TEMP TRIGGER fail_outcome_history BEFORE UPDATE ON history_v8 BEGIN SELECT RAISE(ABORT,'fixture history failure'); END;").unwrap();
     assert!(
         store
             .settle_original_outcome(&owner, &gate, &r, &original)
@@ -120,7 +120,7 @@ fn outcomes_capture_survives_history_update_failure_and_dead_owner_recovery() {
 #[test]
 fn outcomes_audit_and_release_faults_rollback_projection_but_not_capture() {
     for fault in [
-        "CREATE TEMP TRIGGER fail_projection BEFORE INSERT ON audit_v7 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'audit fault'); END;",
+        "CREATE TEMP TRIGGER fail_projection BEFORE INSERT ON audit_v8 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'audit fault'); END;",
         "CREATE TEMP TRIGGER fail_projection BEFORE DELETE ON history_owners_v6 BEGIN SELECT RAISE(ABORT,'release fault'); END;",
     ] {
         let (_root, store, owner) = setup();
@@ -177,7 +177,7 @@ fn outcomes_started_audit_reservation_and_history_are_one_transaction() {
     let gate = store.operation_gate(&owner).unwrap();
     let seed = seed();
     let d = descriptor(&seed);
-    store.connection.lock().execute_batch("CREATE TEMP TRIGGER fail_started BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT,'started unavailable'); END;").unwrap();
+    store.connection.lock().execute_batch("CREATE TEMP TRIGGER fail_started BEFORE INSERT ON audit_v8 BEGIN SELECT RAISE(ABORT,'started unavailable'); END;").unwrap();
     assert!(
         store
             .reserve_owned_operation(&owner, &gate, Some(&seed), &d, OutcomePool::Ordinary)
@@ -403,7 +403,7 @@ fn outcomes_volatile_rollback_captures_ack_when_started_audit_is_unwritable() {
     let token = store
         .make_volatile_rollback_token(&owner, &gate, &d)
         .unwrap();
-    store.connection.lock().execute_batch("CREATE TEMP TRIGGER reject_started BEFORE INSERT ON audit_v7 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT,'started audit unavailable'); END;").unwrap();
+    store.connection.lock().execute_batch("CREATE TEMP TRIGGER reject_started BEFORE INSERT ON audit_v8 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT,'started audit unavailable'); END;").unwrap();
     assert!(
         store
             .reserve_owned_operation(&owner, &gate, None, &d, OutcomePool::EmergencyRollback)
@@ -514,7 +514,7 @@ fn outcomes_closed_decoder_rejects_large_arrays_and_duplicate_or_unknown_nested_
     let (_root, store, _owner) = setup();
     let c = store.connection.lock();
     c.execute(
-        "INSERT INTO audit_v7 VALUES('bad-timestamp',-1,'c','execute','d','started')",
+        "INSERT INTO audit_v8 VALUES('bad-timestamp',-1,'c','execute','d','started')",
         [],
     )
     .unwrap();
@@ -567,7 +567,7 @@ fn outcomes_sql_projections_cap_malformed_metadata_and_preserve_phase_nulls() {
     assert_eq!(phase(&row).unwrap(), OutcomePhase::Settled);
     let start_id = format!("{}:started", d.operation_id);
     c.execute(
-        "UPDATE audit_v7 SET connection_id=hex(zeroblob(65536)) WHERE id=?1",
+        "UPDATE audit_v8 SET connection_id=hex(zeroblob(65536)) WHERE id=?1",
         [&start_id],
     )
     .unwrap();
@@ -841,7 +841,7 @@ fn outcomes_dead_capture_honors_clear_optout_delete_and_missing_visible_rows() {
                 store
                     .connection
                     .lock()
-                    .execute("DELETE FROM history_v7 WHERE id=?1", [&seed.id])
+                    .execute("DELETE FROM history_v8 WHERE id=?1", [&seed.id])
                     .unwrap();
             }
         }
@@ -936,7 +936,7 @@ fn outcomes_imported_capture_and_settled_audits_remain_history_without_local_aut
         assert!(read_row(&candidate, &d.operation_id).unwrap().is_none());
         assert_eq!(
             candidate
-                .query_row("SELECT count(*) FROM audit_v7", [], |r| r.get::<_, i64>(0))
+                .query_row("SELECT count(*) FROM audit_v8", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
             if settled { 2 } else { 1 }
         );
@@ -1020,7 +1020,8 @@ fn outcomes_dead_replay_batch_commits_at_most_eight_originals() {
 #[test]
 fn outcomes_v7_migration_excludes_idle_v6_nonce_before_any_writer_change() {
     let (root, store, owner) = setup();
-    store.connection.lock().execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; ALTER TABLE profiles_v7 RENAME TO profiles_v6; ALTER TABLE history_v7 RENAME TO history_v6; ALTER TABLE audit_v7 RENAME TO audit_v6; PRAGMA user_version=6;").unwrap();
+    super::super::batch_outcomes::drop_schema(&store.connection.lock());
+    store.connection.lock().execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; ALTER TABLE profiles_v8 RENAME TO profiles_v6; ALTER TABLE history_v8 RENAME TO history_v6; ALTER TABLE audit_v8 RENAME TO audit_v6; PRAGMA user_version=6;").unwrap();
     assert!(Persistence::open(root.path()).is_err());
     assert_eq!(
         store
@@ -1033,7 +1034,10 @@ fn outcomes_v7_migration_excludes_idle_v6_nonce_before_any_writer_change() {
     drop(owner);
     drop(store);
     let store = Persistence::open(root.path()).unwrap();
-    assert_eq!(schema_version(&store.connection.lock()).unwrap(), 7);
+    assert_eq!(
+        schema_version(&store.connection.lock()).unwrap(),
+        super::super::SCHEMA_VERSION
+    );
     assert!(
         store
             .connection

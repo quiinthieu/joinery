@@ -234,6 +234,13 @@ pub(in crate::persistence) fn schema_objects(version: i64) -> AppResult<Vec<(Str
         objects.push(("table".into(), super::super::outcomes::TABLE.into()));
         objects.push(("table".into(), super::super::outcomes::BINDING_TABLE.into()));
     }
+    if version >= 8 {
+        objects.extend(
+            super::super::batch_outcomes::SCHEMAS
+                .iter()
+                .map(|(name, _)| ("table".into(), (*name).into())),
+        );
+    }
     Ok(objects)
 }
 
@@ -305,7 +312,8 @@ pub(in crate::persistence) fn validate_records(connection: &Connection) -> AppRe
         return Err(invalid());
     }
     super::super::history_owner::validate_records(connection)?;
-    super::super::outcomes::validate_records(connection)
+    super::super::outcomes::validate_records(connection)?;
+    super::super::batch_outcomes::validate_records(connection)
 }
 
 type TicketRow = (
@@ -438,7 +446,7 @@ pub(in crate::persistence) fn begin(
         }
         if !redacted {
             let raw: Option<String> = connection
-                .query_row("SELECT json FROM history_v7 WHERE id=?1", [&seed.id], |r| {
+                .query_row("SELECT json FROM history_v8 WHERE id=?1", [&seed.id], |r| {
                     r.get(0)
                 })
                 .optional()
@@ -462,7 +470,7 @@ pub(in crate::persistence) fn begin(
     let generation = profile_generation(connection, &seed.connection_id)?;
     let profile: Option<String> = connection
         .query_row(
-            "SELECT json FROM profiles_v7 WHERE id=?1",
+            "SELECT json FROM profiles_v8 WHERE id=?1",
             [&seed.connection_id],
             |r| r.get(0),
         )
@@ -499,7 +507,7 @@ pub(in crate::persistence) fn begin(
         .map_err(db_error)?;
     connection
         .execute(
-            "INSERT INTO history_v7 VALUES(?1,?2,?3)",
+            "INSERT INTO history_v8 VALUES(?1,?2,?3)",
             params![seed.id, seed.started_at as i64, raw],
         )
         .map_err(db_error)?;
@@ -560,7 +568,7 @@ pub(in crate::persistence) fn finish(
         entry.validate_lifecycle()?;
         connection
             .execute(
-                "UPDATE history_v7 SET json=?1 WHERE id=?2",
+                "UPDATE history_v8 SET json=?1 WHERE id=?2",
                 params![encode(&entry)?, ticket.id],
             )
             .map_err(db_error)?;
@@ -591,8 +599,8 @@ pub(in crate::persistence) fn lookup(
 
 pub(in crate::persistence) fn prune(connection: &Connection) -> AppResult<()> {
     let cutoff = now_ms().saturating_sub(30 * 24 * 60 * 60 * 1000) as i64;
-    connection.execute("UPDATE history_tickets_v5 SET disposition='suppressed' WHERE id IN (SELECT id FROM history_v7 WHERE started_at<?1 OR id IN (SELECT id FROM history_v7 ORDER BY started_at DESC,id DESC LIMIT -1 OFFSET 10000))",[cutoff]).map_err(db_error)?;
-    connection.execute("DELETE FROM history_v7 WHERE started_at<?1 OR id IN (SELECT id FROM history_v7 ORDER BY started_at DESC,id DESC LIMIT -1 OFFSET 10000)",[cutoff]).map_err(db_error)?;
+    connection.execute("UPDATE history_tickets_v5 SET disposition='suppressed' WHERE id IN (SELECT id FROM history_v8 WHERE started_at<?1 OR id IN (SELECT id FROM history_v8 ORDER BY started_at DESC,id DESC LIMIT -1 OFFSET 10000))",[cutoff]).map_err(db_error)?;
+    connection.execute("DELETE FROM history_v8 WHERE started_at<?1 OR id IN (SELECT id FROM history_v8 ORDER BY started_at DESC,id DESC LIMIT -1 OFFSET 10000)",[cutoff]).map_err(db_error)?;
     Ok(())
 }
 
@@ -621,7 +629,7 @@ pub(in crate::persistence) fn clear(connection: &Connection) -> AppResult<()> {
         .execute("UPDATE history_tickets_v5 SET disposition='suppressed'", [])
         .map_err(db_error)?;
     connection
-        .execute("DELETE FROM history_v7", [])
+        .execute("DELETE FROM history_v8", [])
         .map_err(db_error)?;
     Ok(())
 }
@@ -641,7 +649,7 @@ pub(in crate::persistence) fn redact_profile(connection: &Connection, id: &str) 
             params![generation, id],
         )
         .map_err(db_error)?;
-    connection.execute("UPDATE history_v7 SET json=json_set(json,'$.sql',NULL) WHERE id IN (SELECT id FROM history_tickets_v5 WHERE json_extract(seed_json,'$.connectionId')=?1 AND disposition='pending')",[id]).map_err(db_error)?;
+    connection.execute("UPDATE history_v8 SET json=json_set(json,'$.sql',NULL) WHERE id IN (SELECT id FROM history_tickets_v5 WHERE json_extract(seed_json,'$.connectionId')=?1 AND disposition='pending')",[id]).map_err(db_error)?;
     connection.execute("UPDATE history_tickets_v5 SET redacted=1 WHERE json_extract(seed_json,'$.connectionId')=?1 AND disposition='pending'",[id]).map_err(db_error)?;
     connection
         .execute("UPDATE history_privacy_v5 SET pristine=0 WHERE id=1", [])
@@ -742,7 +750,7 @@ fn control(connection: &Connection) -> AppResult<(String, String, bool)> {
 fn has_sql(connection: &Connection) -> AppResult<bool> {
     connection
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM history_v7 WHERE json_type(json,'$.sql')='text')",
+            "SELECT EXISTS(SELECT 1 FROM history_v8 WHERE json_type(json,'$.sql')='text')",
             [],
             |r| r.get(0),
         )
@@ -829,7 +837,7 @@ fn validate_ticket_row(connection: &Connection, id: &str) -> AppResult<Option<Hi
 
 fn profile_has_sql(connection: &Connection, id: &str) -> AppResult<bool> {
     connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM history_v7 WHERE json_extract(json,'$.connectionId')=?1 AND json_type(json,'$.sql')='text')",
+        "SELECT EXISTS(SELECT 1 FROM history_v8 WHERE json_extract(json,'$.connectionId')=?1 AND json_type(json,'$.sql')='text')",
         [id], |r| r.get(0)
     ).map_err(db_error)
 }
@@ -980,13 +988,13 @@ pub(in crate::persistence) fn merge_for_restore(
             {
                 return Err(conflict());
             }
-            candidate.execute("INSERT INTO history_v7 VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json",params![id,live.started_at as i64,encode(&live)?]).map_err(db_error)?;
+            candidate.execute("INSERT INTO history_v8 VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json",params![id,live.started_at as i64,encode(&live)?]).map_err(db_error)?;
         }
     }
     drop(rows);
     drop(cursor);
     // Legacy completed history is preserved without inventing tickets or proof.
-    let mut cursor=current.prepare("SELECT id FROM history_v7 WHERE id NOT IN (SELECT id FROM history_tickets_v5) ORDER BY id").map_err(db_error)?;
+    let mut cursor=current.prepare("SELECT id FROM history_v8 WHERE id NOT IN (SELECT id FROM history_tickets_v5) ORDER BY id").map_err(db_error)?;
     let mut rows = cursor.query([]).map_err(db_error)?;
     while let Some(row) = rows.next().map_err(db_error)? {
         let id: String = row.get(0).map_err(db_error)?;
@@ -998,7 +1006,7 @@ pub(in crate::persistence) fn merge_for_restore(
         } else {
             candidate
                 .execute(
-                    "INSERT INTO history_v7 VALUES(?1,?2,?3)",
+                    "INSERT INTO history_v8 VALUES(?1,?2,?3)",
                     params![id, value.started_at as i64, encode(&value)?],
                 )
                 .map_err(db_error)?;
@@ -1030,7 +1038,7 @@ pub(in crate::persistence) fn merge_for_restore(
         if !era_ok || state == HistoryDisposition::Suppressed || visible.is_none() {
             candidate.execute("UPDATE history_tickets_v5 SET disposition='suppressed',redacted=?1 WHERE id=?2",params![redact,id]).map_err(db_error)?;
             candidate
-                .execute("DELETE FROM history_v7 WHERE id=?1", [id])
+                .execute("DELETE FROM history_v8 WHERE id=?1", [id])
                 .map_err(db_error)?;
             continue;
         }
@@ -1048,7 +1056,7 @@ pub(in crate::persistence) fn merge_for_restore(
         value.validate_lifecycle()?;
         candidate
             .execute(
-                "UPDATE history_v7 SET json=?1 WHERE id=?2",
+                "UPDATE history_v8 SET json=?1 WHERE id=?2",
                 params![encode(&value)?, id],
             )
             .map_err(db_error)?;
@@ -1090,11 +1098,12 @@ pub(in crate::persistence) fn merge_for_restore(
     copy_exact(
         current,
         candidate,
-        "audit_v7",
+        "audit_v8",
         "id",
         "id,occurred_at,connection_id,action,digest,outcome",
         6,
     )?;
     super::super::history_owner::merge_for_restore(current, candidate)?;
-    super::super::outcomes::merge_for_restore(current, candidate)
+    super::super::outcomes::merge_for_restore(current, candidate)?;
+    super::super::batch_outcomes::merge_for_restore(current, candidate)
 }

@@ -1,12 +1,20 @@
 //! Closed mutation-batch protocol evidence. This validates helper observations;
 //! it does not infer transaction disposition from a successful statement ACK.
-use super::snowflake_process::StatementIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+/// SQL-free statement identity shared with the Unix helper transport. Keeping
+/// the value portable lets historical captures be inspected without a helper.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatementIdentity {
+    pub sdk_request_id: String,
+    pub query_id: Option<String>,
+}
+
 pub const MAX_UNITS: usize = 500;
-pub const MAX_STEPS: usize = MAX_UNITS + 10;
+const MAX_CONTROL_STEPS: usize = 10;
+pub const MAX_STEPS: usize = MAX_UNITS + MAX_CONTROL_STEPS;
 pub const MAX_MANUAL_BATCHES: u64 = 65_536;
 pub const MAX_CAPTURE_BYTES: usize = 32 * 1024;
 
@@ -15,6 +23,85 @@ pub const MAX_CAPTURE_BYTES: usize = 32 * 1024;
 pub struct BatchCapture;
 impl BatchCapture {
     pub const VERSION: u8 = 1;
+
+    /// Conservative byte bound for the canonical binary capture of every
+    /// accepted prefix and optional terminal for this closed request. This
+    /// validates the public descriptor's shape, not SQL or execution authority.
+    /// No surrounding durable envelope or byte-safe encoding is included.
+    pub fn maximum_encoded_len(request: &BatchRequest) -> Result<usize, &'static str> {
+        request.validate_capture_shape()?;
+        let units = request.units();
+        let descriptor = 4 + match request {
+            BatchRequest::Batch { owner, .. } => {
+                // Request tag, mode, rollback permission, optional owner,
+                // unit-count varint and one kind tag for each unit.
+                3 + 1 + owner.map_or(0, |_| 16) + number_len(units.len() as u128) + units.len()
+            }
+            BatchRequest::Finish { .. } => 2 + 1 + 16,
+        };
+        // Each step has role/phase tags, its unit-index varint, a statement
+        // flag, the exact SDK UUID and optional query UUID, and a count tag.
+        // Missing identity/ACK/count/drain evidence only shortens this form.
+        const STEP_FIXED: usize = 2 + 1 + 16 + 1 + 16 + 1;
+        let controls = MAX_CONTROL_STEPS * (STEP_FIXED + number_len(0));
+        let unit_bytes: usize = units
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                STEP_FIXED
+                    + number_len(index as u128 + 1)
+                    + match kind {
+                        UnitKind::Update => 3, // exact 1, presence flag, exact 0
+                        _ => 2,                // exact 1 and absent multi-joined count
+                    }
+            })
+            .sum();
+        // apply_event requires all preceding units to have exact successful
+        // counts before dispatching another unit. Thus at most the last unit
+        // can retain arbitrary 38-digit counts, even for Unknown terminals.
+        // Count-unavailable markers and count-less SQL rejections are smaller.
+        let wide_count_extra = if units.is_empty() {
+            0
+        } else {
+            let extra = number_len(10u128.pow(38) - 1) - number_len(1);
+            extra
+                * if units.contains(&UnitKind::Update) {
+                    2
+                } else {
+                    1
+                }
+        };
+        let summary_owner = match request {
+            BatchRequest::Batch {
+                mode: Mode::Automatic,
+                ..
+            } => 0,
+            _ => 16,
+        };
+        // Present summary/outcome, optional owner, failure tag, maximum prior
+        // count, present transaction, and the full signed-i64 zigzag varint.
+        let summary = 1
+            + 1
+            + 1
+            + summary_owner
+            + 1
+            + number_len(u128::from(MAX_MANUAL_BATCHES))
+            + 1
+            + number_len(u128::from(u64::MAX));
+        Ok(descriptor
+            + number_len((units.len() + MAX_CONTROL_STEPS) as u128)
+            + controls
+            + unit_bytes
+            + wide_count_extra
+            + summary)
+    }
+
+    /// Padded STANDARD base64 byte bound, excluding quotes and the complete
+    /// durable envelope. Callers must account for that envelope before SQL.
+    pub fn maximum_base64_len(request: &BatchRequest) -> Result<usize, &'static str> {
+        Ok(Self::maximum_encoded_len(request)?.div_ceil(3) * 4)
+    }
+
     pub fn encode(evidence: &BatchEvidence) -> Result<Vec<u8>, &'static str> {
         evidence.validate_prefix()?;
         let bytes = evidence.compact_capture()?;
@@ -335,6 +422,31 @@ fn expected(value: &Value) -> bool {
 }
 
 impl BatchRequest {
+    fn validate_capture_shape(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Batch {
+                mode,
+                owner,
+                rollback_prior,
+                units,
+            } => {
+                if units.is_empty()
+                    || units.len() > MAX_UNITS
+                    || *mode == Mode::Automatic && (owner.is_some() || *rollback_prior)
+                    || *mode == Mode::Manual && *rollback_prior != owner.is_some()
+                    || owner.as_ref().is_some_and(|owner| !valid_owner(owner))
+                {
+                    return Err("invalid capture descriptor");
+                }
+            }
+            Self::Finish { owner, .. } if !valid_owner(owner) => {
+                return Err("invalid finish owner");
+            }
+            Self::Finish { .. } => {}
+        }
+        Ok(())
+    }
+
     /// Called before serialization or queue admission. SQL/binds are validated
     /// here but deliberately never copied into retained protocol evidence.
     pub fn parse(op: &str, payload: &Value) -> Result<Option<Self>, &'static str> {
@@ -537,27 +649,7 @@ impl BatchEvidence {
         !self.steps.is_empty()
     }
     fn validate_prefix(&self) -> Result<(), &'static str> {
-        match &self.request {
-            BatchRequest::Batch {
-                mode,
-                owner,
-                rollback_prior,
-                units,
-            } => {
-                if units.is_empty()
-                    || units.len() > MAX_UNITS
-                    || *mode == Mode::Automatic && (owner.is_some() || *rollback_prior)
-                    || *mode == Mode::Manual && *rollback_prior != owner.is_some()
-                    || owner.as_ref().is_some_and(|owner| !valid_owner(owner))
-                {
-                    return Err("invalid capture descriptor");
-                }
-            }
-            BatchRequest::Finish { owner, .. } if !valid_owner(owner) => {
-                return Err("invalid finish owner");
-            }
-            BatchRequest::Finish { .. } => {}
-        }
+        self.request.validate_capture_shape()?;
         let mut replay = Self::new(self.request.clone());
         let envelope = |extra: Value| {
             let mut frame = serde_json::json!({"v":1,"generation":"capture","id":"capture"});
@@ -748,7 +840,8 @@ impl BatchEvidence {
                         })
                         || !self.next_role(role)
                         || (role != Role::Unit
-                            && self.steps.iter().filter(|s| s.role != Role::Unit).count() >= 10)
+                            && self.steps.iter().filter(|s| s.role != Role::Unit).count()
+                                >= MAX_CONTROL_STEPS)
                     {
                         return false;
                     }
@@ -1146,6 +1239,15 @@ fn put_number(bytes: &mut Vec<u8>, mut value: u128) {
         value >>= 7;
     }
     bytes.push(value as u8);
+}
+
+fn number_len(mut value: u128) -> usize {
+    let mut length = 1;
+    while value >= 128 {
+        length += 1;
+        value >>= 7;
+    }
+    length
 }
 
 #[cfg(test)]

@@ -6468,7 +6468,7 @@ mod browse_classification_tests {
                 .prepare_transaction_control(&session.info.id, &request)
                 .unwrap();
             let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v8 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
             let result = studio.execute_transaction_control(&plan.id, None).await;
             assert_eq!(
                 driver.boundary_calls.lock().len(),

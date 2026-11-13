@@ -6,7 +6,7 @@ fn reject_receipt_write(database: &rusqlite::Connection, table: &str) {
         "audit" => "INSERT",
         _ => panic!("unknown fixture table"),
     };
-    database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE {operation} ON {table}_v7 BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
+    database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE {operation} ON {table}_v8 BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
 }
 
 // Included beside the Studio policy fixtures; no account or helper connection.
@@ -154,7 +154,7 @@ async fn receipt_typed_history_privacy_survives_late_ack_and_retry_without_sql_r
 fn terminal_audits(database: &rusqlite::Connection, action: &str, outcome: &str) -> u32 {
     database
         .query_row(
-            "SELECT COUNT(*) FROM audit_v7 WHERE action=?1 AND outcome=?2",
+            "SELECT COUNT(*) FROM audit_v8 WHERE action=?1 AND outcome=?2",
             [action, outcome],
             |row| row.get(0),
         )
@@ -181,7 +181,7 @@ async fn receipt_dml_original_rejection_unknown_and_observer_error_survive_local
             .prepare_execution(&session.info.id, SDK_DML_SQL)
             .unwrap();
         let database = receipt_database(&root);
-        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v8 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v8 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
         let result = studio.execute_snowflake_dml(&plan.id, None).await.unwrap();
         assert_eq!(result.statement_outcome, outcome);
         let returned = result.error.as_ref().unwrap();
@@ -335,7 +335,7 @@ async fn receipt_boundary_dropped_waiter_preserves_each_original_outcome_until_l
             .await
             .unwrap();
         let database = receipt_database(&root);
-        database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v8 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
         release.notify_one();
@@ -399,7 +399,7 @@ async fn receipt_boundary_dropped_waiter_preserves_each_original_outcome_until_l
 async fn receipt_pending_dml_blocks_mutations_but_allows_one_retained_recovery_rollback() {
     let (root, studio, driver, session) = sdk_dml_fixture(SafeMode::Silent, None);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v8 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v8 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_execution(&session.info.id, SDK_DML_SQL)
         .unwrap();
@@ -454,7 +454,7 @@ async fn receipt_pending_dml_blocks_mutations_but_allows_one_retained_recovery_r
         .unwrap();
     assert_eq!(studio.pending_snowflake_receipts.lock().len(), 1);
     // Even a failed rollback started audit must not strand an active transaction.
-    database.execute_batch("DROP TRIGGER reject_terminal; CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("DROP TRIGGER reject_terminal; CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v8 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let mut recovery = driver.runtime_override.lock().as_ref().unwrap().clone();
     recovery.transaction_control_authority = Some(TransactionControlAuthority::RollbackOnly {
         revision: revision.clone(),
@@ -525,7 +525,7 @@ async fn receipt_rollback_failed_started_audit_keeps_both_stages_atomic() {
     let (root, studio, driver, session, request) =
         explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Rollback, None);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v7 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v8 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
@@ -593,7 +593,7 @@ async fn receipt_rollback_predispatch_error_does_not_invent_a_finished_outcome()
         explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Rollback, None);
     *driver.boundary_predispatch_error.lock() = Some(ErrorCode::Conflict);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v7 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v8 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
@@ -892,7 +892,7 @@ async fn receipt_boundary_return_preserves_primary_error_without_retaining_it() 
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'local fixture failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v8 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'local fixture failure'); END;").unwrap();
     let result = studio
         .execute_transaction_control(&plan.id, None)
         .await
@@ -969,7 +969,7 @@ async fn receipt_retirement_callback_panic_preserves_each_returned_original() {
         };
         let approval = ddl_request.as_ref().map(|_| ddl_approve(&studio, &plan));
         let database = receipt_database(&root);
-        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'local fixture failure'); END;").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v8 WHEN NEW.outcome!='started' BEGIN SELECT RAISE(ABORT,'local fixture failure'); END;").unwrap();
         driver.panic_during_close.store(true, Ordering::Release);
         let error = match kind {
             "ddl" => studio
@@ -1023,7 +1023,7 @@ async fn receipt_retirement_callback_panic_preserves_each_returned_original() {
         );
         let finished: u32 = database
             .query_row(
-                "SELECT COUNT(*) FROM audit_v7 WHERE outcome!='started'",
+                "SELECT COUNT(*) FROM audit_v8 WHERE outcome!='started'",
                 [],
                 |row| row.get(0),
             )
