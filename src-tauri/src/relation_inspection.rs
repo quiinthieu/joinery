@@ -303,6 +303,10 @@ pub struct RelationPreview {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<TextRow>,
     pub truncated: bool,
+    /// Native retained originals only; this token grants no write authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub edit_snapshot_id: Option<String>,
 }
 
 #[cfg(test)]

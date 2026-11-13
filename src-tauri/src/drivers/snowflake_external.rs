@@ -35,6 +35,7 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) mod console;
+mod edit_snapshots;
 
 const SQL_BYTES: usize = 262_144;
 const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
@@ -79,6 +80,7 @@ struct BrowseSnapshot {
 struct InspectionSlot {
     revision: String,
     columns: Option<Vec<ColumnInspection>>,
+    preview_revision: Option<String>,
 }
 
 #[derive(Default)]
@@ -167,6 +169,7 @@ pub struct SnowflakeExternal {
     console_mode: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
     browsing: Mutex<BrowseState>,
+    edit_snapshots: Arc<super::snowflake_edit_snapshot::SnapshotStore>,
     session_options: Mutex<SessionOptionsState>,
     transaction_authority: Mutex<TransactionAuthorityState>,
     ddl_authority: Mutex<DdlAuthorityState>,
@@ -350,6 +353,7 @@ impl SnowflakeExternal {
             console_mode: Mutex::new(None),
             active: Mutex::new(None),
             browsing: Mutex::new(BrowseState::default()),
+            edit_snapshots: edit_snapshots::shared_store(),
             session_options: Mutex::new(SessionOptionsState::default()),
             transaction_authority: Mutex::new(TransactionAuthorityState::default()),
             ddl_authority: Mutex::new(DdlAuthorityState::default()),
@@ -435,6 +439,12 @@ impl SnowflakeExternal {
             // Serialize local revocation with the console's final dispatch check.
             let _mode = self.console_mode.lock();
             self.closed.cancel();
+        }
+        // Revocation and preview publication share browsing -> store ordering.
+        // Repeat even after an earlier shutdown started; no authority survives.
+        {
+            let _browsing = self.browsing.lock();
+            self.edit_snapshots.revoke_session(&self.session_id);
         }
         *self.transaction_authority.lock() = TransactionAuthorityState::default();
         *self.ddl_authority.lock() = DdlAuthorityState::default();
@@ -1250,6 +1260,7 @@ impl SnowflakeExternal {
         let mut state = self.browsing.lock();
         if state.revision == revision {
             *state = BrowseState::default();
+            self.edit_snapshots.revoke_session(&self.session_id);
         }
         drop(state);
         self.revoke_ddl_grant();
@@ -2538,7 +2549,11 @@ impl Driver for SnowflakeExternal {
     }
 
     fn invalidate_relation_catalog(&self) {
-        *self.browsing.lock() = BrowseState::default();
+        {
+            let mut state = self.browsing.lock();
+            *state = BrowseState::default();
+            self.edit_snapshots.revoke_session(&self.session_id);
+        }
         self.revoke_ddl_grant();
     }
 
@@ -2546,10 +2561,14 @@ impl Driver for SnowflakeExternal {
         let revision = uuid::Uuid::new_v4().to_string();
         // Refresh owns a new generation before its first await, even if it fails
         // to acquire the lane or the caller abandons it.
-        *self.browsing.lock() = BrowseState {
-            revision: revision.clone(),
-            snapshot: None,
-        };
+        {
+            let mut state = self.browsing.lock();
+            *state = BrowseState {
+                revision: revision.clone(),
+                snapshot: None,
+            };
+            self.edit_snapshots.revoke_session(&self.session_id);
+        }
         self.browse_operation(&revision, async {
             if self.browsing.lock().revision != revision {
                 return Err(stale_browse());
@@ -2663,6 +2682,11 @@ impl Driver for SnowflakeExternal {
             if state.revision != request.revision {
                 return Err(stale_browse());
             }
+            self.edit_snapshots.revoke_target(
+                &self.session_id,
+                &self.process.helper_generation(),
+                &request.target_id,
+            );
             state
                 .snapshot
                 .as_mut()
@@ -2673,6 +2697,7 @@ impl Driver for SnowflakeExternal {
                     InspectionSlot {
                         revision: inspection.clone(),
                         columns: None,
+                        preview_revision: None,
                     },
                 );
         }
@@ -2885,6 +2910,7 @@ impl Driver for SnowflakeExternal {
             &request.target_id,
             &request.inspection_revision,
         )?;
+        let preview_revision = self.begin_edit_preview(request)?;
         self.browse_operation(&request.revision, async {
             // A request may have waited behind a refresh or replacement inspection.
             self.browse_columns(
@@ -2909,7 +2935,7 @@ impl Driver for SnowflakeExternal {
                 &request.target_id,
                 &request.inspection_revision,
             )?;
-            Ok(preview)
+            self.retain_edit_preview(request, &preview_revision, preview)
         })
         .await
     }
@@ -3458,6 +3484,9 @@ mod session_tests {
 
     mod console_tests {
         include!("snowflake_external/console_tests.rs");
+    }
+    mod edit_snapshots_tests {
+        include!("snowflake_external/edit_snapshots_tests.rs");
     }
 
     mod qualification_metadata_tests {

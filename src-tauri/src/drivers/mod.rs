@@ -14,6 +14,10 @@ pub(crate) mod snowflake_batch;
 pub(crate) mod snowflake_browsing;
 pub mod snowflake_dml_summary;
 #[cfg(unix)]
+pub(crate) mod snowflake_edit_codec;
+#[cfg(unix)]
+pub(crate) mod snowflake_edit_snapshot;
+#[cfg(unix)]
 pub mod snowflake_external;
 #[cfg(unix)]
 mod snowflake_metadata;

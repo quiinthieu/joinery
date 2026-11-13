@@ -914,6 +914,7 @@ pub(crate) fn parse_preview(
             .collect(),
         rows: result.rows.iter().take(PREVIEW_LIMIT).cloned().collect(),
         truncated: result.rows.len() > PREVIEW_LIMIT,
+        edit_snapshot_id: None,
     };
     bounded(&preview, PREVIEW_MAX_BYTES)?;
     Ok(preview)
