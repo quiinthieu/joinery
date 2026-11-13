@@ -11,6 +11,11 @@ pub(super) fn shared_store() -> Arc<SnapshotStore> {
 }
 
 impl SnowflakeExternal {
+    pub(super) fn revoke_edit_snapshots(&self) {
+        self.edit_snapshots
+            .revoke_helper_session(&self.session_id, &self.process.helper_generation());
+    }
+
     pub(super) fn edit_profile_enabled(&self) -> bool {
         self.profile.safe_mode != SafeMode::ReadOnly
             && self.profile.snowflake.as_ref().is_some_and(|config| {
@@ -137,6 +142,7 @@ impl SnowflakeExternal {
         let _lane = tokio::time::timeout(Duration::from_millis(1500), self.lane.lock())
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The Snowflake session is busy"))?;
+        self.grid.require_ordinary()?;
         self.require_unrestricted()?;
         if !self.edit_profile_enabled() {
             return Err(AppError::new(
@@ -151,22 +157,6 @@ impl SnowflakeExternal {
         let binding = self.edit_binding(&state, request)?;
         self.edit_snapshots
             .prepare(&self.session_id, snapshot_id, &binding, mutations)
-    }
-
-    #[cfg(all(test, unix, feature = "test-harness"))]
-    pub(crate) fn test_prepare_continuation_edits(
-        &self,
-        request: &PreviewRelationRequest,
-        rows: Vec<TextRow>,
-        mutations: &[SnapshotMutation],
-    ) -> AppResult<PreparedSnowflakeEdits> {
-        let state = self.browsing.lock();
-        let binding = self.edit_binding(&state, request)?;
-        let snapshot_id = self
-            .edit_snapshots
-            .retain(self.edit_binding(&state, request)?, rows)?;
-        self.edit_snapshots
-            .prepare(&self.session_id, &snapshot_id, &binding, mutations)
     }
 }
 

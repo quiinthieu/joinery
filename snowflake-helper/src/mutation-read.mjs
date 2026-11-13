@@ -98,6 +98,20 @@ export function validateMutationReadRequest(r, helper) {
       return false;
     if (BASIC.has(p.kind)) return p.target === null;
     const t = p.target;
+    if (p.kind === "preview") {
+      return (
+        exact(t, ["database", "schema", "name", "tableType", "columns"]) &&
+        [t.database, t.schema, t.name].every(identifier) &&
+        t.database === p.expected.database &&
+        t.schema !== "INFORMATION_SCHEMA" &&
+        ["BASE TABLE", "TEMPORARY TABLE"].includes(t.tableType) &&
+        Array.isArray(t.columns) &&
+        t.columns.length >= 1 &&
+        t.columns.length <= 1000 &&
+        t.columns.every(identifier) &&
+        new Set(t.columns).size === t.columns.length
+      );
+    }
     return (
       TARGETED.has(p.kind) &&
       exact(t, ["database", "schema", "name", "tableType"]) &&
@@ -151,6 +165,8 @@ export function mutationReadSpec(r) {
     );
   }
   if (kind === "describe") return spec(`DESCRIBE TABLE ${name} TYPE = COLUMNS`, 1001, 1048576);
+  if (kind === "preview")
+    return spec(`SELECT ${t.columns.map(quote).join(", ")} FROM ${name} LIMIT 501`, 501, 2097152);
   return spec(`SELECT * FROM ${name} LIMIT 0`, 0, 1048576);
 }
 

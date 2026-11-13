@@ -2,6 +2,7 @@
 //! A successful single read does not establish a fresh complete inspection.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
@@ -14,6 +15,7 @@ pub(crate) enum Kind {
     Columns,
     Describe,
     ZeroRowResolution,
+    Preview,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -33,6 +35,7 @@ struct Target {
     schema: String,
     name: String,
     table_type: String,
+    columns: Option<Vec<String>>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +108,27 @@ impl ReadState {
                     return Err("unexpected owner metadata target");
                 }
                 (1, 64 * 1024)
+            }
+            Kind::Preview => {
+                let t = r.target.ok_or("missing owner metadata target")?;
+                let cols = t.columns.as_ref().ok_or("missing owner preview columns")?;
+                let unique: HashSet<&str> = cols.iter().map(String::as_str).collect();
+                if !exact(
+                    &payload["target"],
+                    &["database", "schema", "name", "tableType", "columns"],
+                ) || [&t.database, &t.schema, &t.name]
+                    .into_iter()
+                    .any(|s| !identifier(s))
+                    || r.expected.database.as_deref() != Some(t.database.as_str())
+                    || t.schema == "INFORMATION_SCHEMA"
+                    || !matches!(t.table_type.as_str(), "BASE TABLE" | "TEMPORARY TABLE")
+                    || !(1..=1000).contains(&cols.len())
+                    || unique.len() != cols.len()
+                    || cols.iter().any(|c| !identifier(c))
+                {
+                    return Err("invalid owner preview target");
+                }
+                (501, 2 * 1024 * 1024)
             }
             kind => {
                 let t = r.target.ok_or("missing owner metadata target")?;

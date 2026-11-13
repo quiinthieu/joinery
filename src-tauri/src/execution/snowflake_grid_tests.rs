@@ -32,6 +32,8 @@ export default {
     }
     let currentTransaction = null;
     let disposition = 'running';
+    let committedNote0 = null;
+    let pendingNote0 = undefined;
     return {
       connectAsync(callback) {
         writeFileSync(marker('auth-started'), JSON.stringify({ pid: process.pid }));
@@ -58,10 +60,16 @@ export default {
         if (dml) {
           appendFileSync(marker('dml-binds'), JSON.stringify(options.binds) + '\n');
           writeFileSync(marker('dml-entered'), String(id));
+          if (sql.startsWith('UPDATE ') && Array.isArray(options.binds) && options.binds.length >= 1) {
+            if (currentTransaction !== null) pendingNote0 = options.binds[0];
+            else committedNote0 = options.binds[0];
+          }
           names = [sql.startsWith('INSERT') ? 'number of rows inserted' : sql.startsWith('UPDATE') ? 'number of rows updated' : 'number of rows deleted'];
           types = ['FIXED'];
           rows = [['1']];
         } else if (boundary) {
+          if (sql === 'COMMIT' && pendingNote0 !== undefined) committedNote0 = pendingNote0;
+          if (sql === 'COMMIT' || sql === 'ROLLBACK') pendingNote0 = undefined;
           disposition = sql === 'COMMIT' ? 'committed' : sql === 'ROLLBACK' ? 'rolled back' : 'running';
           currentTransaction = sql === 'BEGIN TRANSACTION' ? '123456789' : null;
           appendFileSync(marker('transaction-effects'), sql + '\n');
@@ -117,7 +125,8 @@ export default {
         } else if (editPreview) {
           names = ['ID', 'NOTES'];
           types = ['FIXED', 'TEXT'];
-          rows = [['9007199254740993', null], ['9007199254740993', ''], ['2', '雪']];
+          const note0 = currentTransaction !== null && pendingNote0 !== undefined ? pendingNote0 : committedNote0;
+          rows = [['9007199254740993', note0], ['9007199254740993', ''], ['2', '雪']];
         } else if (zeroRows) {
           names = ['ID', 'NOTES'];
           types = ['FIXED', 'TEXT'];
@@ -491,14 +500,59 @@ async fn grid_studio_manual_pending_blocks_ordinary_work_continues_and_finishes(
         );
         assert_eq!(queries(&f).len(), before);
 
+        // Owner-scoped pending preview observes uncommitted row 0 ("first-manual"),
+        // revokes any earlier snapshot, and prepares a fresh continuation snapshot!
+        let old_snapshot_id = preview.edit_snapshot_id.as_deref().unwrap();
+        assert_eq!(
+            studio
+                .prepare_snowflake_grid_edits(
+                    &info.id,
+                    &preview_req,
+                    old_snapshot_id,
+                    &[SnapshotMutation::Delete { row_index: 2 }],
+                )
+                .await
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio
+                .prepare_snowflake_grid_continuation_edits(
+                    &tx_id,
+                    &preview_req,
+                    old_snapshot_id,
+                    &[SnapshotMutation::Delete { row_index: 2 }],
+                )
+                .await
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        let before_pending_preview = queries(&f).len();
+        let pending_preview_bad = studio
+            .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+            .await
+            .unwrap();
+        assert_eq!(queries(&f).len() - before_pending_preview, 12);
+        assert_eq!(
+            pending_preview_bad.rows[0],
+            vec![Some("9007199254740993".into()), Some("first-manual".into()),]
+        );
+        let snap_bad = pending_preview_bad.edit_snapshot_id.as_deref().unwrap();
+
         // Continuation requires explicit whole-transaction rollback_prior = true.
-        let driver = session.snowflake_external.as_ref().unwrap().clone();
-        let cont_bad = driver
-            .test_prepare_continuation_edits(
+        let cont_bad = studio
+            .prepare_snowflake_grid_continuation_edits(
+                &tx_id,
                 &preview_req,
-                preview.rows.clone(),
+                snap_bad,
                 &[SnapshotMutation::Delete { row_index: 2 }],
             )
+            .await
             .unwrap();
         assert_eq!(
             studio
@@ -510,12 +564,34 @@ async fn grid_studio_manual_pending_blocks_ordinary_work_continues_and_finishes(
             ErrorCode::InvalidInput
         );
 
-        let cont_ok = driver
-            .test_prepare_continuation_edits(
+        // Refresh pending preview again and update row 0 from "first-manual" to "second-manual"!
+        let pending_preview_ok = studio
+            .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+            .await
+            .unwrap();
+        assert_eq!(
+            studio
+                .prepare_snowflake_grid_continuation_edits(
+                    &tx_id,
+                    &preview_req,
+                    snap_bad,
+                    &[update_row0("stale")],
+                )
+                .await
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::Conflict,
+            "newer pending preview must revoke prior pending snapshot"
+        );
+        let cont_ok = studio
+            .prepare_snowflake_grid_continuation_edits(
+                &tx_id,
                 &preview_req,
-                preview.rows.clone(),
-                &[SnapshotMutation::Delete { row_index: 2 }],
+                pending_preview_ok.edit_snapshot_id.as_deref().unwrap(),
+                &[update_row0("second-manual")],
             )
+            .await
             .unwrap();
         let continued = studio
             .continue_snowflake_grid_edits(&tx_id, cont_ok, true)
@@ -564,7 +640,20 @@ async fn grid_studio_manual_pending_blocks_ordinary_work_continues_and_finishes(
             .session_contexts_with_refresh(&info.id, true)
             .await
             .unwrap();
-        studio.relation_catalog(&info.id).await.unwrap();
+        let (_, post_finish_preview, _) = browse_and_prepare(
+            &studio,
+            &info.id,
+            &[SnapshotMutation::Delete { row_index: 2 }],
+        )
+        .await;
+        assert_eq!(
+            post_finish_preview.rows[0][1].as_deref(),
+            if finish_action == FinishAction::Commit {
+                Some("second-manual")
+            } else {
+                None
+            }
+        );
         studio.prepare_execution(&info.id, "SELECT 1").unwrap();
         studio.shutdown_and_wait().await.unwrap();
     }
@@ -1247,7 +1336,7 @@ process.stdin.on('end', () => {{ helper.stop(); }});
         }),
     );
 
-    let (preview_req, preview, edits) =
+    let (preview_req, _preview, edits) =
         browse_and_prepare(&studio, &session_id, &[update_row0("initial-before-quota")]).await;
     let pending = studio
         .execute_snowflake_grid_edits(&session_id, edits, Mode::Manual)
@@ -1256,12 +1345,18 @@ process.stdin.on('end', () => {{ helper.stop(); }});
     assert_eq!(pending.outcome, Outcome::Pending);
     let tx_id = pending.transaction_id.clone().unwrap();
 
-    let cont_edits_first = driver
-        .test_prepare_continuation_edits(
+    let cont_preview_first = studio
+        .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+        .await
+        .unwrap();
+    let cont_edits_first = studio
+        .prepare_snowflake_grid_continuation_edits(
+            &tx_id,
             &preview_req,
-            preview.rows.clone(),
+            cont_preview_first.edit_snapshot_id.as_deref().unwrap(),
             &[SnapshotMutation::Delete { row_index: 2 }],
         )
+        .await
         .unwrap();
 
     // 1. Exhaust guard batch capacity and fault SQLite capture; verify delayed flush clears successor_recovery.
@@ -1293,12 +1388,18 @@ process.stdin.on('end', () => {{ helper.stop(); }});
     );
 
     // 2. Prepare a second continuation after recording settles, fault SQLite again, and run protected Rollback while unsettled!
-    let cont_edits = driver
-        .test_prepare_continuation_edits(
+    let cont_preview = studio
+        .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+        .await
+        .unwrap();
+    let cont_edits = studio
+        .prepare_snowflake_grid_continuation_edits(
+            &tx_id,
             &preview_req,
-            preview.rows.clone(),
+            cont_preview.edit_snapshot_id.as_deref().unwrap(),
             &[SnapshotMutation::Delete { row_index: 2 }],
         )
+        .await
         .unwrap();
     db.execute_batch(
         "CREATE TRIGGER fail_rejected_capture BEFORE INSERT ON batch_captures_v8 \
@@ -1390,7 +1491,7 @@ process.stdin.on('end', () => {{ helper.stop(); }});
         .session_contexts_with_refresh(&session_id, true)
         .await
         .unwrap();
-    let (preview_req2, preview2, edits2) =
+    let (preview_req2, _preview2, edits2) =
         browse_and_prepare(&studio, &session_id, &[update_row0("second-tx")]).await;
     let pending2 = studio
         .execute_snowflake_grid_edits(&session_id, edits2, Mode::Manual)
@@ -1399,14 +1500,20 @@ process.stdin.on('end', () => {{ helper.stop(); }});
     assert_eq!(pending2.outcome, Outcome::Pending);
     let tx_id2 = pending2.transaction_id.clone().unwrap();
 
-    std::fs::write(&exhaust_marker, "").unwrap();
-    let cont_edits2 = driver
-        .test_prepare_continuation_edits(
+    let cont_preview2 = studio
+        .preview_snowflake_grid_transaction_relation(&tx_id2, &preview_req2)
+        .await
+        .unwrap();
+    let cont_edits2 = studio
+        .prepare_snowflake_grid_continuation_edits(
+            &tx_id2,
             &preview_req2,
-            preview2.rows.clone(),
+            cont_preview2.edit_snapshot_id.as_deref().unwrap(),
             &[SnapshotMutation::Delete { row_index: 2 }],
         )
+        .await
         .unwrap();
+    std::fs::write(&exhaust_marker, "").unwrap();
     let rejected2 = studio
         .continue_snowflake_grid_edits(&tx_id2, cont_edits2, true)
         .await

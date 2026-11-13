@@ -38,6 +38,27 @@ impl SnowflakeExternal {
         binding: &NativeEditBinding,
         owner: Option<GridReadOwner<'_>>,
     ) -> AppResult<()> {
+        self.grid_freshness_bracket(binding, owner, false)
+            .await
+            .map(|_| ())
+    }
+
+    pub(super) async fn grid_fresh_preview(
+        &self,
+        binding: &NativeEditBinding,
+        owner: GridReadOwner<'_>,
+    ) -> AppResult<RelationPreview> {
+        self.grid_freshness_bracket(binding, Some(owner), true)
+            .await?
+            .ok_or_else(protocol_error)
+    }
+
+    async fn grid_freshness_bracket(
+        &self,
+        binding: &NativeEditBinding,
+        owner: Option<GridReadOwner<'_>>,
+        read_preview: bool,
+    ) -> AppResult<Option<RelationPreview>> {
         if self.is_closed() {
             return Err(closed_error().with_completion_invalidated());
         }
@@ -46,6 +67,7 @@ impl SnowflakeExternal {
                 .helper_generation()
                 .same_helper(&self.process.helper_generation())
             || owner.is_some_and(|owner| !valid_owner(owner))
+            || (read_preview && owner.is_none())
         {
             return Err(stale_grid().with_completion_invalidated());
         }
@@ -99,6 +121,13 @@ impl SnowflakeExternal {
             if observed.as_slice() != binding.columns() {
                 return Err(stale_grid());
             }
+            let preview = if read_preview {
+                let owner = owner.ok_or_else(protocol_error)?;
+                let rows = self.grid_preview_read(binding, owner).await?;
+                Some(browsing::parse_preview(binding.columns(), &rows)?)
+            } else {
+                None
+            };
             let after = self
                 .grid_read(
                     binding.context(),
@@ -113,7 +142,7 @@ impl SnowflakeExternal {
             if self.is_closed() {
                 return Err(closed_error());
             }
-            Ok(())
+            Ok(preview)
         })
         .await;
         let result = match result {
@@ -212,6 +241,36 @@ impl SnowflakeExternal {
         Ok(())
     }
 
+    async fn grid_preview_read(
+        &self,
+        binding: &NativeEditBinding,
+        owner: GridReadOwner<'_>,
+    ) -> AppResult<MetadataResult> {
+        browsing::preview_sql(binding.relation(), binding.columns())?;
+        let columns = binding
+            .columns()
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>();
+        let relation = binding.relation();
+        let target = json!({
+            "database": relation.database,
+            "schema": relation.table.schema,
+            "name": relation.table.name,
+            "tableType": relation.table_type,
+            "columns": columns,
+        });
+        self.grid_owner_read(
+            binding.context(),
+            owner,
+            "preview",
+            target,
+            browsing::PREVIEW_LIMIT + 1,
+            browsing::PREVIEW_MAX_BYTES,
+        )
+        .await
+    }
+
     async fn grid_read(
         &self,
         context: &LiveContext,
@@ -223,8 +282,6 @@ impl SnowflakeExternal {
         let Some(owner) = owner else {
             return self.read_spec(spec).await;
         };
-        #[cfg(all(unix, feature = "test-harness"))]
-        self.check_metadata_observer()?;
         let target = if matches!(
             kind,
             "context" | "quotedIdentifierPolicy" | "currentTransaction"
@@ -234,6 +291,28 @@ impl SnowflakeExternal {
             let relation = relation.ok_or_else(protocol_error)?;
             json!({"database":relation.database,"schema":relation.table.schema,"name":relation.table.name,"tableType":relation.table_type})
         };
+        self.grid_owner_read(
+            context,
+            owner,
+            kind,
+            target,
+            usize::try_from(spec.max_rows()).map_err(|_| metadata_limit())?,
+            usize::try_from(spec.max_bytes()).map_err(|_| metadata_limit())?,
+        )
+        .await
+    }
+
+    async fn grid_owner_read(
+        &self,
+        context: &LiveContext,
+        owner: GridReadOwner<'_>,
+        kind: &str,
+        target: Value,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> AppResult<MetadataResult> {
+        #[cfg(all(unix, feature = "test-harness"))]
+        self.check_metadata_observer()?;
         let mut operation = self.process.request("grid-metadata", "mutationRead", json!({
             "owner":owner.token,"expected":{"user":context.principal,"session":context.session_id,
                 "role":context.role,"database":context.database,"schema":context.schema,"warehouse":context.warehouse},
@@ -245,10 +324,7 @@ impl SnowflakeExternal {
             terminal: operation.terminal_receiver(),
         });
         let _active = ActiveLease(&self.active);
-        let mut sink = MetadataSink::new(
-            usize::try_from(spec.max_rows()).map_err(|_| metadata_limit())?,
-            usize::try_from(spec.max_bytes()).map_err(|_| metadata_limit())?,
-        );
+        let mut sink = MetadataSink::new(max_rows, max_bytes);
         let mut described = false;
         let mut columns_open = true;
         loop {

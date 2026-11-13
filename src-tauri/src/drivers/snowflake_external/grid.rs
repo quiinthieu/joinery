@@ -11,7 +11,7 @@
 use super::*;
 use crate::drivers::{
     snowflake_batch::{BatchRequest, FinishAction, Mode, Outcome},
-    snowflake_edit_snapshot::{NativeEditBinding, PreparedSnowflakeEdits},
+    snowflake_edit_snapshot::{NativeEditBinding, PreparedSnowflakeEdits, SnapshotMutation},
     snowflake_mutations::{BindingKind, MutationKind},
     snowflake_process::HelperGeneration,
 };
@@ -172,6 +172,18 @@ impl SnowflakeExternal {
                 "Generated edits require an explicitly enabled writable external-browser profile outside the retained SQL console",
             ));
         }
+        if self
+            .transaction_authority
+            .lock()
+            .recovery
+            .as_ref()
+            .is_some_and(|r| r.restricted)
+        {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Snowflake transaction state is unavailable; use the reviewed rollback control or disconnect",
+            ));
+        }
         #[cfg(all(unix, feature = "test-harness"))]
         self.check_metadata_observer()?;
         Ok(())
@@ -297,10 +309,86 @@ impl GridManualTransaction {
         Ok(())
     }
 
-    #[allow(
-        dead_code,
-        reason = "Continuation requires the owner-scoped preview integration"
-    )]
+    pub(crate) async fn preview_relation(
+        &self,
+        request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        let _lane = tokio::time::timeout(
+            Duration::from_millis(1500),
+            self.driver.lane.clone().lock_owned(),
+        )
+        .await
+        .map_err(|_| conflict())?;
+        let (token, transaction) = self.check(false)?;
+        let binding = {
+            let state = self.driver.browsing.lock();
+            self.driver.edit_binding(&state, request)?
+        };
+        if binding.context() != &self.private.context
+            || !binding
+                .helper_generation()
+                .same_helper(&self.private.helper)
+        {
+            return Err(conflict());
+        }
+        let preview_revision = self.driver.begin_edit_preview(request)?;
+        let preview = self
+            .driver
+            .grid_fresh_preview(
+                &binding,
+                super::grid_freshness::GridReadOwner {
+                    token: &token,
+                    transaction_id: &transaction,
+                },
+            )
+            .await?;
+        self.check(false)?;
+        {
+            let state = self.driver.browsing.lock();
+            let after = self.driver.edit_binding(&state, request)?;
+            if after.context() != &self.private.context
+                || !after.helper_generation().same_helper(&self.private.helper)
+            {
+                return Err(conflict());
+            }
+        }
+        self.driver
+            .retain_edit_preview(request, &preview_revision, preview)
+    }
+
+    pub(crate) async fn prepare_continuation_edits(
+        &self,
+        request: &PreviewRelationRequest,
+        snapshot_id: &str,
+        mutations: &[SnapshotMutation],
+    ) -> AppResult<PreparedSnowflakeEdits> {
+        let _lane = tokio::time::timeout(
+            Duration::from_millis(1500),
+            self.driver.lane.clone().lock_owned(),
+        )
+        .await
+        .map_err(|_| conflict())?;
+        self.check(false)?;
+        let state = self.driver.browsing.lock();
+        if self.driver.is_closed() {
+            return Err(closed_error());
+        }
+        let binding = self.driver.edit_binding(&state, request)?;
+        if binding.context() != &self.private.context
+            || !binding
+                .helper_generation()
+                .same_helper(&self.private.helper)
+        {
+            return Err(conflict());
+        }
+        self.driver.edit_snapshots.prepare(
+            &self.driver.session_id,
+            snapshot_id,
+            &binding,
+            mutations,
+        )
+    }
+
     pub(crate) async fn prepare_grid_operation(
         self: &Arc<Self>,
         edits: PreparedSnowflakeEdits,
@@ -652,7 +740,7 @@ impl PreparedGridOperation {
         let _active = ActiveLease(&driver.active);
         {
             let _browse = driver.browsing.lock();
-            driver.edit_snapshots.revoke_session(&driver.session_id);
+            driver.revoke_edit_snapshots();
         }
         let report = operation.wait_bounded(Duration::from_secs(120)).await;
         if let Some(owner) = &self.manual {

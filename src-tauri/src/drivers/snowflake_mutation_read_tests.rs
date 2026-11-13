@@ -7,6 +7,8 @@ pub(super) fn payload(kind: &str) -> Value {
         "context" | "quotedIdentifierPolicy" | "currentTransaction"
     ) {
         Value::Null
+    } else if kind == "preview" {
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID","NOTES"]})
     } else {
         json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE"})
     };
@@ -125,8 +127,19 @@ fn every_kind_uses_fixed_limits_and_overflow_sentinels() {
         ("columns", 1001, 1048576),
         ("describe", 1001, 1048576),
         ("zeroRowResolution", 0, 1048576),
+        ("preview", 501, 2097152),
     ] {
         let read = ReadState::parse(&payload(kind)).unwrap();
         assert_eq!((read.max_rows, read.max_bytes), (rows, bytes));
+    }
+    for bad_preview in [
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE"}),
+        json!({"database":"DB","schema":"INFORMATION_SCHEMA","name":"T","tableType":"BASE TABLE","columns":["ID"]}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":[]}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID","ID"]}),
+    ] {
+        let mut request = payload("preview");
+        request["target"] = bad_preview;
+        assert!(ReadState::parse(&request).is_err());
     }
 }

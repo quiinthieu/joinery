@@ -458,10 +458,22 @@ impl SnapshotStore {
         }
         result
     }
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "Driver revocation pins exact helper_generation via revoke_helper_session"
+        )
+    )]
     pub(crate) fn revoke_session(&self, session_id: &str) {
         self.registry
             .lock()
             .revoke(|binding| binding.session_id == session_id);
+    }
+    pub(crate) fn revoke_helper_session(&self, session_id: &str, helper: &HelperGeneration) {
+        self.registry.lock().revoke(|binding| {
+            binding.session_id == session_id && binding.helper.same_helper(helper)
+        });
     }
     pub(crate) fn revoke_target(
         &self,

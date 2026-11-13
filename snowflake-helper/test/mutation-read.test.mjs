@@ -34,7 +34,11 @@ const payload = (kind = "columns", overrides = {}) => ({
   owner: token,
   expected: { ...expected },
   kind,
-  target: basic.has(kind) ? null : { ...target },
+  target: basic.has(kind)
+    ? null
+    : kind === "preview"
+      ? { ...target, columns: ["ID", "NOTES"] }
+      : { ...target },
   credits: 32,
   ...overrides,
 });
@@ -271,7 +275,7 @@ async function read(state, p) {
   return { id, terminal: state.terminal(id), frames: state.frames(id) };
 }
 
-test("owner read factories select all seven fixed metadata shapes and native bounds", () => {
+test("owner read factories select all eight fixed metadata/preview shapes and native bounds", () => {
   const cases = [
     ["context", MUTATION_READ_CONTEXT_SQL, 1, 65536],
     ["quotedIdentifierPolicy", MUTATION_READ_POLICY_SQL, 1, 65536],
@@ -284,6 +288,7 @@ test("owner read factories select all seven fixed metadata shapes and native bou
     ],
     ["describe", 'DESCRIBE TABLE "TEST"."PUBLIC"."T" TYPE = COLUMNS', 1001, 1048576],
     ["zeroRowResolution", 'SELECT * FROM "TEST"."PUBLIC"."T" LIMIT 0', 0, 1048576],
+    ["preview", 'SELECT "ID", "NOTES" FROM "TEST"."PUBLIC"."T" LIMIT 501', 501, 2097152],
   ];
   for (const [kind, sql, maxRows, maxBytes] of cases) {
     assert.deepEqual(mutationReadSpec(request(payload(kind))), {
@@ -325,6 +330,16 @@ test("owner read identifiers are quoted as components and backslashes escaped in
     mutationReadSpec(request({ ...p, kind: "describe" })).sql,
     'DESCRIBE TABLE "D""B\\"."S\'\\"."T""; COMMIT;--\\" TYPE = COLUMNS',
   );
+  assert.equal(
+    mutationReadSpec(
+      request({
+        ...p,
+        kind: "preview",
+        target: { ...names, columns: ['C"1; COMMIT;--\\', "NOTES"] },
+      }),
+    ).sql,
+    'SELECT "C""1; COMMIT;--\\", "NOTES" FROM "D""B\\"."S\'\\"."T""; COMMIT;--\\" LIMIT 501',
+  );
 });
 
 test("owner read rejects extra SQL/binds/limits, unsupported descriptors, malformed names and authority", () => {
@@ -335,6 +350,18 @@ test("owner read rejects extra SQL/binds/limits, unsupported descriptors, malfor
     payload("other"),
     payload("context", { target }),
     payload("columns", { target: null }),
+    payload("columns", { target: { ...target, columns: ["ID"] } }),
+    payload("preview", { target: null }),
+    payload("preview", { target }),
+    payload("preview", { target: { ...target, columns: [] } }),
+    payload("preview", { target: { ...target, columns: ["ID", "ID"] } }),
+    payload("preview", {
+      target: { ...target, columns: Array.from({ length: 1001 }, (_, i) => `C${i}`) },
+    }),
+    payload("preview", { target: { ...target, columns: [""] } }),
+    payload("preview", { target: { ...target, schema: "INFORMATION_SCHEMA", columns: ["ID"] } }),
+    payload("preview", { target: { ...target, tableType: "VIEW", columns: ["ID"] } }),
+    payload("preview", { target: { ...target, columns: ["ID"], limit: 10 } }),
     ...["sql", "binds", "maxRows", "maxBytes"].map((key) => ({
       ...payload(),
       [key]: key === "binds" ? [] : "SELECT 1",

@@ -514,11 +514,13 @@ impl Studio {
         mutations: &[SnapshotMutation],
     ) -> AppResult<PreparedSnowflakeEdits> {
         let _recovery_activity = self.begin_recovery_activity()?;
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let session = self.session(session_id)?;
         let driver = external_driver(&session)?;
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
             .await
             .map_err(|_| busy())?;
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         {
             let _configuration = self.configuration_mutation_guard()?;
             writable_grid_profile(&self.persistence.profile(&session.profile.id)?)?;
@@ -533,6 +535,99 @@ impl Studio {
         driver
             .prepare_relation_edits(preview, snapshot_id, mutations)
             .await
+    }
+
+    pub(crate) async fn preview_snowflake_grid_transaction_relation(
+        &self,
+        transaction_id: &str,
+        request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let owner = self
+            .snowflake_grid
+            .owners
+            .lock()
+            .get(transaction_id)
+            .cloned()
+            .ok_or_else(conflict)?;
+        let session = self.session(&owner.session_id)?;
+        let _session_lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        let _owner_lane = tokio::time::timeout(Duration::from_secs(5), owner.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        self.validate_continuable_grid_owner(&owner, &session)?;
+        owner.native.preview_relation(request).await
+    }
+
+    pub(crate) async fn prepare_snowflake_grid_continuation_edits(
+        &self,
+        transaction_id: &str,
+        preview: &PreviewRelationRequest,
+        snapshot_id: &str,
+        mutations: &[SnapshotMutation],
+    ) -> AppResult<PreparedSnowflakeEdits> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let owner = self
+            .snowflake_grid
+            .owners
+            .lock()
+            .get(transaction_id)
+            .cloned()
+            .ok_or_else(conflict)?;
+        let session = self.session(&owner.session_id)?;
+        let _session_lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        let _owner_lane = tokio::time::timeout(Duration::from_secs(5), owner.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        self.validate_continuable_grid_owner(&owner, &session)?;
+        owner
+            .native
+            .prepare_continuation_edits(preview, snapshot_id, mutations)
+            .await
+    }
+
+    fn validate_continuable_grid_owner(
+        &self,
+        owner: &Arc<ManualOwner>,
+        session: &Session,
+    ) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.flush_pending_history()?;
+        self.flush_pending_snowflake_receipts()?;
+        self.flush_console_recordings()?;
+        self.flush_snowflake_grid_outcomes()?;
+        writable_grid_profile(&self.persistence.profile(&owner.connection_id)?)?;
+        if session.closed.load(Ordering::Acquire)
+            || session.driver.is_closed()
+            || owner.driver.is_closed()
+        {
+            return Err(disconnected());
+        }
+        if session.active_run.lock().is_some() {
+            return Err(busy());
+        }
+        if !self
+            .snowflake_grid
+            .owners
+            .lock()
+            .get(owner.group.id())
+            .is_some_and(|current| Arc::ptr_eq(current, owner))
+        {
+            return Err(conflict());
+        }
+        let st = owner.state.lock();
+        if st.finished_or_unknown
+            || st.blocked_cell.is_some()
+            || st.successor_recovery.is_some()
+            || st.pending_authority.is_none()
+        {
+            return Err(conflict());
+        }
+        Ok(())
     }
 
     pub(crate) fn start_snowflake_grid_edits(

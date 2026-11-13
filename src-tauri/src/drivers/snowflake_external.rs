@@ -448,7 +448,7 @@ impl SnowflakeExternal {
         // Repeat even after an earlier shutdown started; no authority survives.
         {
             let _browsing = self.browsing.lock();
-            self.edit_snapshots.revoke_session(&self.session_id);
+            self.revoke_edit_snapshots();
         }
         *self.transaction_authority.lock() = TransactionAuthorityState::default();
         *self.ddl_authority.lock() = DdlAuthorityState::default();
@@ -1264,7 +1264,7 @@ impl SnowflakeExternal {
         let mut state = self.browsing.lock();
         if state.revision == revision {
             *state = BrowseState::default();
-            self.edit_snapshots.revoke_session(&self.session_id);
+            self.revoke_edit_snapshots();
         }
         drop(state);
         self.revoke_ddl_grant();
@@ -2556,7 +2556,7 @@ impl Driver for SnowflakeExternal {
         {
             let mut state = self.browsing.lock();
             *state = BrowseState::default();
-            self.edit_snapshots.revoke_session(&self.session_id);
+            self.revoke_edit_snapshots();
         }
         self.revoke_ddl_grant();
     }
@@ -2572,7 +2572,7 @@ impl Driver for SnowflakeExternal {
                 revision: revision.clone(),
                 snapshot: None,
             };
-            self.edit_snapshots.revoke_session(&self.session_id);
+            self.revoke_edit_snapshots();
         }
         self.browse_operation(&revision, async {
             if self.browsing.lock().revision != revision {
