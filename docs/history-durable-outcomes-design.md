@@ -18,6 +18,17 @@ transaction before trying history, audit or ownership settlement. Then atomicall
 apply completion, exact idempotent audit tuples, binding release and outbox
 settlement. Retries compare the original payload and reject conflicts.
 
+Keep an explicit durable Reserved → Captured → Settled phase witness, immutable
+capture digest and stable operation/audit identities. Reservation plus owner and
+optional ticket binding commit together. Capture payload plus phase commit
+separately; projection, exact audit tuples, binding release and the Settled marker
+commit together. Release the payload reservation only after that settlement.
+Exact late retries compare retained authority; conflicting retries or an expected
+captured payload that is missing/corrupt fail safely. Removing the payload must
+not turn a settled boundary into a new operation. Budget compact settled markers
+and deduplication authority separately, or prove existing ticket/audit authority
+suffices for every producer, including history-less boundaries.
+
 Suggested APIs are `reserve_owned_operation`, `capture_original_outcome` and
 `settle_original_outcome`. The payload is a strict whitelist of owner identity,
 optional exact history ticket, original completion/evidence and frozen audit
@@ -56,12 +67,26 @@ Transaction boundaries need an explicit operation identity and owner binding
 independent of history; do not invent history entries. Preserve emergency
 rollback when recording is unavailable. Its result may remain volatile and must
 be reported that way. Ordinary reservation failure must prevent dispatch.
+Volatile rollback cannot depend on creating a durable owner row when storage
+reservation failed. Retain a shared OS admission-gate handle from before dispatch
+through capture/settlement, or provide an equally discoverable lease checked by
+both restore and migration. SQLite unavailability does not permit bypassing an
+exclusive restore/migration gate.
 
 The next schema migration must exclude older live publishers, including Studios
 with a boundary operation but no history binding. Prove this before changing
 storage authority; physical history/profile/audit fencing alone cannot capture
-an acknowledgement still held by an older process. Test exclusion and admission
-races using actual separate processes and the stable admission gate.
+an acknowledgement still held by an older process. Take the stable gate EX before
+the migration SQLite writer lock, prove all existing Studio nonce leases rather
+than only mapped history owners, and retain the proof handles through migration.
+Refuse held or invalid required proof. A newly created nonce cannot finish startup
+under EX. Recheck the exact current schema version after acquiring SH and before
+returning a Studio; preserve a genuine version bump and physical writer fencing.
+The existing v6 startup already rejects a newer schema through its post-SH
+`schema_version` validation, including an opener paused before owner claim.
+Already initialized idle or boundary-only v6 Studios still require live-lease
+exclusion. Test both races in actual separate processes; this design is not a
+claim that migration exclusion has been implemented or proved.
 
 ## Required resource decisions
 
@@ -82,6 +107,13 @@ Proposed initial limits, requiring implementation and exact boundary tests:
 | Retained payload memory | 64 slots / 2 MiB per Studio plus at most 256 KiB replay scratch; account for temporary copies and replace full result objects in retry maps |
 | Replay transaction | At most eight records / 256 KiB; keyset batches, yield between them, stop the pass on write failure |
 | Owner files | 4,096/root admission ceiling, counted safely before creation; refuse new ownership at the ceiling. Safe dead/unreferenced collection is still required for practical lifetime behavior |
+
+The 64-slot memory pool includes every preallocated volatile rollback slot and
+all retained originals, including those from disconnected sessions. Temporary
+copies count against the byte budget, not just encoded payload length. Opening a
+new session/task requires its safety slot to be available; refuse churn that
+would allocate around a full pool. Never evict an unsettled original to provide
+a new session's fallback slot.
 
 DML counts must remain canonical unsigned decimals of at most 38 digits. DDL
 target identity has three components of at most 255 characters/1,020 UTF-8 bytes
@@ -130,7 +162,21 @@ Initial-capture failure is a separate test: require a truthful volatile warning
 and admission/close holds, not a durability claim. Run changed UI flows through
 restart and preserve the original remote-effect uncertainty.
 
+Exercise exact retries after settlement but before memory cleanup, conflicting
+same-ID retries, corrupt/deleted expected captured payloads and legitimate
+Reserved/no-capture death. Prove audit-once without redispatch. Test concurrent
+quota admission, disconnect/session churn and fallback copy accounting. Hold a
+volatile rollback ACK after full/read-only reservation failure, prove a second
+process cannot restore, then capture/settle and permit restore. Pause separate
+v6 children both after Persistence open but before owner SH and after full Studio
+startup with no mapped history; migration must respectively reject the resumed
+old startup and refuse the still-live initialized owner before publication.
+
 The read-only design review used `gpt-6.1-sol` at high effort, with Tier 2 graph
 evidence and direct source reads. Relevant paths had no recorded coverage gaps;
 that is a best-effort signal, not completeness proof. No implementation or
 external qualification was performed by that review.
+The follow-up review also checked transaction boundary admission, schema-version
+validation, fallback ownership, memory accounting and settled deduplication.
+Its three material design clarifications are recorded above; implementation and
+real-process proof remain required.

@@ -40,12 +40,22 @@ activity. The private hub remains unchanged under the no-publication boundary.
 | `history-owner-doc-links` / `history-owner-doc-review` | All 783 repository-relative Markdown path targets exist; fragments not validated. Read-only documentation review found two stale historical/schema-scope descriptions, corrected before commit; no acceptance gate was removed |
 | `history-owner-fixture-stopped` | Only the lead-owned isolated PostgreSQL fixture was stopped after database/browser checks. The unrelated logistics database remained running; no user process was stopped |
 | `history-owner-prior-app-preservation` | Prior clean `952758b` normal app preserved using APFS copy-on-write before later packaging. All 15,120 inventory entries match the original artifact and strict signature passes. Regular-file inventory 242,581,015 bytes. Net free-space decrease was 212,934,656 bytes while full validation was also active, so it is not attributed solely to cloning. Nothing deleted or installed |
+| `history-owner-normal-package` | Normal SDK-bearing ARM64 app packages from clean `f39dce374eb3844765ad0460405565c0c96a15de`, exit zero, 263.887 seconds. All 562 source files unchanged. Resources and guarded SDK 3.4.1 startup pass with zero authentication/SQL; existing nonfatal LLVM stripping and ts-rs attribute warnings remain |
+| `history-owner-app-artifact` | Version 0.1.0, 34,699,712-byte ARM64 executable; strict ad-hoc signature and original license bytes verified. All 562 hashes equal all six final check receipts, including both native suites. Preserved schema-5 app inventory unchanged. No install, account qualification or owner UI acceptance |
+| `history-owner-final-doc-links` / `history-owner-final-doc-review` | All 783 relative Markdown path targets exist; fragments not validated. Final independent read-only review finds no material issue and separately confirms the package pins and all six matching source scopes. Next durable-outcome design explicitly includes phase/dedup authority, all-live-owner migration exclusion, volatile rollback proof and hard memory/churn accounting; implementation and process acceptance remain required |
 
 Full validation, database/browser/native checks and independent review pass.
 All six final check receipts capture the same 562 source files without changes
-during their run. Packaging remains pending. The normal local app remains
-clean `952758b` schema 5. This new
-source uses schema 6; keep its metadata separate. Dead-owner proof assumes
+during their run. The normal local app at
+`src-tauri/target/release/bundle/macos/Joinery.app` is clean `f39dce3`, schema 6.
+Executable SHA-256:
+`3162d333473fea17f7670816f4e2599957e208dfe2b18beaf2b7d7ecdd7e1b46`.
+The prior `952758b` schema-5 app remains at
+`.cache/verification/reviewed-console/preserved-release-952758b/Joinery.app` with
+all 15,120 inventory entries unchanged. Keep older apps separate from schema-6
+evaluation metadata. Artifact capture records 206,131,306,496 free bytes
+(about 192 GiB), 9,344,732 KiB debug and 3,190,416 KiB release artifacts. No build
+remains running and no additional deletion occurred. Dead-owner proof assumes
 Joinery's private directory/stable inodes, not resistance to a same-user actor
 replacing valid proof files. Lifetime proof/ticket/privacy budgets and durable
 failed generic/typed completion payloads remain required; a recorded admission

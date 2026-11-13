@@ -13,10 +13,14 @@ Ten real SQLite cases and the actual isolated PostgreSQL child-process crash
 case pass. Full validation passes 1,038 frontend / 687 standard Rust cases,
 including strict checks. Ten actual PostgreSQL script, six browser, 73 synthetic
 Snowflake execution and 27 offline runner cases pass. Independent review finds
-no material issue. Packaging remains pending; see the
+no material issue. The normal SDK-bearing ARM64 app packages from clean `f39dce3`
+in 263.887 seconds. Resources, strict ad-hoc signature, original license bytes and
+guarded SDK startup pass with zero authentication/SQL; see the
 [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
-The packaged app is still the preceding clean `952758b` schema-5 build until a
-new package is recorded. Keep evaluation metadata separate from older builds.
+The local, uninstalled app now includes schema 6. All 562 source hashes match
+the six final check receipts. The previous `952758b` schema-5 app is separately
+preserved with its inventory unchanged. Keep evaluation metadata separate from
+older builds. Normal packaged UI/SSO/restart and owner acceptance remain open.
 
 Next required work: durable failed generic/typed completion payloads, bounded
 ticket/privacy/owner lifetime resource policy and reservations, then full-capacity
@@ -67,9 +71,9 @@ payloads and durable byte reservations remain open.
 Lifetime SQL-free tickets, clear eras and profile-generation ancestry currently
 have no complete resource budget or reclamation policy. Preserve their privacy
 authority; do not claim that console count gates bound these new tables. Keep
-both count gates and `retentionEnabled=false`. The current runnable normal app
-is the clean-`952758b` schema-5 package, local and uninstalled. The previous
-`adabd44` schema-4 app is separately preserved with all 15,120 inventory entries
+both count gates and `retentionEnabled=false`. The runnable normal app at this
+checkpoint was the clean-`952758b` schema-5 package, now separately preserved.
+The previous `adabd44` schema-4 app is separately preserved with all 15,120 inventory entries
 unchanged. Do not point that older writer at schema-5 evaluation metadata.
 Full DataGrip scope, actual Snowflake qualification and owner acceptance remain required.
 

@@ -155,12 +155,13 @@ case, ten SQLite ownership cases and six actual browser cases pass. All 73
 synthetic Snowflake execution and 27 offline runner cases pass. Independent
 review finds no material issue. Exact
 source scopes, commands, initial failures and corrections are
-recorded in the ledger. The preceding normal SDK-bearing ARM64 package from clean
-`952758b` passes resources, strict ad-hoc signature and guarded SDK startup with
+recorded in the ledger. The current normal SDK-bearing ARM64 package from clean
+`f39dce3` passes resources, strict ad-hoc signature and guarded SDK startup with
 zero authentication/SQL. It is local and uninstalled at
-`src-tauri/target/release/bundle/macos/Joinery.app`. Its 559 captured source hashes
-match its schema-5 checks, not the new schema-6 increment. That app is also
-separately preserved before a new package is built; keep metadata roots separate.
+`src-tauri/target/release/bundle/macos/Joinery.app`. Its 562 captured source hashes
+match the six final validation/database/browser/native scopes. The previous
+`952758b` schema-5 app is separately preserved with its inventory unchanged;
+keep older apps and evaluation metadata roots separate.
 Normal packaged owner interaction and restart acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.

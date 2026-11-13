@@ -12,7 +12,8 @@ without executing it. Schema-6 source saves admitted history before
 dispatch and uses SQL-free completion tickets. Clear and profile opt-out prevent
 late completion from restoring removed text. Process-owned recovery has local
 SQLite and actual PostgreSQL crash coverage; full validation, browser and offline
-native checks pass within the ledger's recorded scopes. A new package is pending.
+native checks pass within the ledger's recorded scopes. The local `f39dce3` package
+includes these changes; normal packaged owner interaction is still unaccepted.
 Configurable retention, full-capacity and actual Snowflake acceptance remain
 required.
 
@@ -32,7 +33,7 @@ explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
 response-loss/restart recovery, native paged history and a bounded receipt panel.
 This does not establish real Snowflake effects, current packaged native UI behavior or daily
-replacement readiness. The normal SDK-bearing ARM64 bundle from clean `952758b`
+replacement readiness. The normal SDK-bearing ARM64 bundle from clean `f39dce3`
 passes resource/signature and guarded helper-startup checks. It is local and
 uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
 acceptance remains open. See the ledger for its binary hash and build warning.
@@ -61,14 +62,15 @@ Expiry retires the console and preserves its original receipt. It does not prove
 server cancellation, rollback or freedom from charges, so reconcile without SQL
 and investigate an uncertain original before considering another submission.
 See the [query-limit contract](snowflake-console-query-limits.md) and current
-ledger for verification status. The current `952758b` bundle includes this setting;
+ledger for verification status. The current `f39dce3` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
 Current source upgrades local metadata to schema 6, adds SQL-free process
 ownership and physically fences cached schema-5 history/profile/audit writers. Restore holds
 an exclusive admission/privacy gate through replacement and refuses live or
 unverifiable current owners. The preceding `952758b` schema-5 package cannot
-open schema-6 metadata and does not contain this source increment yet.
+open schema-6 metadata. It is separately preserved; the current `f39dce3` app
+includes this increment. All 562 source hashes match final local checks.
 Use a separate
 evaluation data directory, preserve the original backup and never run old and new
 versions against one directory. Going back to an old backup can lose newer
@@ -80,7 +82,7 @@ space. **Release retained result rows** separately releases process-local buffer
 after confirmation, preserving original decisions. The existing 10,000-decision
 limits remain. The new [encrypted metadata recovery workflow](encrypted-metadata-recovery.md)
 passes local browser and hidden native verification and is included in the
-current `952758b` package. Its recovery workflows were qualified locally at
+current `f39dce3` package. Its recovery workflows were qualified locally at
 `f9c1ce2`, before the later history increments. It adds
 separate backup passphrases, encrypted import/export, mandatory encrypted undo
 and bounded SQLite staging; full-capacity resource acceptance remains open.
@@ -528,7 +530,7 @@ authentication/SQL. Three hidden native runs passed 20 check categories with ten
 cleanup cycles each, and reviewed DML passed local browser/helper and shutdown
 checks. Those native results remain pinned to that checkpoint; they do not qualify
 actual Snowflake write or transaction effects. The current local package is the
-clean-`952758b` app described above, with its separate checks in the ledger. Normal
+clean-`f39dce3` app described above, with its separate checks in the ledger. Normal
 application account acceptance remains open. The app is not installed or released.
 
 Create a Snowflake profile with **External browser SSO**, the existing account

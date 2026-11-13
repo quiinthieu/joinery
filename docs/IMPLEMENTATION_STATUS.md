@@ -13,11 +13,22 @@ intentional default fixture ignores and strict compilation/Clippy checks.
 Ten actual PostgreSQL script cases, six actual browser cases, 73 synthetic
 Snowflake execution cases and 27 offline runner cases pass. Independent review
 finds no material issue. All six final check scopes contain the same 562 source
-files. Packaging remains pending; see the
+files. The normal SDK-bearing ARM64 package from clean `f39dce3` passes resources,
+strict ad-hoc signature, original license bytes and guarded SDK startup with zero
+authentication/SQL; see the
 [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
 
-The current packaged app remains clean `952758b` (schema 5); it does not contain
-this source increment. Never open schema-6 evaluation metadata with that app.
+The current local, uninstalled app is schema 6 at
+`src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0. Packaging took
+263.887 seconds; the existing nonfatal LLVM stripping warning remains.
+Executable SHA-256 is
+`3162d333473fea17f7670816f4e2599957e208dfe2b18beaf2b7d7ecdd7e1b46`.
+All 562 source hashes match the final six validation/database/browser/native
+receipts. The preceding `952758b` schema-5 app is separately preserved with all
+15,120 inventory entries unchanged. Never open schema-6 evaluation metadata with
+that older app. About 192 GiB is free; debug artifacts occupy 8.9 GiB and release
+artifacts 3.0 GiB. The approved cleanup reclaimed 135.8 GiB; nothing further was
+deleted.
 Durable failed completion payloads, lifetime resource budgets, full-capacity and
 actual account/normal owner workflows remain incomplete. No installation,
 publication or account activity is part of these checks.
@@ -44,10 +55,12 @@ actual browser cases pass within their recorded scopes. Initial failures,
 legacy fixture corrections, the reproduced event-order regression and independent
 review are retained in the
 [ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
-The normal SDK-bearing ARM64 app packages from clean `952758b` in 270.445
-seconds; resources, strict ad-hoc signature, original license bytes and guarded
+At this historical checkpoint, the normal SDK-bearing ARM64 app packaged from
+clean `952758b` in 270.445 seconds; resources, strict ad-hoc signature, original
+license bytes and guarded
 SDK 3.4.1 startup pass with zero authentication/SQL. It remains local and
-uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0.
+uninstalled, version 0.1.0. It is now preserved separately; the path above contains
+the schema-6 app.
 Executable SHA-256 is
 `3926796c0a4a3175f9c3ac79deede76b2303842277073bf2ca330965cd9af445`.
 All 559 packaged source hashes match final full validation, PostgreSQL and browser
