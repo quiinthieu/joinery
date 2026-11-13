@@ -103,12 +103,60 @@ bindings and clears the transient payload. Release the group binding only after
 verified closure, initial rejection before a transaction was opened, or OS-proven
 owner death. Unknown and no-original outcomes refuse continuation and retain
 their live binding until that proof. Explicit retirement while the Studio remains
-alive needs a separate authority contract. Any failure rolls back the entire
+alive uses the separate authority contract below. Any failure rolls back the entire
 settlement; identical retries succeed and changed bytes conflict.
 
 An initial history-less receipt path can follow existing boundary recording.
 Any generated-query history integration must define a distinct closed projection;
 manual `pending` must not be represented as generic committed success.
+
+## Retirement while the Studio remains alive
+
+A logical session close or public cleanup report is insufficient to release an
+idle transaction binding. The native process supervisor issues an opaque
+`HelperGeneration` identity and, only after sealed admission and its private
+actual-child reaper receipt, an opaque `ReapedHelperGeneration` proof. Both carry
+a weak reference to the exact supervisor allocation and a canonical generation
+UUID. Reusing the same UUID for another physical helper cannot authorize release.
+Neither handle retains the helper process or supplies remote disposition proof.
+
+Pin the native identity against the initial `NewManual` reservation before
+dispatch. Pinning requires its exact current in-flight reservation, original
+owner/gate, ordinal one, zero prior pending batches and matching durable
+generation. A retry may preserve the same physical identity; it must never bind
+a replacement helper. Restored records, generation strings and arbitrary cleanup
+reports cannot create this authority. The future application dispatcher must
+perform this step; the storage foundation has no such caller yet.
+
+Retirement requires the existing current group lease, its exact pinned native
+identity and the matching reaped proof. Acquire the group's admission lock before
+SQLite and retain it through commit and memory publication. Refuse release while
+any reservation, captured-but-unsettled original or volatile rollback obligation
+remains. The original execution task may still hold an acknowledgement after its
+helper exits; it must finish recording or explicitly abandon its own reservation
+first. Do not use whole-Studio dead-owner recovery for this case.
+
+Capture also acquires this shared group admission lock before SQLite. A second
+`Persistence` handle using the genuine reservation must not cross initial pin
+publication or retirement. Busy capture preserves the caller's original bytes
+for recording retry; it never authorizes abandonment or remote redispatch.
+
+For an eligible bound open or unknown group, one SQLite transaction records local
+`unknown` disposition and removes only that group's binding and reserved cleanup
+credit. Preserve immutable originals, audits, membership, helper/remote IDs,
+pending count and any existing closure evidence. Never rewrite verified commit
+or rollback as unknown, infer remote rollback, reconnect, or replay SQL. Publish
+the closed in-memory lease only after commit; a SQLite failure retains authority
+and supports retry. A repeated exact release is idempotent, while stale leases
+cannot admit continuation or mint cleanup tokens. Other groups remain protected.
+
+This is a local lifecycle prerequisite. It does not enable grid/CSV dispatch,
+owner-scoped refresh inside pending transactions, or account qualification.
+Seven actual native-child/SQLite and 45 feature-enabled process cases pass.
+Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
+compilation and strict checks; the
+[retirement ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation)
+records the reproduced capture-admission gap and final source-scoped evidence.
 
 ## Whole-envelope and capacity requirements
 

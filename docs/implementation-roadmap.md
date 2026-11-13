@@ -9,10 +9,11 @@ per-statement cardinality checks, truthful transaction outcomes and no SQL repla
 then staging/review/submit/commit/rollback and CSV integration. Standard-table
 declared keys are not enforced; keyless distinct rows remain required. Duplicate
 indistinguishable rows must conflict for a single-row edit. The generic grid
-success contract patches committed results immediately and cannot express
-pending manual Snowflake work. Keep SDK grid/import disabled until the complete
-workflow is integrated and qualified. Account effects require a fresh concrete
-plan and billing/write approval; earlier approvals are consumed or expired.
+success contract preserves original rows and invalidates editability after commit;
+it cannot express pending manual Snowflake work. Keep SDK grid/import disabled
+until the complete workflow is integrated and qualified. Account effects require
+a fresh concrete plan and billing/write approval; earlier approvals are consumed
+or expired.
 
 This prioritizes a missing daily workflow while retaining all outstanding
 history reclamation, capacity, migration and normal-app acceptance gates below.
@@ -45,13 +46,20 @@ Provisional capacities are not accepted workflow limits: full-capacity/RSS,
 lifetime retention and the exact delayed pre-owner-claim migration race remain
 open. Keep those gates distinct from the passing logical quota and idle-owner
 fence checks.
-Then build a dedicated adapter; the old generic grid's committed-success return
-type cannot represent pending work. Define trusted helper-generation retirement
-while the Studio remains alive: unknown/no-original batch groups currently retain
-their owner binding until OS-proven owner death. Do not expose this storage API
-as a complete live-session lifecycle before that contract is implemented.
-Integrate application staging and CSV, and qualify the whole
-workflow against Snowflake and the normal packaged app. Broader codecs remain
+Trusted helper-generation retirement while the Studio remains alive now has an
+internal pin/proof/release API. Seven real-child/SQLite and 45 feature-enabled
+process cases pass, including a reproduced/corrected shared capture-admission
+gap; see the [retirement ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation).
+Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
+compilation and strict checks on unchanged source inputs.
+The API has no application caller. Build a dedicated typed adapter and connect
+its initial pin, retained acknowledgement recording and post-reap release.
+The generic grid's committed-success return cannot represent pending work, and
+its primary-key deduplication cannot represent distinct keyless originals.
+Retain native lossless edit snapshots before review. Add a reviewed owner-scoped
+read/refresh contract during pending manual ownership; ordinary metadata reads
+remain correctly excluded. Integrate application staging and CSV, and qualify the
+whole workflow against Snowflake and the normal packaged app. Broader codecs remain
 required, not optional follow-up work.
 
 ## Durable original outcomes (13 November 2026, local verification)

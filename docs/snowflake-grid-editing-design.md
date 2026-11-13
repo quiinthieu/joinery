@@ -12,7 +12,9 @@ DataGrip's [data editor](https://www.jetbrains.com/help/datagrip/data-editor-and
 supports pending-change previews, row insertion/deletion, submission and automatic
 or manual transaction modes. Manual submission can leave work pending until
 explicit commit or rollback. Joinery's existing generic `Action::Changes` route
-assumes success means committed and patches retained rows immediately. Its
+assumes success means committed. It preserves original result rows and invalidates
+editability after a successful commit; submitted values do not establish server
+postimages. Its
 `Driver::apply_target` return type cannot represent pending Snowflake work or
 per-row/commit acknowledgement evidence. Do not enable the SDK's `table_editing`
 capability by reusing that contract unchanged.
@@ -210,6 +212,18 @@ accepted solution for standard-table editing.
    committed results. Revert, submit, commit and rollback must update the correct
    snapshots and invalidate affected tabs truthfully. CSV preview and every batch
    must retain the same target/preview authority and exact Snowflake coercions.
+   The SDK relation preview currently returns rows without retaining a native
+   edit-snapshot token; its inspection slot retains column metadata only. Add a
+   bounded session-owned snapshot linking exact retained originals, target,
+   inspection/catalog revisions, context and physical helper generation. Resolve
+   row references natively; browser-supplied originals confer no authority.
+   The generic preparation route also deduplicates by declared primary-key
+   columns, which rejects distinct keyless originals. Use the separate Snowflake
+   compiler and typed action rather than enabling that generic route.
+   While a manual transaction is pending, the helper intentionally excludes
+   ordinary preview/metadata operations. A complete manual refresh workflow needs
+   an explicitly reviewed owner-scoped read contract. Do not relax ordinary SQL
+   exclusion or manufacture postimages from submitted values.
    The current import integer codec routes non-MySQL values through PostgreSQL
    i64 limits; it cannot be reused for Snowflake NUMBER(38,0). Duplicate keys are
    not automatically invalid for standard Snowflake tables. Default expressions,

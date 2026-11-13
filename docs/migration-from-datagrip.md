@@ -2,7 +2,15 @@
 
 ## Evaluation version notice
 
-The new [schema8 batch-storage foundation](snowflake-batch-outcomes-design.md) is
+The latest internal source also adds
+[helper retirement while Studio remains alive](snowflake-batch-outcomes-design.md#retirement-while-the-studio-remains-alive),
+with exact physical-owner proof and protection for unfinished result recording.
+It has no application dispatch or UI caller and adds no migration step or
+Snowflake grid capability. The
+[current ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation)
+separates its local checks from the preceding storage checkpoint below.
+
+The preceding [schema8 batch-storage foundation](snowflake-batch-outcomes-design.md) is
 locally verified: full validation, actual SQLite/owned-child recovery, two
 preserved-schema7 migrations, isolated PostgreSQL scripts and seven browser
 workflows pass. See the [source-scoped evidence and open gates](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).

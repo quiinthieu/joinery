@@ -1,5 +1,20 @@
 # Implementation and release status
 
+## Helper retirement (13 November 2026, local foundation)
+
+An opaque identity pins a manual group to the exact physical helper, and native
+reap proof permits release only after its recording obligations are settled or
+explicitly abandoned. Uncertain outcomes remain unknown; originals and audits
+are preserved. Seven real-child/SQLite and 45 feature-enabled process cases pass.
+Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
+compilation and strict checks, with 146 intentional default fixture ignores.
+The [ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation)
+records source scope and the reproduced/corrected concurrent-capture gap.
+This has no application dispatcher or changed UI workflow. Grid/CSV, owner-scoped
+pending refresh, normal packaged/account acceptance and the broader replacement
+remain incomplete. The normal schema7 app is preserved; no release build,
+installation, account activity or further cache deletion occurs.
+
 ## Snowflake batch storage (13 November 2026, local foundation)
 
 The [schema8 storage foundation](snowflake-batch-outcomes-design.md) implements
@@ -9,7 +24,8 @@ leases and reserved rollback recording capacity. Full validation passes with
 preserved-schema7 migration runs, ten isolated PostgreSQL script cases and seven
 browser workflows also pass. See the [source-scoped ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
 Capacity/RSS, the delayed pre-owner-claim migration race and live helper-generation
-retirement remain open; logical quota tests do not qualify lifetime capacity.
+retirement integration remain open; logical quota tests do not qualify lifetime
+capacity.
 Generated grid/CSV dispatch remains disabled, and the local schema-7 normal app
 from `d6cfb2a` is preserved. No account activity or additional cleanup is involved.
 

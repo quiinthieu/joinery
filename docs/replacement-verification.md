@@ -8,6 +8,79 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake helper retirement (13 November 2026, local foundation)
+
+Base `fdcd6a1`, task branch `feat/datagrip-replacement`. Three reused
+`gpt-6.1-sol` high-effort agents own the process proof, storage pin/release and
+independent review. The lead owns integration, documentation and serialized
+checks. No model fallback or global configuration change occurs.
+
+This increment adds opaque physical-helper identity, actual native reap proof,
+initial reservation pinning and per-group retirement while the Studio remains
+alive. It preserves SQL-free originals and records local uncertainty without
+claiming remote rollback. It has no application dispatch caller, UI capability or
+Snowflake account qualification. SDK grid/CSV remain disabled; the normal local
+schema7 app remains unchanged. See the
+[retirement contract](snowflake-batch-outcomes-design.md#retirement-while-the-studio-remains-alive).
+
+| Evidence label | Actual result |
+| --- | --- |
+| `retirement-first` | Compilation succeeds and five of six native-child/SQLite cases pass. The physical-owner case fails its initial live-helper assertion because the shell fixture redirects stdout to `/dev/null`, correctly causing protocol EOF and retirement while the second child starts. Exit 101, 42.778 seconds, unchanged 330 inputs. This is a fixture failure, not demonstrated product misbehavior; keeping the pipe open preserves every lifecycle assertion |
+| `capture-guard-red` | Independent review identifies capture crossing initial pin publication through a second `Persistence` handle. The added deterministic test uses two real SQLite handles and the genuine owner/gate/reservation. With group admission held, capture incorrectly succeeds instead of returning Conflict; the intended assertion fails. The actual owned child is already reaped before this assertion. Exit 101, 52.111 seconds, unchanged 330 inputs. This reproduces missing local serialization, not remote evidence loss |
+| `retirement-corrected` | All seven standard Unix native-child/real-SQLite cases pass, exit zero, 54.841 seconds including compilation, unchanged 330 inputs. Covers exact physical identity despite reused UUIDs, live storage-owner process survival, unchanged originals/audits/membership, unrelated live group protection, reserved/captured/volatile obligations, shared capture admission, failed SQLite release/retry, stale authority, known rollback preservation and actual backup restore exclusion until release. The tiny shell/cat child proves native reaping only; archived batch receipts are synthetic |
+| `process-complete` | All 45 feature-enabled process cases pass with intentional fixture ignores explicitly included, exit zero, 1.628 seconds, unchanged 330 inputs. Includes all five new generation cases, actual production-helper children with synthetic SDKs, same-UUID physical-owner mismatch, no proof before reaping, weak-handle non-retention, and the existing batch finish/cancel/invalid-frame bridge. No Snowflake account or actual SDK server-effect qualification |
+| `validate-complete` | Full pnpm validate passes: 1,038 frontend and 788 standard Rust cases, 146 intentional default fixture ignores, frontend formatting/contracts/TypeScript/build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 263.993 seconds, all 558 inputs unchanged. Includes the appended encrypted batch regression and all seven new standard Unix retirement cases. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain; no warning suppression, weakened assertions or skipped checks |
+| independent review | Separate bounded process/ownership and storage/obligation reviews identify the capture-admission gap before integration. Its intended regression fails before the fix and passes afterward. Final source and seven-document reviews find no remaining material issue in scope. Graph transport is unavailable, so source and receipts provide direct fallback evidence; no exhaustive graph-coverage claim |
+
+Receipts and exact commands are under
+`.cache/verification/snowflake-helper-retirement/`. The regression uses shared
+admission rather than timing or a mock database. The correction makes capture
+acquire the same group guard before SQLite as reserve/settle/abandon; a busy
+result preserves the original bytes for recording retry. It never authorizes
+abandonment or redispatch.
+
+The scope also corrects the grid design: generic committed results preserve
+original rows and invalidate editability. Application integration still needs a
+native lossless snapshot token, separate keyless preparation and typed outcomes,
+and a reviewed owner-scoped read/refresh contract during pending manual work.
+Ordinary pending-owner SQL exclusion remains intact. No UI, account, migration
+or packaging qualification is inferred from these local lifecycle changes.
+
+Reproduce the focused local checks with the pinned development toolchain:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib batch_retirement_tests -- --include-ignored --test-threads=1
+JOINERY_TEST_NODE=/absolute/path/to/node cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_process::tests:: -- --include-ignored --test-threads=1
+pnpm validate
+```
+
+The Node path must select the prepared local Node 24 executable; no account
+credentials are used. The first command uses actual isolated native children and
+SQLite, while the second also runs production-helper children with synthetic
+SDK modules. These are local lifecycle checks, not remote data-effect tests.
+
+Full validation includes desktop compilation, but no new normal app is packaged
+or launched. The prior normal executable remains the separate local, uninstalled
+`d6cfb2a` schema7 checkpoint. No account activity, installation, publication,
+database-fixture service startup or additional cache deletion occurs. The private
+Site hub is not updated under the explicit no-publication boundary. Repository
+documents retain the durable local result. Capacity/RSS, lifetime reclamation,
+the delayed preclaim migration race, application integration and complete
+Snowflake/macOS/owner acceptance remain required; the Goal stays incomplete.
+
+Code and regression tests are committed locally as `71df902`. Final comparisons
+in `final-source-and-storage.json` prove all 558 full-validation inputs and both
+330-input focused scopes still match. The preserved 34,912,112-byte normal
+executable retains SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+At the final snapshot, free space is 200,277,340,160 bytes (about 186.5 GiB),
+debug artifacts occupy about 9.1 GiB and release artifacts about 3.0 GiB.
+No cargo/rustc/Clippy process remains. The earlier approved deletion reclaimed
+135.8 GiB and was not repeated; reduced debug profiles, serialized builds and
+the 20 GiB floor remain in force. The documentation path check covers 843
+repository-relative links with no missing targets; new retirement headings are
+checked separately, while other fragments are not exhaustively verified.
+
 ### Snowflake batch storage (13 November 2026, local foundation)
 
 Base `eb8992a`, task branch `feat/datagrip-replacement`. The lead owns shared
