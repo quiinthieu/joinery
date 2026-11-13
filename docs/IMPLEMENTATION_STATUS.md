@@ -18,10 +18,19 @@ actual browser cases pass within their recorded scopes. Initial failures,
 legacy fixture corrections, the reproduced event-order regression and independent
 review are retained in the
 [ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
-The new normal package remains pending. The normal app below is still the
-previous `adabd44` schema-4 package, now separately preserved with its complete
-inventory and signature verified; keep evaluation roots separate from schema-5
-metadata.
+The normal SDK-bearing ARM64 app packages from clean `952758b` in 270.445
+seconds; resources, strict ad-hoc signature, original license bytes and guarded
+SDK 3.4.1 startup pass with zero authentication/SQL. It remains local and
+uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0.
+Executable SHA-256 is
+`3926796c0a4a3175f9c3ac79deede76b2303842277073bf2ca330965cd9af445`.
+All 559 packaged source hashes match final full validation, PostgreSQL and browser
+checks. The two native suites precede one diagnostic-wording change; exact reverse
+byte hashing proves no other source difference, as recorded in the ledger.
+All 15,120 inventory entries of the separately preserved `adabd44` schema-4 app
+remain unchanged. Keep its metadata separate from schema-5 evaluation roots.
+About 192 GiB is free; debug artifacts occupy 8.9 GiB and release artifacts 3.1 GiB.
+The approved cleanup reclaimed 135.8 GiB; no further deletion occurred.
 
 Generic process-crash owner proof, durable failed generic/typed completion
 payloads, lifetime ticket/privacy resource budgets and reservations remain open.
@@ -48,12 +57,13 @@ schema-5 increment above implements the atomic history/privacy and console
 publisher prerequisites; durable reservations remain required. Keep both count
 gates and `retentionEnabled=false`.
 
-The normal SDK-bearing ARM64 app packages from clean `adabd44`; resources,
-strict ad-hoc signature, original license bytes and guarded SDK startup pass
+At this earlier checkpoint the normal SDK-bearing ARM64 app packaged from clean
+`adabd44`; resources, strict ad-hoc signature, original license bytes and guarded
+SDK startup passed
 with zero authentication/SQL. All 554 source hashes match validation/browser/
-producer checks. The app remains local and uninstalled at
-`src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0; executable
-SHA-256 is `5caf64e894f6767bfc69952e1e31f52a2f5a4c6365fa4d208369e76e4ce5f8dc`.
+producer checks. That schema-4 app is now preserved separately under the ignored
+verification root; it was not installed. Its version is 0.1.0 and executable SHA-256 is
+`5caf64e894f6767bfc69952e1e31f52a2f5a4c6365fa4d208369e76e4ce5f8dc`.
 All 15,120 inventory entries of the preserved `99a3ca3` app remain unchanged.
 About 189.6 GiB is free; debug artifacts occupy 8.9 GiB. Actual account effects,
 normal packaged owner UI/SSO/restart, installation/update and signing/notarization

@@ -16,7 +16,8 @@ and encrypted recovery coverage. The lead owns generic/typed execution,
 integration, real-database/browser checks and final verification. Shared sources
 are frozen during each serialized check; each receipt captures exact source
 hashes and disk usage under the 20 GiB free-space preflight. These checks use the
-coordinated worktree source; normal packaging will use a clean feature commit.
+coordinated worktree source; normal packaging uses clean feature commit
+`952758b039fba06ef9aaa9b284edb6acabe71c43`.
 No account activity is authorized or performed by these local checks.
 
 | Evidence label | Actual result |
@@ -58,6 +59,9 @@ No account activity is authorized or performed by these local checks.
 | `history-atomic-validate-display-reviewed` | Full pnpm validate passes again on the plain-wording source: 1,038 frontend / 676 standard Rust cases, 142 default ignores, formatting, contracts, TypeScript, UI build, desktop compile and strict Clippy. Exit zero, 194.945 seconds, all 559 captured sources unchanged |
 | `history-atomic-postgres-display-reviewed` | All ten actual PostgreSQL cases pass again on the plain-wording source, 2.766 seconds, unchanged sources. The lead restarted only its own fixture for these final checks |
 | `history-atomic-browser-display-reviewed` | All six actual Chromium cases pass again on the plain-wording source, 49.708 seconds, all 559 captured sources unchanged. Actual PostgreSQL active-query clear/reload and reviewed parameter writes remain verified; the lead's fixture is stopped after this run |
+| `history-atomic-normal-package` | Normal SDK-bearing ARM64 app packages from clean `952758b039fba06ef9aaa9b284edb6acabe71c43` in 270.445 seconds, exit zero. All 559 captured sources remain unchanged and match final full validation, PostgreSQL and browser checks. Bundle resources, strict ad-hoc signature and guarded SDK 3.4.1 startup pass with zero authentication/SQL. Existing nonfatal LLVM stripping warning remains |
+| `history-atomic-app-artifact` | Version 0.1.0 ARM64 executable: 34,663,152 bytes, SHA-256 `3926796c0a4a3175f9c3ac79deede76b2303842277073bf2ca330965cd9af445`. Original dependency-notice bytes match source/Git/bundle. All 15,120 preserved adabd44 inventory entries remain unchanged. Artifact receipt explicitly verifies the sole diagnostic-wording difference from native producer/runner sources by exact reverse-byte SHA; all other 558 hashes match. App is local/uninstalled; no account or owner UI acceptance |
+| `history-atomic-doc-links` | All 778 repository-relative Markdown path targets exist; none missing. Fragment targets were not validated |
 
 Review found that legacy v4 rows initially lacked ticket authority and could
 evade a later clear during restore. Schema-5 migration now registers SQL-free
@@ -67,7 +71,8 @@ SQL digest also has passing regression coverage. The final integration reviewer
 found no material defects in generic/typed execution and accepted the recovery
 guard regression. The subsequently found public event-order regression is
 corrected and independently reviewed. Final browser, feature-specific execution,
-offline runner and full validation checks pass; a new normal package is pending.
+offline runner and full validation checks pass; the clean-source normal package
+also passes within the explicit source scopes above.
 The lead's graph transport was initially closed, with source review as fallback;
 it is available again at generation `2026-11-13T03:56:26Z`. The obsolete private
 history-import alias has one test-only caller, confirmed by search, inbound
@@ -85,8 +90,30 @@ response is retained as `history-atomic-final-coverage.json`.
 Do not infer restart recovery for generic pending owners, durable reservations,
 bounded lifetime ticket/era/generation growth or full-capacity readiness. Those
 remain required work. Count gates remain and `retentionEnabled=false`. The
-normal runnable `adabd44` app below is the preceding schema-4 package; keep its
-metadata separate from schema-5 evaluation roots until the new package passes.
+normal runnable app is now the local, uninstalled clean-`952758b` schema-5
+package. The preceding `adabd44` schema-4 app is preserved under
+`.cache/verification/reviewed-console/preserved-release-adabd44/Joinery.app`;
+keep its metadata separate from schema-5 evaluation roots. The package is not
+installed and normal owner UI/SSO/restart acceptance remains open. The existing
+nonfatal Rust `rust-objcopy`/missing LLVM stripping warning persists; resource,
+strict signature and guarded helper startup checks pass. No global toolchain
+configuration was changed.
+
+Storage after the artifact check: 206,189,969,408 free bytes (about 192 GiB),
+9,372,112 KiB debug output (8.9 GiB) and 3,189,928 KiB release output (3.1 GiB).
+The earlier approved debug-only cleanup reclaimed 145,766,936,576 bytes
+(135.8 GiB); its receipt is
+`.cache/verification/build-storage/approved-debug-cleanup.json`. This increment
+performed no further cache deletion. Reduced debug settings, serialized checks
+and the 20 GiB free-space preflight remain in effect; they are not automatic
+cache reclamation. No build or test remains running.
+
+Final independent documentation review matched seven updated guides against the
+package/artifact receipts and found one stale current-bundle label in the usage
+guide. It now labels `fb091db` and its native evidence as historical and points
+to the current `952758b` package. No product source changed after packaging.
+The canonical private project hub was not published or changed; repository
+status and evidence are updated locally within the no-publication instruction.
 
 ### History completion evidence (13 November 2026)
 

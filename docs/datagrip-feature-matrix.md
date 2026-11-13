@@ -24,7 +24,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `adabd44` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `952758b` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL                                                                                                                                                             | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open                                                            |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -49,14 +49,16 @@ not substitute for completing the rows.
 
 | Capability | Current status | Evidence / remaining gate |
 | --- | --- | --- |
-| Durable history before dispatch | Implemented in schema 5; console regression, actual PostgreSQL and browser verified | Exact console case reproduces then fixes missing SQL at Started. Full validation, ten actual PostgreSQL cases, six browser cases, 73 synthetic Snowflake execution cases and 27 offline runner cases pass. New package pending. [Ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026) |
-| Clear/opt-out/restore authority and SQL-free completion | Implemented; real SQLite/encrypted restore/PostgreSQL/browser coverage passes | Physical writer fence, immutable row validation, legacy migration/clear/restore, known completion retry and clear during an active browser query pass. Independent integration review is clean, including the corrected event-order regression; package qualification remains pending |
+| Durable history before dispatch | Implemented in schema 5; console regression, actual PostgreSQL and browser verified | Exact console case reproduces then fixes missing SQL at Started. Full validation, ten actual PostgreSQL cases, six browser cases, 73 synthetic Snowflake execution cases and 27 offline runner cases pass. Clean `952758b` package checks pass; owner UI remains open. [Ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026) |
+| Clear/opt-out/restore authority and SQL-free completion | Implemented; real SQLite/encrypted restore/PostgreSQL/browser coverage passes | Physical writer fence, immutable row validation, legacy migration/clear/restore, known completion retry and clear during an active browser query pass. Independent integration review is clean, including the corrected event-order regression; clean `952758b` package checks pass; owner interaction remains open |
 | Lifetime resource bounds and generic crash ownership | Incomplete | SQL-free tickets and privacy ancestry grow independently of existing console count gates; durable reservations, reclamation, full-capacity measurements and process-owner recovery remain required. `retentionEnabled=false` |
 
-This checkpoint does not qualify a new normal app. The runnable `adabd44` bundle
-above remains the preceding schema-4 package. Keep its local metadata separate
-from schema-5 evaluation roots. Actual Snowflake/macOS daily acceptance and the
-complete applicable DataGrip baseline remain open.
+This checkpoint includes the local, uninstalled `952758b` schema-5 normal app.
+All 559 package hashes match final validation, PostgreSQL and browser checks;
+native suites precede only the independently verified diagnostic-wording change.
+The previous `adabd44` app is separately preserved. Keep its schema-4 metadata
+separate from schema-5 evaluation roots. Actual Snowflake/macOS daily acceptance
+and the complete applicable DataGrip baseline remain open.
 
 ## Checked receipt accounting (13 November 2026)
 
@@ -67,7 +69,7 @@ complete applicable DataGrip baseline remain open.
 
 See the [ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
 At the accounting checkpoint, the local app was the `f9c1ce2` recovery build.
-The current `adabd44` history package includes this prerequisite; exact package
+The current `952758b` history package includes this prerequisite; exact package
 and source evidence is in the ledger.
 
 ## Encrypted metadata recovery (12 November 2026, locally verified)

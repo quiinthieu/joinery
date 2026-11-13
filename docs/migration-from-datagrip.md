@@ -28,7 +28,7 @@ explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
 response-loss/restart recovery, native paged history and a bounded receipt panel.
 This does not establish real Snowflake effects, current packaged native UI behavior or daily
-replacement readiness. The normal SDK-bearing ARM64 bundle from clean `adabd44`
+replacement readiness. The normal SDK-bearing ARM64 bundle from clean `952758b`
 passes resource/signature and guarded helper-startup checks. It is local and
 uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
 acceptance remains open. See the ledger for its binary hash and build warning.
@@ -57,7 +57,7 @@ Expiry retires the console and preserves its original receipt. It does not prove
 server cancellation, rollback or freedom from charges, so reconcile without SQL
 and investigate an uncertain original before considering another submission.
 See the [query-limit contract](snowflake-console-query-limits.md) and current
-ledger for verification status. The current `adabd44` bundle includes this setting;
+ledger for verification status. The current `952758b` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
 Current source upgrades local metadata to schema 5 under exclusive ownership.
@@ -74,7 +74,7 @@ space. **Release retained result rows** separately releases process-local buffer
 after confirmation, preserving original decisions. The existing 10,000-decision
 limits remain. The new [encrypted metadata recovery workflow](encrypted-metadata-recovery.md)
 passes local browser and hidden native verification and is included in the
-current `adabd44` package. Its recovery workflows were qualified locally at
+current `952758b` package. Its recovery workflows were qualified locally at
 `f9c1ce2`, before the later history increments. It adds
 separate backup passphrases, encrypted import/export, mandatory encrypted undo
 and bounded SQLite staging; full-capacity resource acceptance remains open.
@@ -516,11 +516,13 @@ scalars. Logout, child reaping and private authentication-state cleanup passed.
 The earlier failed attempt is retained in the ledger. Both approvals are consumed
 and authorize no additional application workflows. See the
 [account pass and limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
-The current `fb091db` SDK bundle (224.33 MiB) passes normal packaging, strict
-ad-hoc signature, resources and guarded SDK startup without authentication/SQL.
-Three hidden native runs pass 20 check categories with ten cleanup cycles each.
-The reviewed DML workflow also passes local browser/helper and shutdown checks;
-these do not qualify actual Snowflake write or transaction effects. Normal
+At the earlier `fb091db` checkpoint, the SDK bundle (224.33 MiB) passed normal
+packaging, strict ad-hoc signature, resources and guarded SDK startup without
+authentication/SQL. Three hidden native runs passed 20 check categories with ten
+cleanup cycles each, and reviewed DML passed local browser/helper and shutdown
+checks. Those native results remain pinned to that checkpoint; they do not qualify
+actual Snowflake write or transaction effects. The current local package is the
+clean-`952758b` app described above, with its separate checks in the ledger. Normal
 application account acceptance remains open. The app is not installed or released.
 
 Create a Snowflake profile with **External browser SSO**, the existing account

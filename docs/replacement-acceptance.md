@@ -5,9 +5,11 @@
 The [paged history guide](query-history.md) and
 [ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026) record
 current real-SQLite/PostgreSQL/browser verification and atomic history/privacy
-coverage. The new normal package is pending; the existing normal app is the
-preceding schema-4 `adabd44` package. Normal packaged owner interaction and application-restart
-acceptance remain open. Use disposable local data; this walkthrough authorizes
+coverage. The local, uninstalled schema-5 SDK-bearing package from clean
+`952758b` passes resources, strict ad-hoc signature and guarded SDK startup
+without authentication/SQL. The preceding schema-4 `adabd44` app is separately
+preserved. Normal packaged owner interaction and application-restart acceptance
+remain open. Use disposable local data; this walkthrough authorizes
 no Snowflake activity or access to existing private application state.
 
 1. With SQL history enabled, run a synthetic query in an isolated local fixture.

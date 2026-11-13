@@ -131,9 +131,13 @@ including all eight history integration and nine encrypted history privacy cases
 All ten actual isolated PostgreSQL cases, 73 synthetic Snowflake execution cases,
 27 offline qualification-runner cases and six actual browser cases pass. Exact
 source scopes, commands, initial failures and corrections are
-recorded in the ledger. The new normal SDK-bearing package remains pending;
-`src-tauri/target/release/bundle/macos/Joinery.app` is still the preceding clean
-`adabd44` schema-4 app, now separately preserved. Keep its metadata root separate.
+recorded in the ledger. The normal SDK-bearing ARM64 package from clean
+`952758b` passes resources, strict ad-hoc signature and guarded SDK startup with
+zero authentication/SQL. It is local and uninstalled at
+`src-tauri/target/release/bundle/macos/Joinery.app`. All 559 source hashes match
+final full validation, PostgreSQL and browser checks; native suites precede only
+the verified diagnostic-wording change. The previous `adabd44` schema-4 app is
+separately preserved; keep its metadata root separate.
 Normal packaged owner interaction and restart acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.

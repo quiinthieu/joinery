@@ -23,8 +23,12 @@ migration; validators were not weakened. Final full validation passes 1,038
 frontend / 676 standard Rust cases, with strict checks. All six browser,
 73 feature-specific Snowflake execution and 27 offline qualification-runner
 cases pass. Review also caught a public event-order regression; its direct
-red/green test and complete offline runner suite pass after correction. Normal
-packaging remains pending. See the
+red/green test and complete offline runner suite pass after correction. The
+normal SDK-bearing ARM64 package from clean `952758b` passes resources, strict
+ad-hoc signature, original license bytes and guarded SDK startup with zero
+authentication/SQL. All 559 package hashes match final validation, PostgreSQL
+and browser checks; native suites differ only by the verified diagnostic wording.
+See the
 [current ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
 
 Generic process-crash owner recovery, durable failed generic/typed completion
@@ -33,9 +37,10 @@ Lifetime SQL-free tickets, clear eras and profile-generation ancestry currently
 have no complete resource budget or reclamation policy. Preserve their privacy
 authority; do not claim that console count gates bound these new tables. Keep
 both count gates and `retentionEnabled=false`. The current runnable normal app
-remains the previously verified clean-`adabd44` package below, with schema 4.
-Do not point that older writer at schema-5 evaluation metadata. Full DataGrip
-scope, actual Snowflake qualification and owner acceptance remain required.
+is the clean-`952758b` schema-5 package, local and uninstalled. The previous
+`adabd44` schema-4 app is separately preserved with all 15,120 inventory entries
+unchanged. Do not point that older writer at schema-5 evaluation metadata.
+Full DataGrip scope, actual Snowflake qualification and owner acceptance remain required.
 
 ## History completion evidence (13 November 2026, locally verified)
 
