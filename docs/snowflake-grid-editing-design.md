@@ -128,6 +128,9 @@ transaction membership. Reserve recording capacity for rollback before accepting
 manual work. Restore imports historical proof without helper ownership, replay
 or live execution authority. Capture/settle faults, caller loss, child death,
 ordinary-quota exhaustion and restart require actual SQLite/process tests.
+The [durable batch-outcome proposal](snowflake-batch-outcomes-design.md) records
+the unimplemented schema8/API sequence and verification gates; none of its
+proposed capacities is established by the current protocol tests.
 
 ## Database correctness constraints
 

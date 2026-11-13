@@ -36,6 +36,11 @@ per-unit proof after settlement, preserve immutable pending originals, bind
 separate finish records to explicit transaction membership, and reserve rollback
 recording even when ordinary quota is exhausted. Prove the entire encoded
 envelope fits the durable limit and test real SQLite faults, restore and crashes.
+The [schema8 storage proposal](snowflake-batch-outcomes-design.md) bounds that
+increment, including historical-only restore, live idle-group exclusion and
+pre-reserved rollback credit. It is unimplemented; proposed capacities are not
+accepted workflow limits. Implement and review persistence before dependent
+driver/runtime/UI work.
 Then build a dedicated adapter; the old generic grid's committed-success return
 type cannot represent pending work. Integrate application staging and CSV, and qualify the whole
 workflow against Snowflake and the normal packaged app. Broader codecs remain

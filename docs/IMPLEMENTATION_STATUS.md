@@ -19,6 +19,13 @@ acceptance remain required. The runnable `d6cfb2a` normal app remains unchanged,
 local and uninstalled. No additional cache deletion, release build or account
 activity is part of this work.
 
+Protocol source is committed locally as `e216b78`; the separate semantic test
+fixture correction is `48511f3`. The next
+[durable batch-outcome proposal](snowflake-batch-outcomes-design.md) is
+unimplemented. Its schema8 records, whole-envelope admission, manual membership
+and protected rollback storage require implementation and capacity/crash/restore
+verification before application dispatch can be enabled.
+
 ## Snowflake mutation compiler (13 November 2026)
 
 The closed compiler emits bound, ordered INSERT/UPDATE/DELETE units with

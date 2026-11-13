@@ -69,6 +69,15 @@ No real-database or UI qualification is inferred from these protocol checks. The
 [design](snowflake-grid-editing-design.md#owned-batch-runtime-integration)
 records the remaining journal, adapter, staging, CSV and account/native gates.
 
+The protocol increment is committed locally as `e216b78`; the separate test-only
+fixture correction is `48511f3`. The subsequent storage proposal is documentation
+only and does not alter the validated application sources or acceptance gates.
+Its linked documentation passes the final relative-path check: all 823 targets
+exist (`doc-links-final.json`); fragments are not exhaustively checked. The whole
+proposal was independently reviewed before these links were added, with no
+material finding. No additional build or cache deletion is needed for this
+documentation-only increment.
+
 The `final-source-and-storage.json` receipt compares current bytes with every
 final check. Full validation, final child bridge, all 427 helper cases and all
 56 runtime-pin script cases match exactly. Packaging, offline qualification
