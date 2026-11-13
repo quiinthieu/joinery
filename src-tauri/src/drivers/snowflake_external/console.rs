@@ -114,7 +114,7 @@ impl SnowflakeExternal {
                 "This Snowflake session belongs to a reviewed console; automatic and generated SQL is disabled",
             ));
         }
-        Ok(())
+        self.grid.require_ordinary()
     }
 
     /// Admission does not execute SQL. Bootstrap identity/version SQL has already

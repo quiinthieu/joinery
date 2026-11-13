@@ -517,6 +517,23 @@ impl PreparedSnowflakeEdits {
     pub(crate) fn snapshot_id(&self) -> &str {
         &self.authority.id
     }
+    /// Reserve the logical dispatch peak before allocating a JSON payload.
+    /// Compilation already charges 96 bytes per binding and twice its text,
+    /// plus SQL/identifier bytes. Three additional copies conservatively cover
+    /// temporary JSON construction and the retained transport payload. Two
+    /// bounded frames cover encoding/queue handoff; the fixed margin covers
+    /// envelope/map keys. This is shared-budget accounting, not an RSS bound.
+    pub(crate) fn reserve_dispatch(&mut self) -> AppResult<()> {
+        let bytes = self
+            .compiled
+            .accounted_bytes()
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(self.authority.binding.charge))
+            .and_then(|n| n.checked_add(2 * super::snowflake_process::MAX_FRAME))
+            .and_then(|n| n.checked_add(64 * 1024))
+            .ok_or_else(limit)?;
+        self.authority.budget.lock().resize(bytes)
+    }
     pub(crate) fn validate_current(&self, current: &NativeEditBinding) -> AppResult<()> {
         if self.authority.valid(Instant::now()) && self.authority.binding.matches(current) {
             Ok(())

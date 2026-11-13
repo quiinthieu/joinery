@@ -11,7 +11,7 @@ pub(super) fn shared_store() -> Arc<SnapshotStore> {
 }
 
 impl SnowflakeExternal {
-    fn edit_profile_enabled(&self) -> bool {
+    pub(super) fn edit_profile_enabled(&self) -> bool {
         self.profile.safe_mode != SafeMode::ReadOnly
             && self.profile.snowflake.as_ref().is_some_and(|config| {
                 config.authentication == SnowflakeAuthentication::ExternalBrowser
@@ -91,7 +91,7 @@ impl SnowflakeExternal {
         Ok(preview)
     }
 
-    fn edit_binding(
+    pub(super) fn edit_binding(
         &self,
         state: &BrowseState,
         request: &PreviewRelationRequest,

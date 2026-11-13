@@ -36,6 +36,8 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) mod console;
 mod edit_snapshots;
+pub(crate) mod grid;
+mod grid_freshness;
 
 const SQL_BYTES: usize = 262_144;
 const DDL_GRANT_TTL: Duration = Duration::from_secs(60);
@@ -164,7 +166,8 @@ pub struct SnowflakeExternal {
     profile: ConnectionProfile,
     session_id: String,
     identity: Value,
-    lane: AsyncMutex<()>,
+    lane: Arc<AsyncMutex<()>>,
+    grid: grid::State,
     // Permanent once claimed; releasing a run never reenables ordinary probes.
     console_mode: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
@@ -349,7 +352,8 @@ impl SnowflakeExternal {
             profile: profile.clone(),
             session_id: session_id.into(),
             identity,
-            lane: AsyncMutex::new(()),
+            lane: Arc::new(AsyncMutex::new(())),
+            grid: grid::State::default(),
             console_mode: Mutex::new(None),
             active: Mutex::new(None),
             browsing: Mutex::new(BrowseState::default()),
@@ -3487,6 +3491,12 @@ mod session_tests {
     }
     mod edit_snapshots_tests {
         include!("snowflake_external/edit_snapshots_tests.rs");
+    }
+    mod grid_freshness_tests {
+        include!("snowflake_external/grid_freshness_tests.rs");
+    }
+    mod grid_adapter_tests {
+        include!("snowflake_external/grid_adapter_tests.rs");
     }
 
     mod qualification_metadata_tests {

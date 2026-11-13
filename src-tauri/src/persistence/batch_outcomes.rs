@@ -14,7 +14,9 @@ use crate::drivers::snowflake_batch::{
     BatchCapture, BatchEvidence, BatchRequest, FinishAction, Mode, Outcome,
 };
 #[cfg(unix)]
-use crate::drivers::snowflake_process::{HelperGeneration, ReapedHelperGeneration};
+use crate::drivers::snowflake_external::grid::GridNoDispatch;
+#[cfg(unix)]
+use crate::drivers::snowflake_process::{HelperGeneration, Operation, ReapedHelperGeneration};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -954,14 +956,25 @@ fn reserve(
         }
         {
             let state = g.memory.0.lock();
+            let undispatched =
+                if intent == Intent::Rollback && state.credit_operation.as_ref() == Some(d) {
+                    if let Some(data) = &state.in_flight {
+                        read_row(c, &data.descriptor.operation_id)?.is_some_and(|row| {
+                            row.phase == "settled" && row.terminal.as_deref() == Some("noDispatch")
+                        })
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
             if state
                 .credit_operation
                 .as_ref()
                 .is_some_and(|old| old != d || intent != Intent::Rollback)
-                || state
-                    .in_flight
-                    .as_ref()
-                    .is_some_and(|data| data.descriptor != *d || data.intent != intent)
+                || state.in_flight.as_ref().is_some_and(|data| {
+                    (data.descriptor != *d || data.intent != intent) && !undispatched
+                })
             {
                 return Err(conflict());
             }
@@ -1184,7 +1197,9 @@ fn abandon(
     reservation_digest: &str,
 ) -> AppResult<outcomes::OutcomePhase> {
     let row = expected(c, data, reservation_digest)?;
-    if row.phase == "settled" && row.terminal.as_deref() == Some("noOriginal") {
+    if row.phase == "settled"
+        && matches!(row.terminal.as_deref(), Some("noOriginal" | "noDispatch"))
+    {
         return Ok(outcomes::OutcomePhase::Settled);
     }
     if row.phase != "reserved" || row.capture_digest.is_some() {
@@ -1204,6 +1219,35 @@ pub(crate) struct VolatileBatchRollbackToken {
     plan: BatchPlan,
     group: ManualTransactionLease,
     data: ReservationData,
+    // Sharing the prerequisite shares only the existing bounded payload Arc.
+    // Successful prerequisite settlement drops it even if token clones survive.
+    predecessor: Option<Arc<parking_lot::Mutex<Option<PendingOriginal>>>>,
+    no_dispatch: Option<BatchReservation>,
+    remote_transaction: Option<String>,
+}
+#[derive(Clone, Debug)]
+struct PendingOriginal {
+    reservation: BatchReservation,
+    original: OriginalBatchOutcome,
+}
+/// Compact native witness minted while the actual completed Operation exists.
+/// It retains neither its Report nor its original payload buffer.
+#[cfg(unix)]
+#[derive(Clone)]
+pub(crate) struct PendingBatchRollbackAuthority {
+    reservation: BatchReservation,
+    capture_digest: String,
+    helper: HelperGeneration,
+    helper_owner: uuid::Uuid,
+    remote_transaction: String,
+}
+#[cfg(unix)]
+impl std::fmt::Debug for PendingBatchRollbackAuthority {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingBatchRollbackAuthority")
+            .field("operation_id", &self.reservation.operation_id())
+            .finish_non_exhaustive()
+    }
 }
 #[cfg(unix)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1211,6 +1255,104 @@ pub(crate) enum ManualTransactionRetirement {
     Retired,
     AlreadyRetired,
 }
+#[cfg(unix)]
+fn validate_pending_authority(
+    owner: &Arc<HistoryOwner>,
+    descriptor: &BatchDescriptor,
+    authority: &PendingBatchRollbackAuthority,
+    state: &GroupSnapshot,
+) -> AppResult<()> {
+    let group = authority.reservation.group.as_ref().ok_or_else(conflict)?;
+    if !Arc::ptr_eq(owner, &group.owner)
+        || !Arc::ptr_eq(owner, &authority.reservation._owner)
+        || !state.identity.descriptor(descriptor)
+        || state.helper_retired
+        || !state
+            .native_helper
+            .as_ref()
+            .is_some_and(|h| h.same_helper(&authority.helper))
+        || state.helper.is_some_and(|h| h != authority.helper_owner)
+        || state
+            .credit_operation
+            .as_ref()
+            .is_some_and(|old| old != descriptor)
+        || descriptor.operation_id == authority.reservation.operation_id()
+    {
+        return Err(conflict());
+    }
+    Ok(())
+}
+fn pending_token(
+    owner: &Arc<HistoryOwner>,
+    descriptor: &BatchDescriptor,
+    group: &ManualTransactionLease,
+    helper_owner: uuid::Uuid,
+    ordinal: u32,
+    pending: u32,
+) -> AppResult<VolatileBatchRollbackToken> {
+    let plan = BatchPlan::new(BatchRequest::Finish {
+        owner: helper_owner,
+        action: FinishAction::Rollback,
+    })?;
+    let data = ReservationData {
+        descriptor: descriptor.clone(),
+        owner_nonce: owner.nonce.clone(),
+        intent: Intent::Rollback,
+        membership: Some(Membership {
+            transaction_id: group.id.clone(),
+            ordinal,
+            prior_pending_count: pending,
+        }),
+        request_hash: plan.request_hash.clone(),
+        maximum_binary: plan.maximum_binary,
+    };
+    preflight(&data)?;
+    Ok(VolatileBatchRollbackToken {
+        descriptor: descriptor.clone(),
+        plan,
+        group: group.clone(),
+        data,
+        predecessor: None,
+        no_dispatch: None,
+        remote_transaction: None,
+    })
+}
+// Native no-queue proof was checked at token creation. Preserve its immutable
+// membership as a distinct unreleased-schema8 terminal witness; only its exact
+// next protected rollback can follow this gap.
+fn mark_no_dispatch(
+    c: &Connection,
+    owner: &Arc<HistoryOwner>,
+    group: &ManualTransactionLease,
+    r: &BatchReservation,
+) -> AppResult<()> {
+    let row = expected(c, &r.data, &r.digest)?;
+    let m = r.data.membership.as_ref().ok_or_else(conflict)?;
+    let stored = read_group(c, group.id())?.ok_or_else(conflict)?;
+    if row.owner != owner.nonce
+        || row.group.as_deref() != Some(group.id())
+        || !matches!(r.data.intent, Intent::ContinueManual | Intent::Commit)
+        || stored.ordinal != m.ordinal
+        || stored.pending != m.prior_pending_count
+        || stored
+            .closed_by
+            .as_deref()
+            .is_some_and(|id| id != r.operation_id())
+        || !matches!(stored.disposition.as_str(), "open" | "unknown")
+        || binding(c, group.id())? != Some((owner.nonce.clone(), true))
+        || row.capture_digest.is_some()
+        || row.payload.is_some()
+        || !(row.phase == "reserved"
+            || row.phase == "settled"
+                && matches!(row.terminal.as_deref(), Some("noOriginal" | "noDispatch")))
+    {
+        return Err(conflict());
+    }
+    c.execute("UPDATE batch_operations_v8 SET phase='settled',reservation_json=NULL,payload=NULL,terminal_kind='noDispatch',reserved_bytes=0 WHERE operation_id=?1",[r.operation_id()]).map_err(db_error)?;
+    c.execute("UPDATE manual_transactions_v8 SET disposition='open',closed_by=NULL WHERE transaction_id=?1",[group.id()]).map_err(db_error)?;
+    Ok(())
+}
+
 impl Persistence {
     /// Bind the initial reserved attempt before any helper dispatch. Durable UUID
     /// metadata alone never authorizes retirement of a physical helper instance.
@@ -1332,7 +1474,10 @@ impl Persistence {
             if row.owner != owner.nonce
                 || row.group.as_deref() != Some(group.id())
                 || row.phase != "settled"
-                || !matches!(row.terminal.as_deref(), Some("original" | "noOriginal"))
+                || !matches!(
+                    row.terminal.as_deref(),
+                    Some("original" | "noOriginal" | "noDispatch")
+                )
             {
                 return Err(conflict());
             }
@@ -1496,7 +1641,312 @@ impl Persistence {
             plan,
             group: group.clone(),
             data,
+            predecessor: None,
+            no_dispatch: None,
+            remote_transaction: None,
         })
+    }
+
+    /// Mint only from a successful, unretired native Pending terminal, before
+    /// discarding the Operation. Serialized metadata or a caller Pending flag
+    /// never authorizes cleanup of a live physical helper.
+    #[cfg(unix)]
+    pub(crate) fn authorize_pending_batch_rollback(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        reservation: &BatchReservation,
+        original: &OriginalBatchOutcome,
+        operation: &Operation,
+    ) -> AppResult<PendingBatchRollbackAuthority> {
+        let group = reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        let (meta, evidence) = decode(original.as_bytes())?;
+        let summary = evidence.summary.as_ref().ok_or_else(conflict)?;
+        let membership = reservation.data.membership.as_ref().ok_or_else(conflict)?;
+        if !Arc::ptr_eq(owner, &reservation._owner)
+            || !Arc::ptr_eq(owner, &group.owner)
+            || reservation.data.owner_nonce != owner.nonce
+            || !matches!(
+                reservation.data.intent,
+                Intent::NewManual | Intent::ContinueManual
+            )
+            || membership.transaction_id != group.id
+            || meta
+                != metadata(
+                    &reservation.data,
+                    meta.finished_at,
+                    BatchTermination::Complete,
+                )
+            || summary.outcome != Outcome::Pending
+        {
+            return Err(conflict());
+        }
+        let state = group.memory.0.lock();
+        let helper = state.native_helper.as_ref().ok_or_else(conflict)?;
+        let helper_owner = summary.owner.ok_or_else(conflict)?;
+        let remote_transaction = summary.transaction_id.as_ref().ok_or_else(conflict)?;
+        let exact_inflight = state.in_flight.as_ref() == Some(&reservation.data)
+            && state.pending == membership.prior_pending_count;
+        let exact_settled = state.in_flight.is_none()
+            && state.pending == membership.prior_pending_count + 1
+            && state.helper == Some(helper_owner);
+        if !state.open
+            || state.helper_retired
+            || state.ordinal != membership.ordinal
+            || !state.identity.descriptor(&reservation.data.descriptor)
+            || (!exact_inflight && !exact_settled)
+            || !operation.matches_batch_binding(
+                helper,
+                reservation.operation_id(),
+                &evidence.request,
+            )
+        {
+            return Err(conflict());
+        }
+        let terminal = operation.terminal_receiver();
+        let terminal = terminal.borrow();
+        let report = terminal.as_ref().ok_or_else(conflict)?;
+        if !report.ok || report.retirement.is_some() || report.batch.as_ref() != Some(&evidence) {
+            return Err(conflict());
+        }
+        Ok(PendingBatchRollbackAuthority {
+            reservation: reservation.clone(),
+            capture_digest: hash(original.as_bytes()),
+            helper: helper.clone(),
+            helper_owner,
+            remote_transaction: remote_transaction.clone(),
+        })
+    }
+
+    /// SQL-free protected admission while the exact earlier Pending original
+    /// remains in an ordinary recording cell. No earlier receipt is abandoned.
+    #[cfg(unix)]
+    pub(crate) fn make_pending_batch_rollback_token(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        descriptor: &BatchDescriptor,
+        authority: &PendingBatchRollbackAuthority,
+        original: &OriginalBatchOutcome,
+    ) -> AppResult<VolatileBatchRollbackToken> {
+        let reservation = &authority.reservation;
+        let group = reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        descriptor.validate()?;
+        let membership = reservation.data.membership.as_ref().ok_or_else(conflict)?;
+        let state = group.memory.0.lock();
+        validate_pending_authority(owner, descriptor, authority, &state)?;
+        if !state.open
+            || hash(original.as_bytes()) != authority.capture_digest
+            || state.ordinal != membership.ordinal
+            || !(state.in_flight.as_ref() == Some(&reservation.data)
+                && state.pending == membership.prior_pending_count
+                || state.in_flight.is_none() && state.pending == membership.prior_pending_count + 1)
+        {
+            return Err(conflict());
+        }
+        let ordinal = membership
+            .ordinal
+            .checked_add(1)
+            .filter(|n| *n <= 65_536)
+            .ok_or_else(full)?;
+        let pending = membership
+            .prior_pending_count
+            .checked_add(1)
+            .ok_or_else(full)?;
+        drop(state);
+        let mut token = pending_token(
+            owner,
+            descriptor,
+            group,
+            authority.helper_owner,
+            ordinal,
+            pending,
+        )?;
+        token.remote_transaction = Some(authority.remote_transaction.clone());
+        token.predecessor = Some(Arc::new(parking_lot::Mutex::new(Some(PendingOriginal {
+            reservation: reservation.clone(),
+            original: original.clone(),
+        }))));
+        group.claim_rollback(descriptor)?;
+        Ok(token)
+    }
+
+    /// An actual queued, zero-step admission refusal preserved prior Pending
+    /// work. Retain this refusal's own original and settle it before cleanup;
+    /// unlike no-queue proof this path never produces a noDispatch witness.
+    #[cfg(unix)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Bind cleanup to prior authority, successor, exact original and native operation"
+    )]
+    pub(crate) fn make_rejected_batch_rollback_token(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        descriptor: &BatchDescriptor,
+        authority: &PendingBatchRollbackAuthority,
+        successor: &BatchReservation,
+        original: &OriginalBatchOutcome,
+        operation: &Operation,
+    ) -> AppResult<VolatileBatchRollbackToken> {
+        let group = authority.reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        descriptor.validate()?;
+        let prior = authority
+            .reservation
+            .data
+            .membership
+            .as_ref()
+            .ok_or_else(conflict)?;
+        let m = successor.data.membership.as_ref().ok_or_else(conflict)?;
+        let (meta, evidence) = decode(original.as_bytes())?;
+        let summary = evidence.summary.as_ref().ok_or_else(conflict)?;
+        let state = group.memory.0.lock();
+        validate_pending_authority(owner, descriptor, authority, &state)?;
+        if !state.open
+            || descriptor.operation_id == successor.operation_id()
+            || !Arc::ptr_eq(owner, &successor._owner)
+            || !successor
+                .group
+                .as_ref()
+                .is_some_and(|g| Arc::ptr_eq(&g.memory, &group.memory))
+            || successor.data.owner_nonce != owner.nonce
+            || !matches!(
+                successor.data.intent,
+                Intent::ContinueManual | Intent::Commit
+            )
+            || m.transaction_id != group.id
+            || m.ordinal != prior.ordinal + 1
+            || m.prior_pending_count != prior.prior_pending_count + 1
+            || state.ordinal != m.ordinal
+            || state.pending != m.prior_pending_count
+            || state.in_flight.as_ref() != Some(&successor.data)
+            || meta
+                != metadata(
+                    &successor.data,
+                    meta.finished_at,
+                    BatchTermination::Complete,
+                )
+            || !evidence.steps.is_empty()
+            || summary.outcome != Outcome::Rejected
+            || summary.failure != Some(crate::drivers::snowflake_batch::Failure::Admission)
+            || summary.owner != Some(authority.helper_owner)
+            || summary.transaction_id.as_deref() != Some(authority.remote_transaction.as_str())
+            || !operation.matches_batch_binding(
+                &authority.helper,
+                successor.operation_id(),
+                &evidence.request,
+            )
+        {
+            return Err(conflict());
+        }
+        let terminal = operation.terminal_receiver();
+        let terminal = terminal.borrow();
+        let report = terminal.as_ref().ok_or_else(conflict)?;
+        if !report.ok || report.retirement.is_some() || report.batch.as_ref() != Some(&evidence) {
+            return Err(conflict());
+        }
+        let ordinal = m
+            .ordinal
+            .checked_add(1)
+            .filter(|n| *n <= 65_536)
+            .ok_or_else(full)?;
+        drop(state);
+        let mut token = pending_token(
+            owner,
+            descriptor,
+            group,
+            authority.helper_owner,
+            ordinal,
+            m.prior_pending_count,
+        )?;
+        token.remote_transaction = Some(authority.remote_transaction.clone());
+        token.predecessor = Some(Arc::new(parking_lot::Mutex::new(Some(PendingOriginal {
+            reservation: successor.clone(),
+            original: original.clone(),
+        }))));
+        group.claim_rollback(descriptor)?;
+        Ok(token)
+    }
+
+    /// A strict native no-queue proof permits only protected rollback after the
+    /// exact reserved successor. It does not revive ordinary Unknown admission.
+    #[cfg(unix)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Bind cleanup to prior authority, successor request and genuine native proof"
+    )]
+    pub(crate) fn make_undispatched_batch_rollback_token(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        descriptor: &BatchDescriptor,
+        authority: &PendingBatchRollbackAuthority,
+        successor: &BatchReservation,
+        request: &BatchRequest,
+        proof: &GridNoDispatch,
+    ) -> AppResult<VolatileBatchRollbackToken> {
+        let group = authority.reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        descriptor.validate()?;
+        let prior = authority
+            .reservation
+            .data
+            .membership
+            .as_ref()
+            .ok_or_else(conflict)?;
+        let m = successor.data.membership.as_ref().ok_or_else(conflict)?;
+        let state = group.memory.0.lock();
+        validate_pending_authority(owner, descriptor, authority, &state)?;
+        if descriptor.operation_id == successor.operation_id()
+            || !Arc::ptr_eq(owner, &successor._owner)
+            || !successor
+                .group
+                .as_ref()
+                .is_some_and(|g| Arc::ptr_eq(&g.memory, &group.memory))
+            || successor.data.owner_nonce != owner.nonce
+            || !matches!(
+                successor.data.intent,
+                Intent::ContinueManual | Intent::Commit
+            )
+            || m.transaction_id != group.id
+            || m.ordinal != prior.ordinal + 1
+            || m.prior_pending_count != prior.prior_pending_count + 1
+            || state.ordinal != m.ordinal
+            || state.pending != m.prior_pending_count
+            || state
+                .in_flight
+                .as_ref()
+                .is_some_and(|data| data != &successor.data)
+            || request_hash(request)? != successor.data.request_hash
+            || !proof.matches(&authority.helper, successor.operation_id(), request)
+        {
+            return Err(conflict());
+        }
+        let ordinal = m
+            .ordinal
+            .checked_add(1)
+            .filter(|n| *n <= 65_536)
+            .ok_or_else(full)?;
+        drop(state);
+        let mut token = pending_token(
+            owner,
+            descriptor,
+            group,
+            authority.helper_owner,
+            ordinal,
+            m.prior_pending_count,
+        )?;
+        token.remote_transaction = Some(authority.remote_transaction.clone());
+        token.no_dispatch = Some(successor.clone());
+        group.claim_rollback(descriptor)?;
+        Ok(token)
     }
     pub(crate) fn promote_volatile_batch_rollback(
         &self,
@@ -1504,12 +1954,32 @@ impl Persistence {
         gate: &OperationGate,
         token: &VolatileBatchRollbackToken,
     ) -> AppResult<BatchReservation> {
+        // The exact credit descriptor blocks other admissions throughout these
+        // independently atomic, retryable phases. Never hold admission while
+        // calling the ordinary capture/settle APIs that acquire it themselves.
+        if let Some(prerequisite) = &token.predecessor {
+            let prior = prerequisite.lock().clone();
+            if let Some(prior) = prior {
+                self.capture_batch_outcome(owner, gate, &prior.reservation, &prior.original)?;
+                self.settle_batch_outcome(owner, gate, &prior.reservation, &prior.original)?;
+                prerequisite.lock().take();
+            }
+        }
         let _admission = token.group.memory.1.try_lock().ok_or_else(conflict)?;
         gate.validate(owner, &self.root)?;
         let mut c = self.connection.lock();
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        if let Some(remote) = &token.remote_transaction {
+            let stored = read_group(&tx, token.group.id())?.ok_or_else(conflict)?;
+            if stored.remote.as_ref() != Some(remote) {
+                return Err(conflict());
+            }
+        }
+        if let Some(successor) = &token.no_dispatch {
+            mark_no_dispatch(&tx, owner, &token.group, successor)?;
+        }
         let reservation = reserve(
             &tx,
             owner,
@@ -1528,6 +1998,7 @@ impl Persistence {
         state.ordinal = m.ordinal;
         state.pending = m.prior_pending_count;
         state.in_flight = Some(reservation.data.clone());
+        state.open = true;
         Ok(reservation)
     }
     pub(crate) fn capture_batch_outcome(
@@ -1654,8 +2125,10 @@ impl Persistence {
         tx.commit().map_err(db_error)?;
         if let Some(group) = &r.group {
             let mut state = group.memory.0.lock();
-            state.open = false;
-            state.in_flight = None;
+            if state.in_flight.as_ref() == Some(&r.data) {
+                state.open = false;
+                state.in_flight = None;
+            }
         }
         Ok(phase)
     }
@@ -1951,8 +2424,12 @@ pub(super) fn validate_records(c: &Connection) -> AppResult<()> {
                             return Err(invalid());
                         }
                     }
-                    Some("noOriginal") => {
-                        if r.capture_digest.is_some() || read_archive(c, &id)?.is_some() {
+                    Some("noOriginal" | "noDispatch") => {
+                        if (r.terminal.as_deref() == Some("noDispatch")
+                            && (r.group.is_none() || r.pool != "ordinary"))
+                            || r.capture_digest.is_some()
+                            || read_archive(c, &id)?.is_some()
+                        {
                             return Err(invalid());
                         }
                     }
@@ -1982,6 +2459,7 @@ pub(super) fn validate_records(c: &Connection) -> AppResult<()> {
         let mut ordinal = 0;
         let mut pending = 0;
         let mut blocked_after = false;
+        let mut rollback_only = false;
         // (operation, disposition, exact closed_by): imported unprojected
         // captures and source NoOriginal gaps prove uncertainty, not settlement.
         let mut terminal: Option<(String, &str, bool)> = None;
@@ -2014,6 +2492,7 @@ pub(super) fn validate_records(c: &Connection) -> AppResult<()> {
                         )
                 };
                 if !intent_valid
+                    || (rollback_only && m.intent != Intent::Rollback)
                     || !g.identity.descriptor(&m.descriptor)
                     || m.membership.as_ref().map(|m| m.transaction_id.as_str()) != Some(id.as_str())
                     || request != m.request_hash
@@ -2035,6 +2514,8 @@ pub(super) fn validate_records(c: &Connection) -> AppResult<()> {
                 {
                     return Err(invalid());
                 }
+                rollback_only = false;
+                terminal = None;
                 if active {
                     // Historical identical bytes may coexist with a current
                     // capture until recovery commits its local projection.
@@ -2067,10 +2548,25 @@ pub(super) fn validate_records(c: &Connection) -> AppResult<()> {
                             Intent::ContinueManual | Intent::Commit | Intent::Rollback
                         )
                 };
-                if !intent_valid || request != data.request_hash {
+                if !intent_valid
+                    || request != data.request_hash
+                    || (rollback_only && data.intent != Intent::Rollback)
+                {
                     return Err(invalid());
                 }
+                terminal = None;
                 blocked_after = true;
+            } else if operation_row
+                .as_ref()
+                .is_some_and(|r| r.terminal.as_deref() == Some("noDispatch"))
+            {
+                // A native no-queue refusal retains its membership and may be
+                // followed by exactly one protected rollback, never more work.
+                if n == 1 || pending == 0 || rollback_only {
+                    return Err(invalid());
+                }
+                terminal = Some((operation.clone(), "unknown", true));
+                rollback_only = true;
             } else {
                 // Imported reservation/NoOriginal membership has no original
                 // receipt. Preserve the gap and forbid a later continuation.
@@ -2184,7 +2680,10 @@ pub(super) fn merge_for_restore(current: &Connection, candidate: &Connection) ->
         .execute("UPDATE batch_captures_v8 SET provenance='imported'", [])
         .map_err(db_error)?;
     candidate
-        .execute("DELETE FROM batch_operations_v8", [])
+        .execute(
+            "DELETE FROM batch_operations_v8 WHERE terminal_kind IS NOT 'noDispatch'",
+            [],
+        )
         .map_err(db_error)?;
     candidate
         .execute("DELETE FROM manual_transaction_bindings_v8", [])
@@ -2322,3 +2821,7 @@ mod batch_validation_tests;
 #[cfg(all(test, unix))]
 #[path = "batch_retirement_tests.rs"]
 mod batch_retirement_tests;
+
+#[cfg(all(test, unix))]
+#[path = "batch_pending_rollback_tests.rs"]
+mod batch_pending_rollback_tests;

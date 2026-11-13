@@ -527,3 +527,35 @@ async fn native_snapshot_concurrent_prepare_has_exactly_one_winner() {
     assert_eq!(wins, 1);
     assert_eq!(store.usage(), (0, 0));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_snapshot_dispatch_budget_is_shared_atomic_and_retained_until_drop() {
+    let h = reaped_handle().await;
+    let obs = Observations::new();
+    let store = SnapshotStore::new();
+    let id = store.retain(obs.binding(&h), rows()).unwrap();
+    let mut plan = store
+        .prepare("observer-session", &id, &obs.binding(&h), &delete(0))
+        .unwrap();
+    let baseline = store.usage();
+    let held = BudgetLease::claim(&store.usage, MAX_BYTES - baseline.0 - 1).unwrap();
+    let saturated = store.usage();
+    capacity(plan.reserve_dispatch());
+    assert_eq!(store.usage(), saturated, "failed reservation is atomic");
+    drop(held);
+    plan.reserve_dispatch().unwrap();
+    let reserved = store.usage();
+    assert!(reserved.0 > baseline.0 + 2 * super::super::snowflake_process::MAX_FRAME);
+    assert_eq!(reserved.1, baseline.1);
+    plan.reserve_dispatch().unwrap();
+    assert_eq!(store.usage(), reserved, "rechecking cannot double-charge");
+    store.revoke_session("observer-session");
+    conflict(plan.validate_current(&obs.binding(&h)));
+    assert_eq!(
+        store.usage(),
+        reserved,
+        "retained payload still owns its budget"
+    );
+    drop(plan);
+    assert_eq!(store.usage(), (0, 0));
+}
