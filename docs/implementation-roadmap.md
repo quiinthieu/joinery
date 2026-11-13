@@ -1,6 +1,37 @@
 # Joinery implementation roadmap
 
-## Current work: durable original outcomes
+## Current work: Snowflake grid editing and import
+
+The next daily-workflow increment is the
+[Snowflake grid/import contract](snowflake-grid-editing-design.md): a closed
+lossless mutation compiler, then a dedicated owned-batch runtime with actual
+per-statement cardinality checks, truthful transaction outcomes and no SQL replay,
+then staging/review/submit/commit/rollback and CSV integration. Standard-table
+declared keys are not enforced; keyless distinct rows remain required. Duplicate
+indistinguishable rows must conflict for a single-row edit. The generic grid
+success contract patches committed results immediately and cannot express
+pending manual Snowflake work. Keep SDK grid/import disabled until the complete
+workflow is integrated and qualified. Account effects require a fresh concrete
+plan and billing/write approval; earlier approvals are consumed or expired.
+
+This prioritizes a missing daily workflow while retaining all outstanding
+history reclamation, capacity, migration and normal-app acceptance gates below.
+No compiler-only result establishes replacement readiness or reduces full scope.
+
+The pure compiler and twelve focused regressions are implemented. Full validation
+passes 1,038 frontend / 732 standard Rust tests and strict checks; independent
+review has no material finding. See its
+[current boundary](snowflake-grid-editing-design.md#current-compiler-implementation)
+and [verification](replacement-verification.md#snowflake-mutation-compiler-13-november-2026).
+Next implement the dedicated owned-batch protocol and transaction outcome model,
+including actual cardinality enforcement, distinct confirmed/unknown rollback,
+manual submission and bounded per-unit evidence. Reusing the helper's old
+two-statement operation or the grid's committed-success return type is
+insufficient. Then integrate application staging and CSV, and qualify the whole
+workflow against Snowflake and the normal packaged app. Broader codecs remain
+required, not optional follow-up work.
+
+## Durable original outcomes (13 November 2026, local verification)
 
 Schema-7 reserve/capture/settle authority, separate emergency rollback capacity,
 bounded compact retry cells and current-only recovery now pass full validation

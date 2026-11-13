@@ -1,5 +1,26 @@
 # Implementation and release status
 
+## Snowflake mutation compiler (13 November 2026)
+
+The closed compiler emits bound, ordered INSERT/UPDATE/DELETE units with
+whole-original predicates, explicit UTF-8 binary text comparison, lossless
+fixed-point validation, overlap rejection and bounded accounting. Twelve focused
+regressions and full validation pass (1,038 frontend / 732 standard Rust cases,
+145 intentional default fixture ignores, desktop compile and strict Clippy).
+Independent source/design and documentation reviews find no material issue.
+It has no execution or application caller: the SDK's grid and
+CSV capabilities remain disabled. Owned transaction execution, per-unit durable
+outcomes, broader codecs, UI workflows and real Snowflake qualification remain
+required. See the [design](snowflake-grid-editing-design.md) and
+[verification ledger](replacement-verification.md#snowflake-mutation-compiler-13-november-2026)
+for exact limits, commands, full checks and independent review.
+
+This increment does not replace or install the normal `d6cfb2a` app recorded
+below. No authentication, account SQL, packaging or publication is part of this
+compiler work. The earlier approved debug cleanup already reclaimed 135.8 GiB;
+the cache was not deleted again. Builds remain serialized with a 20 GiB free-space
+gate and reduced debug profiles.
+
 ## Durable original outcomes (13 November 2026, local verification)
 
 Schema 7 reserves ordinary work before dispatch, captures compact immutable

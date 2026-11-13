@@ -29,6 +29,11 @@ six months. [Non-commercial announcement and FAQ](https://blog.jetbrains.com/dat
 [license registration](https://www.jetbrains.com/help/datagrip/register.html),
 [DataGrip FAQ](https://www.jetbrains.com/help/datagrip/faq-about-datagrip.html).
 
+The current [non-commercial licensing FAQ](https://sales.jetbrains.com/hc/en-gb/articles/18950890312210-The-free-non-commercial-licensing-FAQ),
+rechecked on 13 November, also describes the same full-featured IDE. Its Code
+With Me exception says that feature is unavailable in DataGrip; it does not
+establish a reduced DataGrip database workflow under the non-commercial license.
+
 That license statement does not mean every AI model or service is unlimited or
 included. AI Assistant and agent integrations are a distinct layer: the current
 docs describe JetBrains AI subscription, third-party provider accounts or API
@@ -70,6 +75,14 @@ relationship-authoring workflows. See
 This targeted page check does not change the stable-release baseline above.
 
 ## Scope notes for comparisons
+
+The 13 November grid refresh checked the 2026.3
+[data editor](https://www.jetbrains.com/help/datagrip/data-editor-and-viewer.html)
+and [submission guide](https://www.jetbrains.com/help/datagrip/submitting-and-reverting-changes.html).
+Pending DML preview, selective revert, submit, and automatic/manual transactions
+with explicit commit/rollback remain required for Joinery's Snowflake grid.
+The [grid/import implementation contract](snowflake-grid-editing-design.md)
+separates these complete workflows from the mutation compiler prerequisite.
 
 The 13 November targeted history refresh observed the 2026.3
 [Run queries documentation](https://www.jetbrains.com/help/datagrip/run-a-query.html):

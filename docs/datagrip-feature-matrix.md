@@ -1,5 +1,19 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Snowflake grid editing: compiler foundation
+
+The [closed mutation compiler](snowflake-grid-editing-design.md) now generates
+bound INSERT/UPDATE/DELETE units, whole-original predicates, byte-exact text
+comparison and lossless fixed-point validation. Twelve focused regressions and
+full validation (1,038 frontend / 732 standard Rust cases plus strict checks)
+pass; independent review finds no material issue. The
+[ledger](replacement-verification.md#snowflake-mutation-compiler-13-november-2026)
+records exact source scopes. This is a pure compiler without
+an execution or application caller. Owned batch transactions, durable per-unit
+outcomes, broader codecs, grid staging and CSV import remain incomplete. SDK
+grid/import capabilities stay disabled. Actual Snowflake semantics and account
+effects are unqualified. The runnable normal app remains pinned to `d6cfb2a`.
+
 ## Durable original outcomes: current local source
 
 Schema-7 capture/settlement passes full validation (1,038 frontend / 720 standard
@@ -34,7 +48,7 @@ new source or actual Snowflake behavior.
 | SQL editing and authoring                    | Bounded completion, formatting, parameters, diagnostics, navigation and refactoring slices; detailed source evidence below                                                       | Complete Snowflake semantics and the applicable DataGrip authoring workflow remain incomplete; daily native acceptance is open                              |
 | Query execution                              | Parameterized read-only scripts, generated actions and locally verified [reviewed retained mixed-SQL console](snowflake-sdk-console-workflow.md) with synthetic SDKs                                                                                                                                                     | Review-bound configurable limits are locally verified; finite 24-hour ceiling, actual long queries, complete mixed workflows and cancellation/interruption/account outcomes remain incomplete          |
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
-| Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
+| Safe data editing and import                 | Reviewed bounded SQL writes with one-use authority and retained original outcomes; pure [mutation compiler](snowflake-grid-editing-design.md) with exact bindings, full-original predicates and focused regressions | Snowflake grid editing and CSV import remain disabled; owned batch execution, actual cardinality/conflict handling, manual pending outcomes, broader codecs and complete UI/account effects need implementation and proof |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
 | History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority, atomic console transitions, process-owner recovery and locally verified schema-7 reserve/capture/settle source; [workflow and evidence](query-history.md) | Retention/lifetime reclamation, full-capacity behavior, exact delayed-preclaim migration, imported historical boundary detail and normal packaged Snowflake/owner recovery remain open |
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |

@@ -16,6 +16,7 @@ pub mod snowflake_dml_summary;
 pub mod snowflake_external;
 #[cfg(unix)]
 mod snowflake_metadata;
+pub mod snowflake_mutations;
 #[cfg(unix)]
 pub mod snowflake_process;
 #[cfg(all(unix, feature = "test-harness"))]

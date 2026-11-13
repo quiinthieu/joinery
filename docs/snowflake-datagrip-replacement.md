@@ -14,7 +14,7 @@ The owner subsequently selected the **latest stable DataGrip release** and
 reported query results of **up to 1,000,000 rows**. JetBrains' official
 [release API](https://data.services.jetbrains.com/products/releases?code=DG&latest=true&type=release)
 reported DataGrip **2026.3**, build `263.7307.216`, released 5 November 2026,
-when checked on 9 November and rechecked on 10, 11 and 12 November. Version-specific features, including bundled Air,
+when checked on 9 November and rechecked on 10, 11, 12 and 13 November. Version-specific features, including bundled Air,
 cross-database queries and the new grid column controls, belong in applicability
 review. Their provider entitlements and database support remain separate facts.
 
@@ -31,13 +31,23 @@ records connector alternatives and the expanded latest-release inventory.
 
 ## Current application boundary
 
-The latest local increment (`b06f030` / `3039975`) retains original typed SDK
-DDL/DML/transaction outcomes when local recording fails, retries missing local
-stages without SQL replay and keeps dropped transaction callers owned through
-recording. Pending receipts block new reviewed mutations, BEGIN/COMMIT and normal
-shutdown; explicit rollback retains bounded recovery. This is in-process recovery,
-not forced-exit durability while local storage is unwritable. Current validation
-and source-scoped evidence are in the [ledger](replacement-verification.md).
+The current runnable local app is the schema-7 `d6cfb2a` package. It reserves
+outcome capacity before dispatch, captures compact original completion evidence
+before secondary writes/callbacks, and settles history/audit/owner state atomically.
+Captured originals recover after process death without reconnecting or replaying
+SQL; work that died before capture remains truthfully unknown. Separate bounded
+rollback capacity remains available when ordinary recording is pending. Lifetime
+reclamation, full-capacity memory behavior and normal packaged/account/owner
+acceptance remain open. See the [current source-scoped evidence](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification).
+
+The next application gap under implementation is
+[safe Snowflake grid editing and CSV import](snowflake-grid-editing-design.md).
+Standard-table keys are not enforced; the generic grid's committed-success
+contract cannot be reused for pending Snowflake transactions. The ordered work
+starts with a closed mutation compiler, then an owned typed batch runtime,
+application staging/review/submit/commit/rollback and actual-account acceptance.
+The compiler alone does not enable editing. All applicable DataGrip capabilities
+remain required, including standard/keyless tables and manual transactions.
 
 Application profiles now select explicitly between the stateful SDK external-browser
 route and the existing local-application OAuth/SQL API route. New profiles choose

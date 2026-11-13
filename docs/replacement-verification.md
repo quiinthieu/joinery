@@ -8,6 +8,56 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake mutation compiler (13 November 2026)
+
+Base `fd211b5` on `feat/datagrip-replacement`. The lead owns shared docs,
+integration and serialized checks. Two reused `gpt-6.1-sol` high-effort agents own
+only the compiler/tests and independent read-only review respectively; no model
+fallback or global setting change. No agent runs a parallel build. Official
+DataGrip and Snowflake documentation was rechecked; the
+[baseline](datagrip-official-baseline.md) and
+[grid/import design](snowflake-grid-editing-design.md) retain the full replacement
+scope and distinguish compiler proof from transaction/application acceptance.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `snowflake-grid-compiler/official-research` | Official release API still reports DataGrip 2026.3 build 263.7307.216, released 5 November; non-commercial FAQ describes the full-featured IDE. Grid preview/revert/submit and automatic/manual transactions remain required. Snowflake sources confirm unenforced standard-table keys, READ COMMITTED, collation, NUMBER rounding and quoted-name setting hazards. No authentication or account SQL |
+| `grid-compiler-focused` | Twelve pure compiler regressions pass, exit zero, 29.12 seconds including compilation, captured sources unchanged during the check. Covers hostile quoting/bound values, mixed order/full-original predicates, NULL/empty/default, exact decimals, UTF-8 comparison, overlap rejection, invalid/generated inputs and resource limits. Parser assertions establish statement shape, not Snowflake execution |
+| `grid-compiler-final` | Frontend 1,038 and standard Rust 732 pass, with 145 intentional default fixture ignores. Validation then stops at Rust formatting because the new module registration is out of order. Exit 1, 227.868 seconds, all 250 captured Rust source/manifest hashes unchanged. Desktop compilation and strict Clippy are not reached. Lead corrects only the registration order; the failed receipt is preserved |
+| `grid-compiler-formatted` | Complete pnpm validate passes: 1,038 frontend / 732 standard Rust tests, 145 intentional default fixture ignores, frontend formatting, regenerated contracts, TypeScript, production UI build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 259.715 seconds, all 250 captured Rust source/manifest hashes unchanged. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain. No real Snowflake or changed UI qualification is inferred |
+| `snowflake-grid-compiler/independent-review` | Read-only final compiler, all twelve tests and design review finds no material correctness/security issue. Earlier design findings are resolved: byte-exact originals, decimal scale rejection, confirmed versus unknown rollback/manual outcomes, and separate bounded helper statement/evidence admission. Tier 2 graph generation 2026-11-13T07:03:06Z reports matching compiler/tests coverage; full direct source review supplies material evidence and checks the changed registration. Heuristic spurious graph call edges are not treated as real callers. No reviewer edits/builds/account activity |
+| `grid-compiler-doc-links` / documentation review | All 807 repository-relative Markdown targets exist; fragments are not exhaustively validated. Read-only review of seven changed/new documents finds no material misleading claim: full scope, disabled grid/CSV/account status, standard/keyless tables and current d6cfb2a app remain explicit |
+
+Reproduce the focused check with the pinned Rust toolchain from README:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib \
+  drivers::snowflake_mutations::tests -- --test-threads=1
+pnpm validate
+```
+
+Unique command/log/hash receipts are retained under
+`.cache/verification/reviewed-console/grid-compiler-*`; the research and design
+receipts are under `.cache/verification/snowflake-grid-compiler/`. The focused
+snapshot precedes a test-only `std::slice::from_ref` cleanup and the registration
+order fix; compiler production logic is unchanged. The later full check records
+the final Rust source separately. These source distinctions must not be erased.
+The formatted full run qualifies the final test and registration source; all
+twelve compiler tests pass within it. Shared docs were updated after that check,
+with no subsequent application-source change. Free space after validation is
+206,840,430,592 bytes (about 192.6 GiB), above the 20 GiB floor; no additional
+cache deletion occurred. The release executable still has SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+
+The compiler has no execution/application caller. It does not enable grid/CSV
+capabilities, own transactions, check actual affected counts, establish target
+identity or qualify Snowflake semantics. No changed UI workflow exists to test
+yet. Real database/native/owner acceptance remains required for the integrated
+workflow; prior PostgreSQL, synthetic SDK and browser results do not qualify
+this compiler's Snowflake behavior. The existing runnable `d6cfb2a` normal app is
+preserved, not rebuilt or installed by this compiler-only increment. Lifetime
+history reclamation and all other previously open gates remain required.
+
 ### Durable original outcomes (13 November 2026, local verification)
 
 Base `ab827e9`, task branch `feat/datagrip-replacement`. The lead owns runtime,
