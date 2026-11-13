@@ -13,6 +13,8 @@ use crate::domain::{AppError, AppResult, AuditEntry, ErrorCode};
 use crate::drivers::snowflake_batch::{
     BatchCapture, BatchEvidence, BatchRequest, FinishAction, Mode, Outcome,
 };
+#[cfg(unix)]
+use crate::drivers::snowflake_process::{HelperGeneration, ReapedHelperGeneration};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -175,6 +177,10 @@ struct GroupSnapshot {
     helper: Option<uuid::Uuid>,
     open: bool,
     in_flight: Option<ReservationData>,
+    #[cfg(unix)]
+    native_helper: Option<HelperGeneration>,
+    #[cfg(unix)]
+    helper_retired: bool,
 }
 impl std::fmt::Debug for ManualTransactionLease {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -220,6 +226,10 @@ fn lease(c: &Connection, owner: &Arc<HistoryOwner>, id: &str) -> AppResult<Manua
                     .transpose()?,
                 open: group.disposition == "open",
                 in_flight: None,
+                #[cfg(unix)]
+                native_helper: None,
+                #[cfg(unix)]
+                helper_retired: false,
             }),
             parking_lot::Mutex::new(()),
         ));
@@ -1195,7 +1205,175 @@ pub(crate) struct VolatileBatchRollbackToken {
     group: ManualTransactionLease,
     data: ReservationData,
 }
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManualTransactionRetirement {
+    Retired,
+    AlreadyRetired,
+}
 impl Persistence {
+    /// Bind the initial reserved attempt before any helper dispatch. Durable UUID
+    /// metadata alone never authorizes retirement of a physical helper instance.
+    #[cfg(unix)]
+    pub(crate) fn pin_manual_transaction_helper(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        reservation: &BatchReservation,
+        helper: &HelperGeneration,
+    ) -> AppResult<()> {
+        let group = reservation.group.as_ref().ok_or_else(conflict)?;
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        if !Arc::ptr_eq(owner, &group.owner)
+            || !Arc::ptr_eq(owner, &reservation._owner)
+            || reservation.data.owner_nonce != owner.nonce
+            || reservation.data.intent != Intent::NewManual
+            || reservation.data.descriptor.helper_generation != helper.generation()
+        {
+            return Err(conflict());
+        }
+        let membership = reservation.data.membership.as_ref().ok_or_else(conflict)?;
+        if membership.transaction_id != group.id
+            || membership.ordinal != 1
+            || membership.prior_pending_count != 0
+        {
+            return Err(conflict());
+        }
+        let c = self.connection.lock();
+        current(&c)?;
+        let row = expected(&c, &reservation.data, &reservation.digest)?;
+        let stored = read_group(&c, group.id())?.ok_or_else(conflict)?;
+        let mut state = group.memory.0.lock();
+        if row.phase != "reserved"
+            || row.capture_digest.is_some()
+            || row.payload.is_some()
+            || binding(&c, group.id())? != Some((owner.nonce.clone(), true))
+            || stored.identity != state.identity
+            || !stored.identity.descriptor(&reservation.data.descriptor)
+            || stored.identity.first_operation != reservation.operation_id()
+            || stored.identity.created_at != reservation.data.descriptor.started_at
+            || stored.ordinal != 1
+            || stored.pending != 0
+            || stored.helper.is_some()
+            || stored.remote.is_some()
+            || stored.closed_by.is_some()
+            || stored.disposition != "open"
+            || state.ordinal != 1
+            || state.pending != 0
+            || state.helper.is_some()
+            || !state.open
+            || state.helper_retired
+            || state.credit_operation.is_some()
+            || state.in_flight.as_ref() != Some(&reservation.data)
+            || state
+                .native_helper
+                .as_ref()
+                .is_some_and(|old| !old.same_helper(helper))
+        {
+            return Err(conflict());
+        }
+        gate.validate(owner, &self.root)?;
+        state.native_helper = Some(helper.clone());
+        Ok(())
+    }
+
+    /// Reaping proves only that this helper can no longer use its local lane.
+    /// The task must first record or explicitly abandon every original obligation.
+    #[cfg(unix)]
+    pub(crate) fn retire_manual_transaction(
+        &self,
+        owner: &Arc<HistoryOwner>,
+        gate: &OperationGate,
+        group: &ManualTransactionLease,
+        proof: &ReapedHelperGeneration,
+    ) -> AppResult<ManualTransactionRetirement> {
+        let _admission = group.memory.1.try_lock().ok_or_else(conflict)?;
+        gate.validate(owner, &self.root)?;
+        if !Arc::ptr_eq(owner, &group.owner) {
+            return Err(conflict());
+        }
+        let mut c = self.connection.lock();
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        current(&tx)?;
+        let stored = read_group(&tx, group.id())?.ok_or_else(conflict)?;
+        let bound = binding(&tx, group.id())?;
+        let mut state = group.memory.0.lock();
+        if state.in_flight.is_some()
+            || stored.identity != state.identity
+            || stored.identity.helper_generation != proof.generation()
+            || stored.ordinal != state.ordinal
+            || stored.pending != state.pending
+            || stored.helper.as_deref() != state.helper.as_ref().map(|id| id.to_string()).as_deref()
+            || !matches!(stored.disposition.as_str(), "open" | "unknown")
+            || !state
+                .native_helper
+                .as_ref()
+                .is_some_and(|helper| helper.matches_reaped(proof))
+        {
+            return Err(conflict());
+        }
+        let pending: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM batch_operations_v8 WHERE phase!='settled' AND (group_id=?1 OR operation_id IN(SELECT operation_id FROM manual_transaction_members_v8 WHERE transaction_id=?1)))",
+                [group.id()],
+                |row| row.get(0),
+            )
+            .map_err(db_error)?;
+        if pending {
+            return Err(conflict());
+        }
+        // A SQL-free token may still own an original that has not been promoted.
+        // Only its matching settled durable operation discharges that obligation.
+        if let Some(credit) = &state.credit_operation {
+            let row = read_row(&tx, &credit.operation_id)?.ok_or_else(conflict)?;
+            if row.owner != owner.nonce
+                || row.group.as_deref() != Some(group.id())
+                || row.phase != "settled"
+                || !matches!(row.terminal.as_deref(), Some("original" | "noOriginal"))
+            {
+                return Err(conflict());
+            }
+        }
+        if state.helper_retired {
+            if bound.is_some() || stored.disposition != "unknown" || state.open {
+                return Err(conflict());
+            }
+            return Ok(ManualTransactionRetirement::AlreadyRetired);
+        }
+        if bound.as_ref().map(|(nonce, _)| nonce) != Some(&owner.nonce) {
+            return Err(conflict());
+        }
+        if tx
+            .execute(
+                "UPDATE manual_transactions_v8 SET disposition='unknown' WHERE transaction_id=?1 AND disposition IN('open','unknown')",
+                [group.id()],
+            )
+            .map_err(db_error)?
+            != 1
+            || tx
+                .execute(
+                    "DELETE FROM manual_transaction_bindings_v8 WHERE transaction_id=?1 AND owner_nonce=?2",
+                    params![group.id(), owner.nonce],
+                )
+                .map_err(db_error)?
+                != 1
+        {
+            return Err(conflict());
+        }
+        gate.validate(owner, &self.root)?;
+        tx.commit().map_err(db_error)?;
+        state.open = false;
+        state.helper_retired = true;
+        state.credit_operation = None;
+        drop(state);
+        drop(c);
+        owner.batch_credits.lock().remove(group.id());
+        Ok(ManualTransactionRetirement::Retired)
+    }
+
     pub(crate) fn reserve_owned_batch(
         &self,
         owner: &Arc<HistoryOwner>,
@@ -1359,6 +1537,11 @@ impl Persistence {
         r: &BatchReservation,
         original: &OriginalBatchOutcome,
     ) -> AppResult<outcomes::OutcomePhase> {
+        let _admission = r
+            .group
+            .as_ref()
+            .map(|group| group.memory.1.try_lock().ok_or_else(conflict))
+            .transpose()?;
         gate.validate(owner, &self.root)?;
         if owner.nonce != r.data.owner_nonce {
             return Err(conflict());
@@ -2135,3 +2318,7 @@ mod tests;
 #[cfg(test)]
 #[path = "batch_validation_tests.rs"]
 mod batch_validation_tests;
+
+#[cfg(all(test, unix))]
+#[path = "batch_retirement_tests.rs"]
+mod batch_retirement_tests;

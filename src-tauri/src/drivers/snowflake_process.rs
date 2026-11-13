@@ -752,6 +752,43 @@ pub struct Supervisor {
     pid: u32,
     bounds: Bounds,
 }
+/// Opaque identity of one physical helper generation, without a liveness promise.
+/// Retaining this handle keeps neither the helper nor its supervisor alive.
+#[derive(Clone)]
+pub struct HelperGeneration {
+    owner: std::sync::Weak<Inner>,
+    generation: String,
+}
+impl HelperGeneration {
+    /// Canonical UUID for durable association; equality alone is not authority.
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+
+    /// Compare physical owners for idempotent pinning without granting liveness.
+    pub fn same_helper(&self, other: &Self) -> bool {
+        self.generation == other.generation && std::sync::Weak::ptr_eq(&self.owner, &other.owner)
+    }
+
+    /// Match the exact physical owner, even when two helpers reuse a wire UUID.
+    pub fn matches_reaped(&self, reaped: &ReapedHelperGeneration) -> bool {
+        self.generation == reaped.generation && std::sync::Weak::ptr_eq(&self.owner, &reaped.owner)
+    }
+}
+
+/// Proof of sealed local admission and actual reaping of this exact helper.
+/// This says nothing about remote rollback, transaction disposition, or logout.
+#[derive(Clone)]
+pub struct ReapedHelperGeneration {
+    owner: std::sync::Weak<Inner>,
+    generation: String,
+}
+impl ReapedHelperGeneration {
+    pub fn generation(&self) -> &str {
+        &self.generation
+    }
+}
+
 /// Opaque identity of one operation in one supervisor instance.
 /// Cloning this token does not keep the child or operation alive.
 #[derive(Clone)]
@@ -1170,6 +1207,33 @@ impl Supervisor {
     pub fn is_closed(&self) -> bool {
         let state = self.inner.state.lock().unwrap();
         state.retired.is_some() || state.closing
+    }
+    pub fn helper_generation(&self) -> HelperGeneration {
+        HelperGeneration {
+            owner: Arc::downgrade(&self.inner),
+            generation: uuid::Uuid::parse_str(&self.inner.generation)
+                .expect("supervisor generation was validated before spawn")
+                .to_string(),
+        }
+    }
+    /// A logical close, cancellation request, or public cleanup value cannot
+    /// mint this proof. Only this supervisor's private reaper receipt can.
+    pub fn reaped_generation(&self) -> Option<ReapedHelperGeneration> {
+        let state = self.inner.state.lock().unwrap();
+        if !(state.retired.is_some() || state.closing)
+            || !self
+                .inner
+                .exited
+                .report()
+                .is_some_and(|report| report.child_started && report.reaped)
+        {
+            return None;
+        }
+        let identity = self.helper_generation();
+        Some(ReapedHelperGeneration {
+            owner: identity.owner,
+            generation: identity.generation,
+        })
     }
     /// Low-level trusted-driver API. Typed transaction boundaries are transport
     /// primitives; their availability grants no application write capability.
@@ -3104,6 +3168,10 @@ async fn write_bytes(writer: &mut (impl AsyncWrite + Unpin), bytes: &[u8]) -> st
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(unix, feature = "test-harness"))]
+    mod generation_tests {
+        include!("snowflake_process_generation_tests.rs");
+    }
     type TerminalPublicationObserver = Box<dyn FnOnce(&Inner)>;
     std::thread_local! {
         // Observe the exact synchronous boundary after a terminal is visible and
