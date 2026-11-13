@@ -1,5 +1,24 @@
 # Implementation and release status
 
+## Native Snowflake edit snapshots (13 November 2026, local foundation)
+
+External-browser previews on explicitly writable reviewed-DML profiles now retain
+bounded native originals with exact helper, full context and metadata binding.
+One-use native preparation resolves row references into closed generated plans;
+it submits no SQL and enables no grid/CSV capability. Attempt generations prevent
+failed or abandoned replacement previews from recreating old authority. The
+process-global logical budget includes outstanding prepared plans until dropped.
+All 35 focused codec/snapshot, actual-helper adapter and existing relation cases
+pass; see the [source-scoped ledger](replacement-verification.md#snowflake-native-edit-snapshots-13-november-2026-local-foundation).
+Full validation also passes 1,038 frontend and 808 standard Rust cases, desktop
+compilation and strict checks, with 146 intentional default fixture ignores.
+Independent review finds no material issue. Typed dispatch, durable recording,
+Studio group ownership, pending-owner fresh metadata, broader codecs, application
+staging/import and full account/native acceptance remain required. Logical
+capacity does not establish RSS or large-import acceptance. The earlier schema7
+normal app is preserved; no release rebuild, installation, account activity or
+additional cache deletion occurs. The replacement Goal remains incomplete.
+
 ## Retained reap proof (13 November 2026, local foundation)
 
 The opaque native retirement observer preserves proof after the last supervisor
@@ -9,8 +28,8 @@ full validation passes 1,038 frontend and 789 standard Rust cases, desktop
 compilation and strict checks. The [ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation)
 records exact source scope, review and remaining gates. The API has no grid/CSV
 application caller. The [next integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
-remains proposed work, including native originals and owner-scoped pending
-refresh. No account activity or normal app packaging occurs; the prior runnable
+now has the native originals prerequisite above; owner-scoped pending refresh
+and dispatch remain required. No account activity or normal app packaging occurs; the prior runnable
 schema7 app is preserved. Replacement and owner acceptance remain incomplete.
 
 ## Helper retirement (13 November 2026, local foundation)

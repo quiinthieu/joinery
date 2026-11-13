@@ -50,9 +50,9 @@ The descriptor and original-row constructors validate shape and values; they do
 not establish metadata provenance, snapshot freshness, permissions, uniqueness or
 immutable target identity. The future runtime must derive them from retained
 server-side inspection and lossless snapshots, bind the plan to current authority
-and check actual database counts inside its owned transaction. The compiler has
-no dispatch or application caller and grants no execution authority. Snowflake
-grid editing and CSV import remain disabled.
+and check actual database counts inside its owned transaction. Native snapshot
+preparation now calls the compiler, but there is no dispatch caller and it grants
+no execution authority. Snowflake grid editing and CSV import remain disabled.
 
 Twelve focused regressions cover hostile names/values, ordering, full predicates,
 NULL/empty/default distinctions, exact decimals, byte-exact text, overlapping
@@ -212,11 +212,11 @@ accepted solution for standard-table editing.
    committed results. Revert, submit, commit and rollback must update the correct
    snapshots and invalidate affected tabs truthfully. CSV preview and every batch
    must retain the same target/preview authority and exact Snowflake coercions.
-   The SDK relation preview currently returns rows without retaining a native
-   edit-snapshot token; its inspection slot retains column metadata only. Add a
-   bounded session-owned snapshot linking exact retained originals, target,
-   inspection/catalog revisions, context and physical helper generation. Resolve
-   row references natively; browser-supplied originals confer no authority.
+   The SDK relation preview now retains a bounded native edit-snapshot token for
+   supported codecs on an explicitly writable reviewed-DML profile, linking exact
+   originals, target, inspection/catalog revisions, context and physical helper.
+   Native preparation resolves row references; browser-supplied originals confer
+   no authority. The token enables no grid/CSV submission or pending UI workflow.
    The generic preparation route also deduplicates by declared primary-key
    columns, which rejects distinct keyless originals. Use the separate Snowflake
    compiler and typed action rather than enabling that generic route.
@@ -247,30 +247,58 @@ does not choose or confer authority on either execution strategy.
 
 ## Next native integration contract
 
-The source review on 13 November establishes the following proposed sequence;
-these APIs and application callers are not implemented by that review. Retain
-one native snapshot per target in a globally bounded store, with opaque tokens,
+The source review on 13 November establishes the following sequence. The native
+snapshot/codec foundation is now implemented; the typed dispatcher and application
+editing callers remain incomplete. The external adapter retains
+one native snapshot per target in a process-global bounded store, with opaque tokens,
 exact physical helper identity, application session, full observed context,
 catalog/inspection revisions, retained relation and ordered column metadata.
 Move the exact lossless preview rows into that store; do not retain a second
 native result copy or accept browser originals. Replacing a preview, refreshing
 metadata, changing context, disconnecting or expiring the token revokes it.
-The proposed `drivers/snowflake_edit_snapshot.rs` owns private
+`drivers/snowflake_edit_snapshot.rs` owns private
 `NativeEditBinding`, `SnapshotStore::retain/prepare` and non-cloneable
 `PreparedSnowflakeEdits`; `SnapshotMutation` contains only row indices and
-closed assignments. The lead integrates preview retention and shared driver/IPC
-types. A separate `snowflake_external_grid.rs` adapter owns the lane-bearing
+closed assignments. Preview retention and an optional `editSnapshotId` response
+field are integrated. There is no new IPC mutation command or editing capability.
+A proposed separate `snowflake_external_grid.rs` adapter will own the lane-bearing
 `PreparedGridOperation` and mandatory admission/original-recording callbacks.
 Shared driver fields and Studio execution/outcome/group registries remain lead
-integration work, separate from these proposed module boundaries.
+integration work.
 
 Preparation accepts only that token, row indices and closed cell assignments.
-Resolve originals and consume the token atomically, then create a non-cloneable
+Resolve originals and consume a matching token atomically, then create a non-cloneable
 compiled plan that continues owning its resource reservation. Validate both text
 character and byte dimensions and corroborate closed NUMBER/BOOLEAN metadata;
 reject ambiguous defaults, identity or unsupported codecs explicitly. Proposed
 count/byte/expiry bounds require separate capacity acceptance and do not define
 the owner's workload. The existing compiler remains the final shape/overlap guard.
+
+The current store admits at most 64 live snapshots/plans and 16 MiB of logical
+charged storage across sessions; a preview is at most 500 rows / 2 MiB. Snapshot
+expiry is five minutes and prepared-plan expiry is one minute. Outstanding plans
+retain their budget after token consumption, even if revoked, until dropped.
+Invalid matching intent consumes its token and requires a fresh preview. Foreign
+or stale requests cannot consume the owner's token. These are provisional bounds,
+not RSS measurements or acceptance of large-import capacity. Unsupported codecs
+and capacity refusal leave the preview read-only with no token; contradictory
+supported metadata or malformed original values are errors.
+Preparation reserves selected native mutation clones plus the compiler's full
+8 MiB allowance while retaining the preview charge, so concurrent retained work
+can refuse even a small preparation below the count ceiling. Caller-owned
+response/intent copies, transient current bindings and allocator overhead are
+outside this logical retained-store accounting. Their actual memory and lifetime
+capacity still require measurement before workflow acceptance.
+
+Every replacement preview advances an attempt generation and revokes its target
+before its first await, including failed or abandoned replacements. Final native
+retention checks that generation under the same browsing/store lock order. An
+older in-flight preview cannot recreate authority after a newer attempt is
+abandoned. Metadata refresh, replacement inspection, context invalidation and
+shutdown revoke prepared plans as well as stored tokens. Preparation owns the
+native session lane and submits no SQL. A prepared plan is not dispatch authority:
+the future adapter must call `validate_current` while holding its lane and must
+still obtain fresh remote observations before submission.
 
 The adapter must hold its lane from fresh preflight through durable admission
 and original capture, validate the entire encoded request against the transport

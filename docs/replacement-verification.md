@@ -8,6 +8,90 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake native edit snapshots (13 November 2026, local foundation)
+
+Base `aec290e`, existing task branch. Three reused `gpt-6.1-sol` high-effort
+agents own closed inspection codecs, bounded native snapshots/tests, and an
+independent correctness review. The lead owns shared driver/DTO wiring, adapter
+tests, integration, documentation and serialized verification. No model fallback
+or global configuration change occurs.
+
+The existing preview retained no native originals for generated edits. This is
+an implementation prerequisite, not a reproduced enabled-grid defect. The new
+process-global store binds exact physical helper identity, application session,
+full context, native relation, ordered columns and catalog/inspection revisions.
+Native preparation accepts opaque tokens, row indices and closed assignments;
+it builds full-original predicates without receiving browser originals or SQL.
+Matching invalid intent consumes its token; foreign/stale requests cannot consume
+the owner's token. Prepared plans retain their shared resource lease after token
+removal, revocation or expiry until dropped. Text character/octet dimensions and
+exact NUMBER/BOOLEAN metadata are corroborated; broader codecs remain required.
+
+Each replacement preview advances an attempt generation before its first await.
+The actual-helper regression holds preview A, starts and abandons B, then proves
+A cannot recreate authority. Other cases cover close while a preview is held,
+failed replacements and inspection refresh. The native method acquires the lane,
+checks writable reviewed-DML policy, and submits no SQL. Fresh remote metadata,
+durable admission/recording and truthful transaction dispatch remain separate
+required work. SDK grid/CSV capabilities stay disabled; there is no new IPC write
+command. The optional response token is not an editing or execution grant.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `edit-unit-final` | All 19 standard Unix codec/snapshot cases pass, no ignores. Exit zero, 27.119 seconds including compilation, all 337 inputs unchanged. Ten closed-codec cases and nine snapshot cases cover hostile metadata/values, exact decimals beyond 2^53, Unicode, NULL/empty/DEFAULT, generated columns, keyless originals, same UUID on different actual owned children, one-use/concurrent single-winner, expiry/revocation and logical count/byte/peak guards. Owned framed-hello/cat children perform no SDK or SQL; metadata/rows are synthetic |
+| `edit-adapter-final` | All six feature-enabled adapter cases pass, no ignores. Exit zero, 32.042 seconds including compilation, all 337 inputs unchanged. Actual production helper processes run an injected synthetic SDK, with no authentication/network/account work. Tests cover native preview-to-preparation, literal binding, keyless rows, zero added query calls, consumed invalid intent, failed/abandoned replacement, inspection invalidation, close during preview and read-only/unsupported fallback |
+| `edit-relations-final` | All ten existing SDK relation workflow cases pass, no ignores. Exit zero, 30.002 seconds including compilation, all 337 inputs unchanged. Includes stale/busy/failed refresh, replacement inspection, drift, permission/malformed/byte-overflow refusal, collision and normal bounded preview. This is real-helper/synthetic-SDK adapter evidence, not actual Snowflake table behavior |
+| `edit-focused-verified` | After the lint correction below, all 35 focused cases pass again: 19 codec/snapshot, six native adapter and ten existing relation workflows, no ignores. Three sequential commands exit zero in 65.038 seconds including compilation, all 337 inputs unchanged. Both library filters use the feature-enabled binary; standard codec/snapshot execution is also covered by application validation |
+| `edit-validate-verified` | Full `pnpm validate` passes after the lint correction: 1,038 frontend and 808 standard Rust cases, 146 intentional default fixture ignores, frontend formatting/contracts/TypeScript/build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 234.910 seconds including compilation, all 565 inputs unchanged. Feature-enabled adapter cases are explicitly run in the focused receipt above. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain |
+| independent review | Frozen codec, snapshot and integration reviews find no material issue in exact binding, attempt generations, lock ordering, shutdown, one-use consumption or shared plan-held capacity. Review explicitly distinguishes logical charging from RSS and whole-workflow acceptance. Graph/index/coverage transport fails with `Transport closed`; targeted source reads are the bounded fallback, with no exhaustive graph claim |
+
+Reproduce from the repository with the pinned Rust/Node toolchains in README;
+set `JOINERY_TEST_NODE` to the prepared Node 24 executable for actual-helper cases:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_edit_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests::edit_snapshots_tests:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --test snowflake_external sdk_relation_ -- --test-threads=1
+```
+
+Exact source hashes, commands, exit status, timings and disk snapshots are retained
+in `.cache/verification/snowflake-edit-snapshots/`. The first three focused runs
+also pass; the final scope includes narrowly documented non-test unused-API
+allowances, test-only diagnostics and the added close-during-preview case.
+The first full `edit-validate` run passes all 1,038 frontend and 808 standard
+Rust cases (146 intentional default fixture ignores), frontend build and desktop
+compilation, but exits 101 at strict Clippy's `collapsible_if` in the new codec.
+The nested condition is collapsed without changing its predicate. This is an
+introduced style failure, not a pre-existing check failure or a skipped lint.
+Its source remains unchanged throughout that 240.785-second, 565-input run.
+The subsequent focused and full receipts above verify the correction.
+Logical capacity and provisional expiry bounds are in the
+[native integration contract](snowflake-grid-editing-design.md#next-native-integration-contract).
+Conservative compiler peak reservation can refuse small preparations while other
+snapshots are retained. Caller transients, allocator overhead, RSS, large-import
+capacity and user acceptance are unqualified. No actual database semantic,
+UI editing, restart or normal-package claim follows from these local tests.
+
+No Snowflake authentication, account SQL, fixture service startup, installation,
+normal release rebuild, publication or additional cache deletion occurs. The
+preserved runnable schema7 app remains distinct from the new schema8 source.
+All account approvals are consumed/expired; the allowed disposable table location
+is `SANDBOX.BILLIE_TESTING`, subject to a fresh concrete scoped plan before any
+account activity. The Site remains unpublished under the owner's boundary.
+Typed dispatch, Studio-owned outcome/manual groups, pending-owner fresh metadata,
+broader codecs, staging/import, full packaging/account workflows and owner
+acceptance remain required. The persistent replacement Goal stays incomplete.
+
+The final `final-source-and-storage.json` comparison confirms all 337 focused
+and 565 full-check inputs still match their passing receipts. Debug artifacts
+occupy 9,851,632 KiB (about 9.4 GiB); free space is 199,055,503,360 bytes
+(about 185.4 GiB). The preserved normal executable remains 34,912,112 bytes with
+SHA-256 `0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+The earlier approved cleanup reclaimed 135.8 GiB and is not repeated. Reduced
+debug symbols, disabled incremental compilation, serialized builds and the
+20 GiB free-space floor remain in force.
+Source and regression tests are committed locally as `c21d0d7`; no push occurs.
+
 ### Snowflake retirement observer (13 November 2026, local foundation)
 
 Base `bff100a`, existing task branch. Three reused `gpt-6.1-sol` high-effort

@@ -58,14 +58,21 @@ and eight child/SQLite retirement cases pass, and full validation passes 1,038
 frontend / 789 standard Rust cases plus desktop/strict checks. See the
 [observer ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation).
 The [reviewed next native integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
-records the bounded snapshot/codec and typed adapter sequence; these remain
-unimplemented. Every retained original must settle; a recording failure must
-never select the no-original path to discard known evidence.
-The API has no application caller. Build a dedicated typed adapter and connect
+now has a native snapshot/codec implementation: external-browser previews retain
+exact originals with full native context/metadata/helper binding on writable
+reviewed-DML profiles. One-use native preparation resolves row indices and submits
+no SQL; it does not enable grid editing. Attempt generations prevent abandoned
+replacement previews from letting older work republish authority. The typed
+adapter and Studio/UI callers remain incomplete. Every retained original must
+settle; a recording failure must never select the no-original path to discard
+known evidence. The retirement/group API has no application dispatch caller.
+All 35 focused snapshot/codec, actual-helper adapter and existing relation cases
+pass; see the [native snapshot ledger](replacement-verification.md#snowflake-native-edit-snapshots-13-november-2026-local-foundation).
+Build a dedicated typed adapter and connect
 its initial pin, retained acknowledgement recording and post-reap release.
 The generic grid's committed-success return cannot represent pending work, and
 its primary-key deduplication cannot represent distinct keyless originals.
-Retain native lossless edit snapshots before review. Add a reviewed owner-scoped
+Complete native review/dispatch integration. Add a reviewed owner-scoped
 read/refresh contract during pending manual ownership; ordinary metadata reads
 remain correctly excluded. Integrate application staging and CSV, and qualify the
 whole workflow against Snowflake and the normal packaged app. Broader codecs remain

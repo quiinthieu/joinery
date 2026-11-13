@@ -2,6 +2,13 @@
 
 ## Evaluation version notice
 
+The latest source also retains native Snowflake preview originals and supports
+internal one-use preparation. It introduces no grid/CSV submission control or
+new migration action. Unsupported codecs and native capacity refusal keep a
+preview read-only; actual dispatch, transactions, recovery and broader type
+support remain required. The preserved normal package below does not contain
+this source increment. See the [native contract](snowflake-grid-editing-design.md#next-native-integration-contract).
+
 The latest internal source also adds
 [helper retirement while Studio remains alive](snowflake-batch-outcomes-design.md#retirement-while-the-studio-remains-alive),
 with exact physical-owner proof and protection for unfinished result recording.
