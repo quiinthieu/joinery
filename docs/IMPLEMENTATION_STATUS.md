@@ -1,5 +1,18 @@
 # Implementation and release status
 
+## Snowflake batch storage (13 November 2026, local foundation)
+
+The [schema8 storage foundation](snowflake-batch-outcomes-design.md) implements
+independent immutable captures, manual transaction membership, current-only group
+leases and reserved rollback recording capacity. Full validation passes with
+1,038 frontend and 780 standard Rust cases. Actual owned-child recovery, two
+preserved-schema7 migration runs, ten isolated PostgreSQL script cases and seven
+browser workflows also pass. See the [source-scoped ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
+Capacity/RSS, the delayed pre-owner-claim migration race and live helper-generation
+retirement remain open; logical quota tests do not qualify lifetime capacity.
+Generated grid/CSV dispatch remains disabled, and the local schema-7 normal app
+from `d6cfb2a` is preserved. No account activity or additional cleanup is involved.
+
 ## Snowflake owned-batch protocol (13 November 2026)
 
 The internal helper and typed supervisor now support bounded owned transactions,
@@ -21,10 +34,10 @@ activity is part of this work.
 
 Protocol source is committed locally as `e216b78`; the separate semantic test
 fixture correction is `48511f3`. The next
-[durable batch-outcome proposal](snowflake-batch-outcomes-design.md) is
-unimplemented. Its schema8 records, whole-envelope admission, manual membership
-and protected rollback storage require implementation and capacity/crash/restore
-verification before application dispatch can be enabled.
+[durable batch-outcome contract](snowflake-batch-outcomes-design.md) now has a
+locally verified storage implementation. Adapter/runtime integration, complete
+capacity acceptance and remote/native workflow qualification remain required
+before application dispatch can be enabled.
 
 ## Snowflake mutation compiler (13 November 2026)
 

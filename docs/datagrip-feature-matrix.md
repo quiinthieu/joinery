@@ -21,7 +21,22 @@ CSV import remain incomplete. SDK
 grid/import capabilities stay disabled. Actual Snowflake semantics and account
 effects are unqualified. The runnable normal app remains pinned to `d6cfb2a`.
 
-## Durable original outcomes: current local source
+## Durable batch storage: locally verified foundation
+
+Schema8 source adds a separate SQL-free batch archive, stable manual-transaction
+membership and current-only owner bindings. Full validation passes (1,038 frontend,
+780 standard Rust cases); focused SQLite regressions and actual owned-child death
+checks pass after independently reviewed restore, provenance and rollback fixes.
+Two preserved-schema7 migrations, ten isolated PostgreSQL script cases and seven
+browser workflows pass. See the [current ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation)
+and [storage contract](snowflake-batch-outcomes-design.md). This foundation has no
+application dispatch caller and does not enable grid editing or CSV import.
+Capacity/RSS acceptance, the delayed pre-owner-claim migration race, trusted live
+helper retirement, runtime integration and actual
+Snowflake/macOS workflow qualification remain required. The normal app below is
+still the preserved schema7 package.
+
+## Durable original outcomes: preceding verified checkpoint
 
 Schema-7 capture/settlement passes full validation (1,038 frontend / 720 standard
 Rust cases), actual PostgreSQL crash recovery, seven browser workflows and

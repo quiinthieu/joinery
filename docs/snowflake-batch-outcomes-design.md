@@ -1,13 +1,15 @@
-# Durable Snowflake batch outcomes: schema8 proposal
+# Durable Snowflake batch outcomes: schema8 storage
 
-Status: proposed, unimplemented. This document scopes the next persistence
-increment. It does not enable generated mutations in the application or establish
-DataGrip replacement readiness. API names, capacities and migration details need
-review before implementation; the current helper protocol work is separate.
+Status: locally verified storage foundation; runtime integration remains open.
+See the [source-scoped ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation). This document scopes the
+persistence foundation. It does not enable generated mutations in the application
+or establish DataGrip replacement readiness. The capacities below are provisional
+internal refusal limits, not accepted daily-workflow limits. The existing normal
+app remains the separately recorded schema-7 package.
 
-## Current behavior and missing storage
+## Schema7 baseline and missing storage
 
-The current implementation uses schema7:
+The preceding implementation uses schema7:
 
 | Source | Relevant contract or limitation |
 | --- | --- |
@@ -26,12 +28,13 @@ Adding batch bytes to the current payload alone would lose them on settlement.
 Removing the last operation binding after a settled manual `pending` receipt
 would also leave an idle, live remote transaction without restore exclusion.
 
-## Proposed records and authority
+## Records and authority
 
-Add a focused `persistence/batch_outcomes.rs` module with four tables:
+The focused `persistence/batch_outcomes.rs` module adds five tables:
 
-| Proposed table | Responsibility |
+| Table | Responsibility |
 | --- | --- |
+| `batch_operations_v8` | Separate reservation/capture/settlement markers and bounded transient payload; preserves the existing ordinary outcome format. |
 | `batch_captures_v8` | Immutable complete envelope and digest, keyed by operation UUID; separate provenance identifies imported historical evidence. |
 | `manual_transactions_v8` | Stable native transaction UUID; connection, local session and helper-generation identities; observed helper owner/remote transaction ID; derived disposition bookkeeping. |
 | `manual_transaction_members_v8` | Immutable operation-to-transaction membership, attempt ordinal and frozen prior-pending count. |
@@ -59,18 +62,22 @@ admission gate. Restore must prove that binding dead or refuse replacement.
 Restart does not adopt or reconnect a manual transaction: death without verified
 disposition records local uncertainty, not a remote commit or rollback.
 
-## Proposed API and recording sequence
+## API and recording sequence
 
 Keep existing ordinary/typed APIs compatible. Add opaque, non-IPC-deserializable
 `BatchPlan`, `BatchReservation` and `ManualTransactionLease` types:
 
 ```rust
-reserve_owned_batch(owner, gate, descriptor, plan)
+reserve_owned_batch(owner, gate, descriptor, plan, optional_transaction_lease)
     -> AppResult<BatchReservation>;
-reserve_owned_batch_finish(owner, gate, transaction_lease, descriptor, action)
+reserve_owned_batch_finish(owner, gate, descriptor, transaction_lease, action)
     -> AppResult<BatchReservation>;
-OriginalOutcome::batch_in(reservation, validated_capture, finished_at, buffer)
-    -> AppResult<OriginalOutcome>;
+OriginalBatchOutcome::capture_in(reservation, evidence, termination, finished_at, buffer)
+    -> AppResult<OriginalBatchOutcome>;
+capture_batch_outcome(owner, gate, reservation, original)
+    -> AppResult<OutcomePhase>;
+settle_batch_outcome(owner, gate, reservation, original)
+    -> AppResult<OutcomePhase>;
 batch_evidence(operation_id)
     -> AppResult<Option<HistoricalBatchEvidence>>;
 manual_transaction_evidence(transaction_id, after_ordinal, limit)
@@ -93,9 +100,11 @@ may accompany an incomplete prefix without replacing a known helper result.
 Extend existing settlement so one SQLite transaction archives the exact envelope,
 writes idempotent audits, updates derived group bookkeeping, removes operation
 bindings and clears the transient payload. Release the group binding only after
-verified closure or explicit local retirement with unknown disposition. Any
-failure rolls back the entire settlement; identical retries succeed and changed
-bytes conflict.
+verified closure, initial rejection before a transaction was opened, or OS-proven
+owner death. Unknown and no-original outcomes refuse continuation and retain
+their live binding until that proof. Explicit retirement while the Studio remains
+alive needs a separate authority contract. Any failure rolls back the entire
+settlement; identical retries succeed and changed bytes conflict.
 
 An initial history-less receipt path can follow existing boundary recording.
 Any generated-query history integration must define a distinct closed projection;
@@ -110,13 +119,13 @@ driver with a trustworthy maximum-size calculation and validate the complete
 worst-case envelope before any SQL. Test maximal legal escaped metadata and all
 500 units, not an assumed 2KiB allowance. Reject overflow without truncation.
 
-The following are discussion values, **unimplemented and requiring capacity
-validation**. They are not accepted replacement limits:
+The following are provisional implementation limits, **requiring capacity and
+workflow validation**. They are not accepted replacement limits:
 
-| Proposed capacity | Purpose |
+| Provisional capacity | Purpose |
 | --- | --- |
 | 64MiB ordinary retained envelopes per root | Bound historical payload growth independently of active-operation memory. |
-| 128 live manual groups/root, 32/owner | Bound idle bindings and held rollback credits; these are proposed group limits, not existing pool limits. |
+| 128 live manual groups/root, 32/owner | Bound idle bindings and held rollback credits; these provisional group limits are distinct from active-operation pool limits. |
 | One operation marker plus 32KiB final-rollback credit per new group | Reserve cleanup capacity before BEGIN; ordinary work and commit cannot consume it. |
 | At most 64 metadata records/page; decode one envelope at a time | Bound read/recovery working sets; measure actual scratch allocations. |
 
@@ -128,6 +137,13 @@ Retain the existing marker ceiling until an explicit replacement is approved;
 reserved rollback markers must be protected from ordinary exhaustion. A bounded
 final cleanup attempt is not a promise of unlimited retries or successful remote
 rollback.
+
+A protected rollback rejection consumes its one reserved attempt. Settlement
+records local uncertainty and retains the original rejection without
+minting another credit. Rejected continuations and commits may retain the prior
+open transaction and its unused rollback credit. These distinctions require the
+focused regressions recorded in the ledger, which now pass. Runtime integration
+remains separate.
 
 An OS-gated volatile rollback token must require a genuine current group lease
 and its pre-reserved credit. It can permit cleanup while SQLite is unavailable,
@@ -144,11 +160,11 @@ keep unrelated lifecycle and console tables unchanged. Prove all Studio leases
 under admission EX before the migration writer, and retain exact-version checks
 after acquiring an operation's SH gate.
 
-Update `persistence.rs`, `outcomes.rs`, `history_owner.rs`,
-`history/lifecycle.rs`, `recovery.rs` and console retention's explicit `5..=7`
-range. Exercise encrypted manifests/streams through `recovery_crypto.rs` and
-`recovery_stream.rs`. Extend driver capture APIs and add focused persistence
-tests; runtime integration requires a separate implementation assignment.
+The implementation updates `persistence.rs`, `outcomes.rs`, `history_owner.rs`,
+`history/lifecycle.rs`, `recovery.rs` and console retention's explicit range to
+`5..=8`. Encrypted manifests/streams use `recovery_crypto.rs` and
+`recovery_stream.rs`. Driver capture bounds and focused persistence tests are
+included; runtime integration requires a separate implementation assignment.
 
 Dead-owner recovery settles captured originals before abandoning uncaptured
 reservations. Group death adds local disposition uncertainty without rewriting
@@ -168,6 +184,16 @@ or erasure rules for the remaining SQL-free metadata need an explicit policy;
 never erase live cleanup authority as a side effect of clearing history.
 
 ## Required implementation gates
+
+Current evidence includes real SQLite fault/idempotence/validation cases, three
+owned-child death scenarios, two genuine preserved-schema7 migrations and an
+actual encrypted schema8 roundtrip with three settled originals and a live idle
+group. The encrypted case preserves historical bytes/membership/audits and strips
+imported authority/credit while retaining the live source unchanged. It does not
+cover encrypted captured-only restore or undo restoration. The
+[ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation)
+distinguishes these passes from logical quota guards, unmeasured full-capacity/RSS,
+the unproved delayed preclaim race and the remaining runtime/remote/native gates.
 
 - Real SQLite: complete maximal envelope and one-byte overflow; strict malformed
   decoding; reserve/capture/settle faults at archive, audit and binding writes;

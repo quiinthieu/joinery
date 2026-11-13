@@ -8,6 +8,121 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake batch storage (13 November 2026, local foundation)
+
+Base `eb8992a`, task branch `feat/datagrip-replacement`. The lead owns shared
+integration, process fixtures, migration tooling, documentation and serialized
+checks. Three reused `gpt-6.1-sol` high-effort agents implement persistence and
+capture-size bounds, then review distinct ownership/rollback and validation/
+restore scopes. No model fallback or global configuration change occurs.
+
+Full application validation, focused SQLite/owned-child recovery, two actual
+preserved-schema7 migrations, ten isolated PostgreSQL script cases and seven
+browser workflows pass. SDK grid/CSV capabilities
+remain disabled. The preserved normal app remains the local, uninstalled
+schema-7 `d6cfb2a` package; no release build, account activity or further cache
+deletion is part of this work.
+
+| Evidence label | Actual result so far |
+| --- | --- |
+| `archive-facility-red` | The focused fresh real-SQLite test fails on schema7 because `batch_operations_v8` is absent, exit 101, 25.939 seconds. All 313 captured inputs are unchanged. This reproduces the missing storage facility, not a crash/recovery behavior defect |
+| `preserved-schema7-harness` / `schema7-probe` / `schema7-final-probe` | An APFS clone preserves the genuine preceding schema7 harness, SHA-256 `be8444424d31dc654dd47c79e2c86ece7a6fa7681772f6b5b0230bdabbc9aea9`, 114,214,464 bytes. Actual startup/bootstrap in fresh runner-owned metadata directories confirms schema7 and a live idle owner with no engine connection. The final probe repeats this on the strengthened runner, additionally requiring zero ordinary operations/bindings. Actual migration results follow in `migration-final` |
+| `migration-oracle-final` | Four verification-oracle regressions pass, exit zero, unchanged hashes of both Python script inputs. Synthetic schema inventories check physical fencing and required batch tables; CLI rejects a non-forward version pair before binary access. These tests do not exercise migration |
+| `merge-review-first` | First compile stops at `BatchReservation`'s derived Debug requiring `HistoryOwner: Debug`, exit 101, 18.425 seconds. All 328 inputs are unchanged. A manual Debug projection omits owner internals; this is not behavioral defect reproduction |
+| `merge-review-compiled` / `validator-review-first` | Compilation passes, but the one merge and all five validation cases fail in valid baseline setup. Guarded nullable SQLite projections incorrectly turn NULL into empty sentinels. Receipts preserve exit 101 and unchanged 328 inputs. The null-preserving reads are corrected before claiming intended reproductions |
+| `merge-review-null-corrected` | The actual direct SQLite merge-hook test now fails at its intended assertion: different original bytes under the same operation ID are accepted. Exit 101, 28.513 seconds, unchanged 328 inputs. Public restore also recovers before publication and would abort on the later archive conflict; this test does not demonstrate publication of wrong original bytes |
+| `validator-review-null-corrected` | Five actual SQLite cases run: the valid unknown/released-owner preservation case passes; four adversarial cases fail their intended refusal assertions (finish as first member, continuation after rejected initial work, pending work after verified close, missing settled audit). Exit 101, 1.274 seconds, unchanged 328 inputs. These reproduce malformed-backup validation gaps, not remote SQL behavior |
+| `merge-both-red` | Both split real-SQLite cases fail at the intended assertions: changed current capture bytes are accepted by the merge hook, and identical imported bytes remain marked imported after local settlement. Exit 101, 31.730 seconds, unchanged 328 inputs. The public restore publication caveat above still applies |
+| `validator-final-red` | After strengthening the adversarial audit fixture, the preservation case passes and the same four refusal assertions fail. Exit 101, 0.961 seconds, unchanged 328 inputs |
+| `token-review-red` | A valid volatile rollback case passes; two real-SQLite cases fail because authorization is admitted during an ordinary reservation's paused COMMIT and because reusing an ordinary/commit operation ID authorizes rollback. Exit 101, 1.209 seconds, unchanged 328 inputs. No remote submission occurs |
+| `rollback-rejection-red` | A rejected protected rollback consumes its one credit but incorrectly leaves the group open instead of recording local uncertainty. The intended assertion fails, exit 101, 0.573 seconds, unchanged 328 inputs |
+| `storage-corrected-first` | Compilation succeeds; 27 storage cases pass, one fails, and one owned-child fixture is intentionally ignored in the parent process. All reproduced restore/validation/rollback regressions pass, as do three actual child-death cases. The remaining synthetic quota fixture fails during setup on a duplicate ordinary ticket ID, before testing capacity refusal. Exit 101, 34.554 seconds, unchanged 328 inputs. This is not a successful storage-suite result |
+| `token-reverse-red` | Three existing rollback cases pass. A fourth reproduces the reverse ordering: after minting a volatile rollback token, same-descriptor ordinary/commit admission incorrectly succeeds. Exit 101, 29.995 seconds, unchanged 328 inputs. The quota fixture setup is separately corrected with explicit ordinary-table column names; it is not exercised by this filter |
+| `storage-final` | All 29 selected storage cases pass, with one deliberately ignored child fixture invoked explicitly by the three process regressions. Includes maximal complete-envelope storage, immutable originals, protected quota guards, live idle-owner restore exclusion, adversarial restore checks and known/unknown recovery after actual owned-child death. Exit zero, 48.662 seconds, unchanged 328 inputs. Capacity fixtures are logical guard tests, not real full-capacity/RSS or Snowflake qualification. A final mixed ordinary/batch admission regression follows before full application validation |
+| `validate-final` | Formatting, contracts, TypeScript, production UI build and all 1,038 frontend cases pass. Rust library reports 709 passed, 11 failed and five intentional ignores. All eleven failures occur in test setup: six fault-trigger fixtures still interpolate `_v7`; five legacy-backup fixtures still rename the newly created `_v7` table. Those tables are now physically `_v8`. Exit 101, 211.591 seconds, unchanged 556 inputs. Both fixture-only literals are corrected before repeating validation; desktop checks/Clippy were not reached |
+| `validate-fixtures-corrected` | All 1,038 frontend and 780 standard Rust tests pass, with 146 intentional default fixture ignores; formatting, contracts, TypeScript, production UI build and desktop compilation pass. Strict Clippy stops at five new issues: one unused base64-bound API, two complex tuple types and two nested conditionals. Exit 101, 267.192 seconds, unchanged 556 inputs. This includes the final shared ordinary/batch admission regression; no check is skipped or warning suppressed |
+| `rust-strict-final` | Rust formatting, desktop compilation and strict all-target/all-feature Clippy pass after the narrow corrections, exit zero, 49.575 seconds, unchanged 328 inputs. The driver base64 bound supplies an early necessary guard; exact escaped-envelope admission remains unchanged. Private tuple aliases and collapsed conditionals preserve evaluation order. Independent read-only review finds no material issue; full validation on these final sources follows |
+| `validate-complete` | Complete pnpm validate passes: 1,038 frontend and 780 standard Rust cases, 146 intentional default fixture ignores, formatting, contracts, TypeScript, production UI build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 232.340 seconds, all 556 inputs unchanged. The existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain. Actual engine/UI and preserved-binary migration checks follow separately |
+| `harness-final` | The current schema8 test harness builds, exit zero, 24.309 seconds, unchanged 556 inputs. This is a test harness, not a normal app package |
+| `migration-final` | Two actual preserved-schema7-to-current-schema8 executable runs pass, exit zero, 3.232 seconds, unchanged 328 source inputs and both executable inventories. Each proves live idle-owner refusal before the held SQLite writer, unchanged old metadata, upgrade after termination of only the owned old process, required physical tables and refusal by the old binary to reopen new metadata without changing it. The exact delayed post-Persistence/pre-owner-claim race remains explicitly unproved. No external engine connection or dispatched application SQL |
+| `postgres-final` | All ten explicit script cases pass against the isolated owned PostgreSQL fixture: history admission/restart, privacy/failed completion retry, interrupted connection, cancellation, partial errors, suffix limits and explicit rollback. Exit zero, 24.820 seconds including command overhead, unchanged 556 inputs. These qualify the changed physical history/audit selectors and ordinary recording, not Snowflake batch effects |
+| `browser-final` | All seven cases fail before browser startup because this runner omitted the documented repository-local browser-cache override. Exit 1, 26.760 seconds, unchanged 556 inputs. No workflow is qualified; the existing cached browser is selected for the corrected command without installation |
+| `browser-cached` | With command-local PLAYWRIGHT_BROWSERS_PATH, six workflows pass. The isolated crash/recovery case reaches known local recovery but fails on an unhandled forwarding-callback ECONNRESET from a background metadata request during deliberate owned-backend termination; reload is interrupted. Exit 1, 52.995 seconds, unchanged 556 inputs. The fixture will translate only expected network failures for explicitly retired owned-backend generations, preserving all recovery/no-replay assertions and unexpected healthy-generation failures |
+| `producers-final` | All 73 feature-enabled synthetic Snowflake execution/connection/console cases pass, exit zero, 267.848 seconds including compilation, unchanged 328 Rust/helper/script inputs. Exercises actual owned child processes with synthetic SDKs, including cancellation, disconnect cleanup, receipt/restart and recording-failure paths; no Snowflake account qualification |
+| `fixture-format-final` / forwarding review | Repository format check passes after the test-only forwarding correction, exit zero, 4.358 seconds, unchanged 556 inputs. Read-only review approves retired-generation-specific network handling and teardown; a separately reviewed startup correction publishes the replacement generation only after health readiness. No expectation, deadline, skip, SQL replay or production code changes. This one browser fixture differs from the preceding full-validation snapshot and is exercised separately by the corrected browser run |
+| `browser-recovery-corrected` | All seven real browser workflows pass with the documented command-local cached browser, exit zero, 61.668 seconds, unchanged 556 inputs. Exercises exact SQL capture/reopen without replay after owned-backend death, repeated restart/audit-once, privacy clear during in-flight work, history search/palette/provenance and PostgreSQL parameter handling without persisting values. The corrected forwarding fixture is test-only; no normal app or account claim |
+| `offline-runner-final` | All 27 functional offline runner cases pass, with two intentional optimized performance ignores, exit zero, 480.249 seconds including command overhead, unchanged 328 inputs. Actual owned helper processes exercise original ACK/error retention, cancellation, callback loss, interrupted journals and drift refusal using synthetic SDKs. This is no account or performance qualification |
+| `encrypted-batch-final` | The new nonempty encrypted fixture compiles and completes actual encrypted creation/export/authenticated decryption, then fails opening its diagnostic SQLite view with SQLITE_OPEN_NOFOLLOW through macOS's symlinked /var path. Exit 101, 34.006 seconds; all 328 inputs remain unchanged. Restore assertions are not reached, so this is a fixture-path failure rather than a passing encrypted roundtrip or demonstrated product defect. The correction canonicalizes only the owned test file path and retains NOFOLLOW |
+| `encrypted-batch-corrected` | The actual encrypted producer/export/authenticated-decrypt/import/restore regression passes, exit zero, 30.238 seconds including compilation, unchanged 328 inputs. The source snapshot contains three settled originals/members, a verified closed group and a genuinely live idle group with binding/rollback credit1. All exact bytes, memberships and audits survive as imported historical evidence; target operations/bindings/credits are zero, idle disposition becomes unknown, and the source remains unchanged. Uses the existing test KDF with real authenticated encryption and creates an encrypted undo backup. Captured-only encrypted restore, restoring that undo and legacy-version inputs are outside this case |
+| `rust-strict-encrypted-final` | Final Rust formatting, desktop compilation and strict all-target/all-feature Clippy pass with the appended encrypted regression, exit zero, 26.944 seconds, unchanged 328 inputs. Existing warnings remain; no suppression or skip |
+| `doc-links-final` / final source comparison | All 836 repository-relative Markdown path targets exist; fragments are not exhaustively checked. Final comparisons prove the full-validation production sources unchanged, the separately exercised test-only differences listed below, and exact current Rust inputs for the encrypted and strict checks. The normal release executable remains unchanged; no package qualification is inferred |
+| independent review | Separate read-only reviews cover storage ownership/admission/rollback and restore validation, the final forwarding fixture, both migration scripts and the nine documentation scopes. Reproduced material findings are corrected and affected regressions pass. The graph transport is unavailable for the final storage scopes, so bounded direct source/receipt review supplies the evidence; no exhaustive graph-coverage claim |
+
+Exact receipts and command logs are under
+`.cache/verification/snowflake-batch-storage/`. The
+[storage contract](snowflake-batch-outcomes-design.md) records implementation and
+required capacity/crash/restore gates. Reduced debug profiles, serialized builds and a 20 GiB floor remain in
+use. The prior approved deletion reclaimed 135.8 GiB and was not repeated.
+
+Passing logical byte/marker quota guards and actual bounded group-count tests
+does not establish full-capacity RSS, lifetime retention or accepted user limits.
+The executable migration cases start with fresh, empty metadata; populated batch
+evidence is separately exercised by SQLite restore fixtures, not those cases.
+The exact delayed post-Persistence/pre-owner-claim migration race needs a
+deterministically paused compatible old executable; the preserved old binary has
+no such hook. The demonstrated live idle-owner refusal is narrower. Unknown or
+no-original groups retain their live binding until OS-proven owner death; trusted
+helper-generation retirement in a still-running Studio is a required adapter
+contract, not implemented session behavior. No application dispatch caller,
+staging, CSV, account or native acceptance is enabled by these storage checks.
+
+The final production inputs match `validate-complete`. Two test-only changes
+follow that full run: the separately passing browser forwarding fixture and the
+new encrypted batch regression. The pre-existing batch-test prefix remains byte
+identical. Counts from the full run describe its captured snapshot; they do not
+claim a second full-suite run after those test-only changes. Final strict Rust
+checks cover the appended regression separately. Exact comparisons are recorded
+in `final-source-and-storage.json`.
+
+Final free space is 202,779,762,688 bytes (about 188.9 GiB). The debug/release
+directories occupy about 9.2 / 3.0 GiB. The preserved normal executable is
+34,912,112 bytes, SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+The owned PostgreSQL fixture is stopped. No normal release build, installation,
+account activity, publication or further cache deletion occurs. The private
+project hub is not updated under the explicit no-publication boundary; repository
+documents remain the durable record for this local increment.
+
+Migration tooling is committed locally as `a0f10af`; the coherent schema8 storage,
+driver bounds and regression increment is `cc0b022`. Both remain on the feature
+branch, unmerged and unpublished. This is a verified local storage foundation,
+not a completed DataGrip replacement or new normal application package.
+
+Reproduce with the pinned toolchains from README and a disposable local fixture;
+the browser command needs the isolated PostgreSQL fixture described there.
+The cross-version command requires the genuine preserved schema7 executable
+identified above; substituting a current binary or synthetic schema does not
+reproduce that acceptance.
+
+```sh
+pnpm validate
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib \
+  batch_outcomes -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --test script_execution -- --ignored --test-threads=1
+cargo build --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --features test-harness --bin test-harness
+python3 scripts/test-history-schema-migration.py \
+  --old-harness .cache/verification/snowflake-batch-storage/preserved-schema7-test-harness \
+  --old-schema 7 --new-schema 8 \
+  --new-harness src-tauri/target/debug/test-harness --runs 2 \
+  --output-dir .cache/verification/snowflake-batch-storage/schema7-to-8-reproduction
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" \
+  pnpm exec playwright test tests/e2e/history.spec.ts \
+  tests/e2e/history-outcomes.spec.ts tests/e2e/query-parameters.spec.ts \
+  --grep 'history|PostgreSQL binds reviewed writes'
+```
+
 ### Snowflake owned-batch protocol (13 November 2026)
 
 Base `fe45a6a`, task branch `feat/datagrip-replacement`. Three reused

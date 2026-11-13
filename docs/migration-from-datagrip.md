@@ -2,6 +2,17 @@
 
 ## Evaluation version notice
 
+The new [schema8 batch-storage foundation](snowflake-batch-outcomes-design.md) is
+locally verified: full validation, actual SQLite/owned-child recovery, two
+preserved-schema7 migrations, isolated PostgreSQL scripts and seven browser
+workflows pass. See the [source-scoped evidence and open gates](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
+It adds no grid/CSV workflow. The normal package checkpoint described below is
+schema7; its executable is preserved while schema8 is tested in disposable local
+metadata directories. Do not treat that package as evidence for the new source.
+Schema8 source upgrades metadata that schema7 apps then refuse to open. Keep
+evaluation data separate and retain a verified backup before any deliberate
+upgrade of an existing evaluation store.
+
 Schema-7 source passes full validation, actual PostgreSQL crash, browser and
 preserved-v6 migration checks. All 73 synthetic SDK and 27 offline runner cases
 pass; two optimized performance cases remain ignored. The normal SDK-bearing
@@ -80,7 +91,7 @@ See the [query-limit contract](snowflake-console-query-limits.md) and current
 ledger for verification status. The current `d6cfb2a` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
-Current source upgrades local metadata to schema 7, adds independently durable
+The verified schema-7 source upgrades local metadata to schema 7, adds independently durable
 SQL-free original outcomes and physically fences cached schema-6 history/profile/
 audit writers. Restore holds an exclusive admission/privacy gate through
 replacement, refuses live/unverifiable owners and settles current captured

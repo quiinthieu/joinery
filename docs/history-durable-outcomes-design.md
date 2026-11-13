@@ -1,5 +1,9 @@
 # Durable original history outcomes: implementation and acceptance
 
+This document records the verified schema7 checkpoint. The separate
+[schema8 batch storage increment](snowflake-batch-outcomes-design.md) has its own
+local verification evidence and remaining gates; earlier passes do not qualify it.
+
 Status: schema-7 storage/runtime implementation passes full validation, actual
 PostgreSQL crash recovery, browser restart/reopen and preserved-v6 migration
 checks. All 73 synthetic SDK and 27 offline runner cases pass; two optimized

@@ -31,18 +31,26 @@ tests pass. Full validation passes 1,038 frontend / 745 standard Rust cases and
 strict checks, with 145 intentional default fixture ignores. Resource/startup
 checks also pass; exact source scopes are in the
 [batch ledger](replacement-verification.md#snowflake-owned-batch-protocol-13-november-2026).
-Next extend durable storage before enabling application dispatch: retain bounded
-per-unit proof after settlement, preserve immutable pending originals, bind
-separate finish records to explicit transaction membership, and reserve rollback
-recording even when ordinary quota is exhausted. Prove the entire encoded
-envelope fits the durable limit and test real SQLite faults, restore and crashes.
-The [schema8 storage proposal](snowflake-batch-outcomes-design.md) bounds that
+The new durable storage foundation retains bounded per-unit proof after
+settlement, preserves immutable pending originals, binds separate finish records
+to explicit transaction membership, and reserves rollback recording even when
+ordinary quota is exhausted. Tests exercise the entire encoded envelope limit,
+real SQLite faults, restore and owned-child crashes.
+The [schema8 storage contract](snowflake-batch-outcomes-design.md) bounds that
 increment, including historical-only restore, live idle-group exclusion and
-pre-reserved rollback credit. It is unimplemented; proposed capacities are not
-accepted workflow limits. Implement and review persistence before dependent
-driver/runtime/UI work.
+pre-reserved rollback credit. Full application validation, real SQLite/owned-child
+recovery, two actual schema7-to-8 migrations, isolated PostgreSQL scripts and
+seven browser workflows pass; see the [evidence ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
+Provisional capacities are not accepted workflow limits: full-capacity/RSS,
+lifetime retention and the exact delayed pre-owner-claim migration race remain
+open. Keep those gates distinct from the passing logical quota and idle-owner
+fence checks.
 Then build a dedicated adapter; the old generic grid's committed-success return
-type cannot represent pending work. Integrate application staging and CSV, and qualify the whole
+type cannot represent pending work. Define trusted helper-generation retirement
+while the Studio remains alive: unknown/no-original batch groups currently retain
+their owner binding until OS-proven owner death. Do not expose this storage API
+as a complete live-session lifecycle before that contract is implemented.
+Integrate application staging and CSV, and qualify the whole
 workflow against Snowflake and the normal packaged app. Broader codecs remain
 required, not optional follow-up work.
 
@@ -103,7 +111,7 @@ decisions, and the real-process acceptance required before implementation claims
 
 This preceding checkpoint is pinned to schema 5 and clean `952758b`; its source
 status and remaining crash-owner work describe that historical point. Follow the
-schema-7 current-work section above for current source and open acceptance gates.
+schema8 batch-storage work above for current source and open acceptance gates.
 
 The coordinated schema-5 increment is local to the feature branch and is not
 release-qualified. It admits history before dispatch, retains exact

@@ -140,6 +140,13 @@ owner lifetime budgets remain incomplete. The proof assumes Joinery's private
 directory and stable files; it does not defend against a same-user actor replacing
 an owner file with another valid inode.
 
+The separate [schema8 batch archive](snowflake-batch-outcomes-design.md) has local
+SQLite/owned-child recovery, actual preserved-schema7 migration and independent
+application/workflow evidence in the [current ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
+Capacity/lifetime and runtime-integration gates remain open. The package and
+preceding workflow evidence above apply to schema7.
+Keep disposable evaluation roots separate from existing application data.
+
 ## Current limits and remaining requirements
 
 Search accepts at most 512 UTF-8 bytes. Matching lowercases Unicode text and

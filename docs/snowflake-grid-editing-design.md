@@ -119,8 +119,8 @@ Its strict decoder must reject malformed or reordered evidence, and maximum-size
 proof must include the future durable descriptor/base64 wrapper within 32 KiB.
 Raw binary fitting that limit does not establish whole-payload admission.
 
-Before application dispatch is enabled, extend schema-7's closed outcome model
-and migrate it under the existing exclusive admission/owner fence. Current
+Before application dispatch is enabled, complete and verify the separate schema8
+batch archive under the existing exclusive admission/owner fence. Schema7
 settlement deletes the captured payload, so the new per-unit proof must be
 retained atomically in a bounded durable record. Earlier pending manual receipts
 remain immutable; a separate finish record resolves their explicitly bound
@@ -128,9 +128,13 @@ transaction membership. Reserve recording capacity for rollback before accepting
 manual work. Restore imports historical proof without helper ownership, replay
 or live execution authority. Capture/settle faults, caller loss, child death,
 ordinary-quota exhaustion and restart require actual SQLite/process tests.
-The [durable batch-outcome proposal](snowflake-batch-outcomes-design.md) records
-the unimplemented schema8/API sequence and verification gates; none of its
-proposed capacities is established by the current protocol tests.
+The [durable batch-outcome contract](snowflake-batch-outcomes-design.md) records
+the locally verified schema8/API foundation and its remaining gates. Focused
+SQLite/owned-child cases, full application validation, actual preserved-schema7
+migration and existing PostgreSQL/browser workflows pass. Its provisional
+capacities are not accepted daily workflow limits or established by protocol or
+logical quota tests. No batch adapter, application staging or CSV dispatch is
+enabled by storage alone.
 
 ## Database correctness constraints
 
