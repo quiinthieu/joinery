@@ -1843,12 +1843,17 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     let database =
         rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
             .unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     std::fs::write(fixture.controls.join("release-dml-ack"), b"").unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while studio.pending_snowflake_receipts.lock().is_empty() {
+        while !studio
+            .pending_snowflake_receipts
+            .lock()
+            .values()
+            .any(|cell| cell.is_captured())
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -1857,11 +1862,14 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     let original = {
         let receipts = studio.pending_snowflake_receipts.lock();
         let receipt = receipts.values().next().unwrap();
-        let snowflake_receipts::OriginalResult::Dml(result) = &receipt.original else {
-            panic!("expected original DML result")
-        };
-        assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
-        receipt.entry.as_ref().unwrap().clone()
+        let payload: serde_json::Value = serde_json::from_slice(&receipt.original_bytes()).unwrap();
+        let completion: HistoryCompletion =
+            serde_json::from_value(payload["completion"].clone()).unwrap();
+        assert_eq!(
+            completion.snowflake_dml.as_ref().unwrap().statement_outcome,
+            SnowflakeDmlOutcome::Succeeded
+        );
+        receipt.ticket().id().to_owned()
     };
     assert_dml_reads(&fixture, before, 5);
     let query_count = queries(&fixture).len();
@@ -1877,7 +1885,7 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     studio.shutdown_and_wait().await.unwrap();
     let history = studio.history("").unwrap();
     assert_eq!(history.len(), 1);
-    assert_eq!(history[0].id, original.id);
+    assert_eq!(history[0].id, original);
     assert_eq!(
         history[0].snowflake_dml.as_ref().unwrap().statement_outcome,
         SnowflakeDmlOutcome::Succeeded
@@ -1894,7 +1902,7 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     );
     let audits: u32 = database
         .query_row(
-            "SELECT COUNT(*) FROM audit_v6 WHERE action='snowflake-dml' AND outcome='succeeded'",
+            "SELECT COUNT(*) FROM audit_v7 WHERE action='snowflake-dml' AND outcome='succeeded'",
             [],
             |row| row.get(0),
         )
@@ -1935,12 +1943,17 @@ async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_aud
     let database =
         rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
             .unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     std::fs::write(fixture.controls.join("release-transaction-ack"), b"").unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
-        while studio.pending_snowflake_receipts.lock().is_empty() {
+        while !studio
+            .pending_snowflake_receipts
+            .lock()
+            .values()
+            .any(|cell| cell.is_captured())
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -1949,15 +1962,14 @@ async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_aud
     {
         let receipts = studio.pending_snowflake_receipts.lock();
         let receipt = receipts.values().next().unwrap();
-        let snowflake_receipts::OriginalResult::Boundary(result) = &receipt.original else {
-            panic!("expected original boundary result")
-        };
-        assert_eq!(result.action, ExplicitTransactionAction::Begin);
+        let payload: serde_json::Value = serde_json::from_slice(&receipt.original_bytes()).unwrap();
+        let evidence: crate::persistence::BoundaryEvidence =
+            serde_json::from_value(payload["boundary"].clone()).unwrap();
+        assert_eq!(evidence.action, ExplicitTransactionAction::Begin);
         assert_eq!(
-            result.boundary_outcome,
+            evidence.boundary_outcome,
             TransactionBoundaryOutcome::Acknowledged
         );
-        assert!(result.error.is_none());
     }
     assert_boundary_reads(&fixture, before, ExplicitTransactionAction::Begin);
     let query_count = queries(&fixture).len();
@@ -1971,7 +1983,7 @@ async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_aud
         .unwrap();
     studio.shutdown_and_wait().await.unwrap();
     studio.shutdown_and_wait().await.unwrap();
-    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v6 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
+    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v7 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
     assert_eq!(audits, 1);
     assert_eq!(
         std::fs::read_to_string(fixture.controls.join("transaction-effects"))

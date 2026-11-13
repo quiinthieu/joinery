@@ -14,7 +14,7 @@ use crate::{
     },
     export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
     file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
-    persistence::{HistoryCompletion, HistoryOwner, HistoryTicket, Persistence},
+    persistence::{HistoryCompletion, HistoryOwner, Persistence},
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
     safety,
     secrets::{OsSecrets, SecretStore},
@@ -55,6 +55,8 @@ pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
 mod history_receipts;
+mod outcome_memory;
+mod outcome_recording;
 mod recovery_activity;
 mod recovery_files;
 mod recovery_jobs;
@@ -94,6 +96,7 @@ impl MetadataGate {
 }
 
 struct Session {
+    rollback_memory: Mutex<Option<Arc<outcome_memory::SafetySlot>>>,
     metadata_gate: Mutex<MetadataGate>,
     info: SessionInfo,
     profile: ConnectionProfile,
@@ -217,7 +220,7 @@ struct Job {
 }
 
 struct RunRecording {
-    ticket: HistoryTicket,
+    cell: Arc<outcome_recording::OutcomeCell>,
     events: EventHandler,
     completion: Arc<Mutex<Option<HistoryCompletion>>>,
 }
@@ -269,6 +272,7 @@ enum PreparedCompareSide {
 pub struct Studio {
     persistence: Persistence,
     history_owner: HistoryOwner,
+    outcome_memory: outcome_memory::OutcomeMemory,
     secrets: Arc<dyn SecretStore>,
     file_dialog: Arc<dyn FileDialogProvider>,
     pub file_capabilities: FileCapabilities,
@@ -374,6 +378,7 @@ impl Studio {
         Ok(Arc::new(Self {
             persistence,
             history_owner,
+            outcome_memory: outcome_memory::OutcomeMemory::default(),
             secrets,
             file_dialog,
             file_capabilities: FileCapabilities::default(),
@@ -972,6 +977,7 @@ impl Studio {
         }
         // Neither the configuration gate nor a global connection lane is held
         // while SSH, database authentication, or browser sign-in is pending.
+        let rollback_memory = self.outcome_memory.safety()?;
         let setup = async {
             let tunnel = if profile.ssh.is_some() {
                 Some(
@@ -1138,6 +1144,7 @@ impl Studio {
             sessions.insert(
                 session_id,
                 Arc::new(Session {
+                    rollback_memory: Mutex::new(Some(rollback_memory)),
                     info: info.clone(),
                     profile,
                     driver: driver.clone(),
@@ -1746,8 +1753,8 @@ impl Studio {
             ));
         }
         self.flush_pending_history()?;
-        self.persistence
-            .audit(&session.profile.id, "execute", &stored.digest, "started")?;
+        self.flush_pending_snowflake_receipts()?;
+        let memory = self.outcome_memory.ordinary()?;
         let profile = self.persistence.profile(&session.profile.id)?;
         let seed = HistoryEntry {
             provenance: HistoryProvenance::Admitted,
@@ -1768,9 +1775,21 @@ impl Studio {
             status: None,
             elapsed_ms: None,
         };
-        let history_ticket = self
-            .persistence
-            .begin_owned_history(&self.history_owner, &seed)?;
+        let cell = self.admit_outcome(
+            memory,
+            Some(&seed),
+            crate::persistence::OutcomeDescriptor {
+                operation_id: run_id.clone(),
+                connection_id: profile.id.clone(),
+                session_id: session.info.id.clone(),
+                started_at: seed.started_at,
+                digest: stored.digest.clone(),
+                kind: crate::persistence::OutcomeKind::Execute {
+                    planned: seed.statement_count,
+                },
+            },
+            crate::persistence::OutcomePool::Ordinary,
+        )?;
         let cancellation_sent = Arc::new(AtomicBool::new(false));
         self.jobs.lock().insert(
             run_id.clone(),
@@ -1782,17 +1801,17 @@ impl Studio {
         );
         let studio = self.clone();
         let run = run_id.clone();
+        // Build before spawning: even an unpolled future owns its drop guard.
+        let completion = Arc::new(Mutex::new(None));
+        let mut owner = history_receipts::RunOwner::new(
+            studio.clone(),
+            session.clone(),
+            cell.clone(),
+            events.clone(),
+            completion.clone(),
+        );
         self.dml_tasks.spawn(async move {
             let _recovery_activity = recovery_activity;
-            let completion = Arc::new(Mutex::new(None));
-            let mut owner = history_receipts::RunOwner::new(
-                studio.clone(),
-                session.clone(),
-                history_ticket.clone(),
-                stored.digest.clone(),
-                events.clone(),
-                completion.clone(),
-            );
             studio
                 .run_plan(
                     run,
@@ -1802,7 +1821,7 @@ impl Studio {
                     cancellation_sent,
                     RunRecording {
                         events,
-                        ticket: history_ticket,
+                        cell,
                         completion,
                     },
                 )
@@ -1823,7 +1842,7 @@ impl Studio {
     ) {
         let RunRecording {
             events,
-            ticket: history_ticket,
+            cell,
             completion: observed_completion,
         } = recording;
         let started = Instant::now();
@@ -2143,17 +2162,11 @@ impl Studio {
             status: Some(status),
             elapsed_ms: Some(elapsed_ms),
         };
-        let recording_result = self.retain_history_completion(
-            history_ticket,
-            completion.clone(),
-            &session.profile.id,
-            &stored.digest,
-        );
+        let recording_result = self.finish_outcome_history(&cell, &completion);
         *observed_completion.lock() = Some(completion);
-        if recording_result.is_err() {
+        if let Err(error) = recording_result {
             events(QueryEvent::Notice {
-                message: "The execution finished, but its local history could not be recorded."
-                    .into(),
+                message: error.message,
             });
         }
         if serialized {
@@ -5272,6 +5285,16 @@ impl Studio {
             })?;
         self.flush_pending_snowflake_receipts()?;
         self.flush_pending_history()?;
+        // Ordinary admission permits concurrent in-flight cells. After the
+        // task drain, any remaining cell means its guard did not settle it.
+        if !self.pending_history.lock().is_empty()
+            || !self.pending_snowflake_receipts.lock().is_empty()
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "An admitted operation has not settled locally; keep Joinery open and inspect pending recording before closing",
+            ));
+        }
         self.flush_console_recordings()?;
         #[cfg(unix)]
         self.snowflake_cleanup
@@ -5781,6 +5804,8 @@ mod browse_classification_tests {
         check_constraints_calls: Mutex<Vec<InspectRelationCheckConstraintsRequest>>,
         mapping_calls: Mutex<Vec<InspectRelationConstraintMappingsRequest>>,
         relation_invalidated: AtomicBool,
+        panic_during_invalidation: AtomicBool,
+        panic_during_close: AtomicBool,
         switch_saw_invalidation: AtomicBool,
         close_during_relation: bool,
         mode_calls: std::sync::atomic::AtomicUsize,
@@ -5804,6 +5829,10 @@ mod browse_classification_tests {
     #[async_trait::async_trait]
     impl Driver for RecordingDriver {
         fn invalidate_relation_catalog(&self) {
+            assert!(
+                !self.panic_during_invalidation.load(Ordering::Acquire),
+                "synthetic invalidation panic after admission"
+            );
             self.relation_invalidated.store(true, Ordering::Release);
         }
         async fn relation_catalog(&self) -> AppResult<BrowseCatalog> {
@@ -6156,6 +6185,10 @@ mod browse_classification_tests {
         }
         fn close(&self) {
             self.closed.store(true, Ordering::Release);
+            assert!(
+                !self.panic_during_close.load(Ordering::Acquire),
+                "synthetic close panic after returned original"
+            );
         }
     }
 
@@ -6166,6 +6199,7 @@ mod browse_classification_tests {
     ) -> Arc<Session> {
         let profile = profile(EngineKind::Postgres, SafeMode::ReadOnly);
         let session = Arc::new(Session {
+                    rollback_memory: Mutex::new(None),
             info: SessionInfo { console_mode: false, id: new_id(), connection_id: profile.id.clone(), engine: EngineKind::Postgres, server_version: "fixture".into(), latency_ms: 0, encrypted: false, capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"cancellation":true,"tableBrowsing":false,"relationBrowsing":enabled,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
             profile, driver, lane: tokio::sync::Mutex::new(()), cancellation_gate: tokio::sync::Mutex::new(()), active_run: Mutex::new(None), closed: AtomicBool::new(false), tunnel: None, completion: Mutex::new(None), metadata_gate: Mutex::new(MetadataGate::default()), observed_runtime: Mutex::new(None),
         });
@@ -6237,6 +6271,7 @@ mod browse_classification_tests {
             ..Default::default()
         });
         let session = Arc::new(Session {
+                    rollback_memory: Mutex::new(None),
             info: SessionInfo { console_mode: false, id: id.clone(), connection_id: profile.id.clone(), engine: EngineKind::Snowflake,
                 server_version: "synthetic".into(), latency_ms: 0, encrypted: true,
                 capabilities: serde_json::from_value(serde_json::json!({"sql":true,"transactions":false,"explicitTransactionControls":true,"cancellation":true,"tableBrowsing":false,"tableEditing":false,"tableFiltering":false,"processes":false})).unwrap() },
@@ -6433,7 +6468,7 @@ mod browse_classification_tests {
                 .prepare_transaction_control(&session.info.id, &request)
                 .unwrap();
             let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v6 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
             let result = studio.execute_transaction_control(&plan.id, None).await;
             assert_eq!(
                 driver.boundary_calls.lock().len(),
@@ -7173,6 +7208,7 @@ mod browse_classification_tests {
                     studio.sessions.lock().insert(
                         id.clone(),
                         Arc::new(Session {
+                            rollback_memory: Mutex::new(None),
                             info: SessionInfo {
                                 console_mode: false,
                                 id: id.clone(),
@@ -7267,10 +7303,11 @@ mod browse_classification_tests {
             calls: Mutex::new(Vec::new()),
             ..Default::default()
         });
-        let session_id = "param-test-session".to_string();
+        let session_id = new_id();
         studio.sessions.lock().insert(
             session_id.clone(),
             Arc::new(Session {
+                rollback_memory: Mutex::new(None),
                 info: SessionInfo {
                     console_mode: false,
                     id: session_id.clone(),
@@ -7460,10 +7497,11 @@ mod browse_classification_tests {
             calls: Mutex::new(Vec::new()),
             ..Default::default()
         });
-        let session_id = "cap-test-session".to_string();
+        let session_id = new_id();
         studio.sessions.lock().insert(
             session_id.clone(),
             Arc::new(Session {
+                rollback_memory: Mutex::new(None),
                 info: SessionInfo {
                     console_mode: false,
                     id: session_id.clone(),

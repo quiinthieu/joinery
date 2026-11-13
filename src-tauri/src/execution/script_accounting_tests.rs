@@ -5,6 +5,49 @@ use serde_json::{Value, json};
 
 const SCRIPT: &str = "SELECT 'first' AS marker; SELECT 'distinctive suffix' AS marker";
 
+#[test]
+fn unpolled_generic_task_releases_job_and_records_no_original_without_dispatch() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let fixture = Fixture::new(Behavior::Complete);
+    let (run_id, _events) = {
+        let _entered = runtime.enter();
+        fixture.start()
+    };
+    assert!(fixture.driver.calls.lock().is_empty());
+    assert_eq!(
+        fixture
+            .studio
+            .history_entry(&run_id)
+            .unwrap()
+            .unwrap()
+            .provenance,
+        HistoryProvenance::Admitted
+    );
+    // No executor tick has polled the task. Its pre-spawn guard must still run.
+    drop(runtime);
+    assert!(fixture.driver.calls.lock().is_empty());
+    assert!(fixture.studio.jobs.lock().is_empty());
+    assert!(fixture.session.closed.load(Ordering::Acquire));
+    let entry = fixture.studio.history_entry(&run_id).unwrap().unwrap();
+    assert_eq!(entry.provenance, HistoryProvenance::Interrupted);
+    assert!(entry.status.is_none());
+    assert!(entry.elapsed_ms.is_none());
+    assert!(
+        fixture
+            .studio
+            .persistence
+            .audit_log()
+            .unwrap()
+            .iter()
+            .all(|audit| audit.id != format!("{run_id}:finished"))
+    );
+    fixture.studio.flush_pending_history().unwrap();
+    assert!(fixture.studio.pending_history.lock().is_empty());
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Behavior {
     Complete,
@@ -207,6 +250,7 @@ impl Fixture {
             studio.persistence.save_profile(&profile).unwrap();
         }
         let session = Arc::new(Session {
+            rollback_memory: Mutex::new(None),
             info,
             profile,
             driver: driver.clone(),

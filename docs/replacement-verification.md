@@ -8,6 +8,67 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Durable original outcomes (13 November 2026, local verification)
+
+Base `ab827e9`, task branch `feat/datagrip-replacement`. The lead owns runtime,
+shared docs and serialized verification; three reused `gpt-6.1-sol` high-effort
+agents own persistence, process/receipt tests and independent review. No model
+fallback or global configuration change. Checks preserve exact source hashes,
+disk measurements and logs under `.cache/verification/reviewed-console/`, with a
+20 GiB preflight gate. Synthetic local data only; no account activity, release,
+installation or publication. The existing schema-6 normal app is preserved.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `outcome-capture-process-red` | Actual isolated PostgreSQL known-completion crash regression fails: after a real result, injected SQLite history UPDATE failure and death of only the owned child, recovery returns Interrupted rather than the exact recorded completion. Exit 101, 27.968 seconds including compilation, all 562 source hashes unchanged. Reproduction precedes the implementation |
+| `outcomes-first-compile` | Exit 101, 15.636 seconds, all 568 sources unchanged. Two compiler errors: a Session Arc/reference mismatch and a rusqlite unsigned read. Corrected without weakening behavior; no runtime pass from this attempt |
+| `outcomes-core-first` | Standard library check compiles but fails: 544 pass / 112 fail / four intentional ignores, 50.331 seconds, unchanged sources. Root causes include capped SQL reads converting NULL to empty text, causing phase rejection, and the schema-7 backup retention allowlist. Initial result is preserved, not dismissed as pre-existing |
+| `outcomes-core-corrected` | 653 pass / five fail / four intentional ignores, exit 101, 66.716 seconds, unchanged 568 sources. All 20 outcome persistence cases and typed close-panic regression pass. Remaining failures are a non-UUID parameter fixture, two stale non-atomic projection/error expectations, settled-cell cleanup and concurrent first-migration semantics |
+| `outcomes-validate` | All 1,038 frontend / 719 standard Rust tests pass, 145 intentional default fixture ignores, plus formatting, contracts, TypeScript, production UI build and desktop compilation. Strict all-target/all-feature Clippy then fails eight diagnostics: five unused fixture-only methods, a too-new atomic API for MSRV, two conditional-style lints and a range-pattern lint (method group is one diagnostic). Exit 101, 222.443 seconds, unchanged 568 sources. No overall validation pass inferred |
+| `outcomes-strict-corrected` | Formatting and desktop compilation pass; strict Clippy now fails only two unused HistoryTicket imports after fixture wrappers became test-only. Exit 101, 35.969 seconds, unchanged sources. Imports were narrowed without warning suppression; the next full run qualifies that correction and the added maximum-legal-encoding regression |
+| `outcomes-validate-final` | Complete pnpm validate passes: 1,038 frontend / 720 standard Rust tests, 145 intentional default fixture ignores, formatting, contracts, TypeScript, production UI build, desktop compile and strict all-target/all-feature Clippy. Exit zero, 238.396 seconds, all 568 captured sources unchanged. Includes 21 outcome storage regressions, maximum escaping, callback guards/capture, atomic failed projection, current-schema concurrency and MSRV-safe capacity. Actual database/browser/migration qualification follows separately |
+| `outcomes-postgres` | All ten actual isolated PostgreSQL script cases pass, 3.357 seconds, unchanged 568 sources; includes interrupted connections, cancellation, transactions and active-query privacy |
+| `outcomes-process-unknown` / `outcomes-process-known` | Both actual PostgreSQL owned-child crash cases pass, 0.877 / 0.456 seconds with compiled executable reuse, unchanged sources. No-capture death stays unknown without replay; captured known completion after history UPDATE failure survives exactly, settles audit once and remains unchanged across fresh starts |
+| `outcomes-harness` | Current schema-7 harness builds, exit zero, 24.551 seconds, unchanged sources |
+| `outcomes-migration-process` | Two actual preserved-v6/current-v7 process cases pass, 3.401 seconds, unchanged sources and both binary inventories. Held idle v6 owner plus SQLite writer makes migration refuse ownership before writer admission, without metadata change; after that owned child exits migration succeeds, and the genuine v6 binary refuses schema7 unchanged. Exact delayed-preclaim interleaving remains explicitly unproved |
+| `outcomes-browser` | Six existing actual browser cases pass / new restart case fails, exit1, 50.68 seconds, unchanged sources. New case recovers the exact known completion, but assertion expects null DML/DDL fields that HistoryEntry omits. Test corrected to compare every completion field plus ID/SQL with only absent typed fields normalized; production source unchanged. Full interaction/reopen/audit assertions remain required in rerun |
+| `outcomes-browser-corrected` | All seven actual Chromium cases pass, exit zero, 51.732 seconds, unchanged 568 sources. New case executes against isolated PostgreSQL, injects actual SQLite projection failure, verifies durable capture, kills/reaps only its own backend, restarts the same metadata root and reopens exact SQL without connect/prepare/execute RPCs. Original completion fields and ID remain exact, one finished audit persists, and another restart is unchanged |
+| `outcomes-snowflake-producers` | All 73 synthetic SDK execution cases pass, exit zero, 267.041 seconds, all 568 current sources unchanged. Includes typed DML/DDL/boundary acknowledgement, lost ACK, dropped waiter, SQLite recording faults, retirement and no replay. Uses production helper paths with a synthetic SDK; no Snowflake account effects are claimed |
+| `outcomes-qualification-runners` | All 27 offline runner cases pass, two intentional optimized/full-runtime performance ignores, exit zero, 455.988 seconds, all 568 current sources unchanged. Actual synthetic helper processes exercise child exits before/after ACK, dropped waiters, recording failures, context drift, deadlines and bounded capture. No account activity; no full-capacity/RSS result inferred |
+| `outcomes-doc-links` / `outcomes-doc-review` | All 794 repository-relative Markdown path targets exist; fragments not exhaustively checked. Read-only seven-doc review found two stale baseline/memory descriptions and one schema-section pointer; corrected without removing acceptance gates. Exact new outcome-ledger anchor checked separately |
+| `outcomes-fixture-stopped` | Only the lead-owned isolated PostgreSQL container `joinery-recovery-1794497502-postgres-1` stopped after all database/browser checks. Unrelated logistics database remains running unchanged; no fixture deleted |
+| `outcomes-prior-app-preservation` | Clean schema-6 `f39dce3` app preserved with APFS copy-on-write before packaging. All 15,120 inventory entries match source and strict signatures pass. Executable SHA-256 remains `3162d333473fea17f7670816f4e2599957e208dfe2b18beaf2b7d7ecdd7e1b46`; regular-file inventory 242,617,575 bytes. Measured free-space decrease during the copy was 6,123,520 bytes; no artifact deleted or installed |
+
+After the corrected run, fixtures use canonical UUIDs and assert Admitted plus
+Captured while atomic settlement fails, then exact completion/audit-once after
+fault removal. Successful settlement promptly removes its cell. Fresh migration
+contenders may return only the explicit ownership Conflict; the test requires a
+success, reaps all threads and retries each refusal. A separate existing-v7 case
+requires all concurrent opens to succeed. The closed descriptor decoder now
+avoids internally tagged generic buffering and rejects malformed arrays.
+Full validation, database, migration and browser checks now pass in their named
+scopes. The 73 synthetic SDK and 27 offline runner cases also pass; two separate optimized
+performance cases remain ignored. Normal packaging remains pending.
+
+Source-pin comparison (`outcomes-source-pin-comparison.json`): the full-validation,
+PostgreSQL, process and migration
+receipts differ from the corrected-browser source in exactly one of 568 paths,
+`tests/e2e/history-outcomes.spec.ts`. That change only normalizes omitted optional
+wire fields in the new assertion; production source is identical. The corrected
+fixture passes all seven browser cases and Prettier. Do not describe those older
+receipts as an identical 568-file snapshot of the corrected fixture.
+
+Independent runtime/browser review found and verified three P1 corrections:
+ordinary boundaries also gate on generic recording, guards precede callbacks,
+and compact original capture precedes retirement/close callbacks. Persistence
+review then found no remaining material issue in storage, runtime, plain/encrypted
+restore and browser changes. Latest relevant graph generation is
+2026-11-13T06:20:52Z; reviewed paths report metadata-match/no recorded issue,
+with direct source checks for material claims. This is bounded Tier 2 evidence,
+not proof of completeness. Final package evidence remains pending. The
+[contract](history-durable-outcomes-design.md) records unresolved lifetime,
+imported historical boundary, delayed-preclaim and packaged/account gates.
+
 ### Process-owned history recovery (13 November 2026)
 
 Base `b575c4c` on `feat/datagrip-replacement`. Three bounded `gpt-6.1-sol`

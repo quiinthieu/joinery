@@ -74,6 +74,7 @@ fn sdk_dml_fixture(
         ..Default::default()
     });
     let session = Arc::new(Session {
+        rollback_memory: Mutex::new(None),
         info: SessionInfo {
             console_mode: false,
             id: id.clone(),
@@ -523,19 +524,34 @@ async fn dml_studio_post_statement_audit_or_history_failure_cannot_erase_ack() {
             result.summary.affected_rows.as_deref(),
             Some("9007199254740993")
         );
-        assert_eq!(result.error.unwrap().code, ErrorCode::Internal);
+        assert_eq!(result.error.unwrap().code, ErrorCode::Conflict);
         assert!(!result.retired);
         assert_eq!(driver.dml_calls.lock().len(), 1);
-        if table == "audit" {
-            assert_eq!(
-                studio.history("").unwrap()[0]
-                    .snowflake_dml
-                    .as_ref()
-                    .unwrap()
-                    .statement_outcome,
-                SnowflakeDmlOutcome::Succeeded
-            );
-        }
+        let row = studio.history("").unwrap().remove(0);
+        assert_eq!(row.provenance, HistoryProvenance::Admitted);
+        assert!(row.snowflake_dml.is_none());
+        assert!(
+            studio
+                .pending_snowflake_receipts
+                .lock()
+                .values()
+                .next()
+                .unwrap()
+                .is_captured()
+        );
+        database
+            .execute_batch(&format!("DROP TRIGGER reject_{table}"))
+            .unwrap();
+        studio.shutdown_and_wait().await.unwrap();
+        assert_eq!(
+            studio.history("").unwrap()[0]
+                .snowflake_dml
+                .as_ref()
+                .unwrap()
+                .statement_outcome,
+            SnowflakeDmlOutcome::Succeeded
+        );
+        assert_eq!(terminal_audits(&database, "snowflake-dml", "succeeded"), 1);
     }
 }
 
@@ -546,7 +562,7 @@ async fn dml_studio_pre_statement_audit_failure_prevents_submission() {
         .prepare_execution(&session.info.id, SDK_DML_SQL)
         .unwrap();
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v6 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
     assert!(studio.execute_snowflake_dml(&plan.id, None).await.is_err());
     assert_no_dml_or_observer(&driver);
 }
@@ -824,7 +840,7 @@ async fn receipt_dml_dropped_waiter_storage_failure_blocks_shutdown_until_local_
         );
         let audits: u32 = database
             .query_row(
-                "SELECT COUNT(*) FROM audit_v6 WHERE action='snowflake-dml' AND outcome='succeeded'",
+                "SELECT COUNT(*) FROM audit_v7 WHERE action='snowflake-dml' AND outcome='succeeded'",
                 [],
                 |row| row.get(0),
             )
@@ -843,7 +859,7 @@ async fn receipt_boundary_terminal_audit_failure_preserves_ack_and_blocks_shutdo
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v7 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;").unwrap();
     let result = studio
         .execute_transaction_control(&plan.id, None)
         .await
@@ -865,7 +881,7 @@ async fn receipt_boundary_terminal_audit_failure_preserves_ack_and_blocks_shutdo
         .unwrap();
     studio.shutdown_and_wait().await.unwrap();
     studio.shutdown_and_wait().await.unwrap();
-    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v6 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
+    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v7 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
     assert_eq!(audits, 1);
     assert_eq!(driver.boundary_calls.lock().len(), 1);
 }

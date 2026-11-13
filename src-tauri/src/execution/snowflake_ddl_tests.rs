@@ -17,6 +17,7 @@ fn sdk_ddl_fixture(
     let mut info = old.info.clone();
     info.capabilities.snowflake_reviewed_ddl = true;
     let session = Arc::new(Session {
+        rollback_memory: Mutex::new(None),
         info,
         profile,
         driver: driver.clone(),
@@ -184,7 +185,7 @@ async fn ddl_studio_failed_start_audit_does_not_dispatch_or_claim_terminal_outco
     let plan = ddl_review(&studio, &request).await;
     let token = ddl_approve(&studio, &plan);
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v6 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v7 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
     assert!(
         studio
             .execute_snowflake_ddl(&plan.id, Some(&token))
@@ -751,7 +752,7 @@ async fn ddl_studio_late_disconnect_or_persistence_failure_preserves_success() {
         assert_eq!(result.retired, scenario == "disconnect");
         assert_eq!(result.error.is_some(), scenario != "disconnect");
         assert_eq!(driver.ddl_calls.lock().len(), 1);
-        if scenario != "history" {
+        if scenario == "disconnect" {
             assert_eq!(
                 studio.history("").unwrap()[0]
                     .snowflake_ddl
@@ -760,10 +761,35 @@ async fn ddl_studio_late_disconnect_or_persistence_failure_preserves_success() {
                     .statement_outcome,
                 SnowflakeDdlOutcome::Succeeded
             );
+        } else {
+            let row = studio.history("").unwrap().remove(0);
+            assert_eq!(row.provenance, HistoryProvenance::Admitted);
+            assert!(row.snowflake_ddl.is_none());
+            assert!(
+                studio
+                    .pending_snowflake_receipts
+                    .lock()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .is_captured()
+            );
+            let db = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+            db.execute_batch(&format!("DROP TRIGGER reject_{scenario}"))
+                .unwrap();
+            studio.shutdown_and_wait().await.unwrap();
+            assert_eq!(
+                studio.history("").unwrap()[0]
+                    .snowflake_ddl
+                    .as_ref()
+                    .unwrap()
+                    .statement_outcome,
+                SnowflakeDdlOutcome::Succeeded
+            );
+            assert_eq!(terminal_audits(&db, "snowflake-ddl", "succeeded"), 1);
         }
     }
 }
-
 #[tokio::test]
 async fn ddl_studio_dropped_waiter_and_shutdown_drain_durable_ack() {
     let entered = Arc::new(tokio::sync::Notify::new());
@@ -849,16 +875,15 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
             let pending = studio.pending_snowflake_receipts.lock();
             assert_eq!(pending.len(), 1);
             let receipt = pending.values().next().unwrap();
-            let evidence = receipt
-                .entry
-                .as_ref()
-                .unwrap()
-                .snowflake_ddl
-                .as_ref()
-                .unwrap();
+            let payload: serde_json::Value =
+                serde_json::from_slice(&receipt.original_bytes()).unwrap();
+            let completion: HistoryCompletion =
+                serde_json::from_value(payload["completion"].clone()).unwrap();
+            let evidence = completion.snowflake_ddl.as_ref().unwrap();
             assert_eq!(evidence.statement_outcome, SnowflakeDdlOutcome::Succeeded);
             assert_eq!(evidence.qualified_target, "\"DB\".\"PUBLIC\".\"T\"");
-            receipt.entry.as_ref().unwrap().clone()
+            assert!(receipt.is_captured());
+            (receipt.ticket().id().to_owned(), completion)
         };
         assert_eq!(driver.ddl_calls.lock().len(), 1);
         // Repeated close attempts keep the exact receipt and never submit again.
@@ -870,11 +895,9 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
                 .values()
                 .next()
                 .unwrap()
-                .entry
-                .as_ref()
-                .unwrap()
-                .id,
-            original.id
+                .ticket()
+                .id(),
+            original.0
         );
         for table in failed_tables {
             database
@@ -886,9 +909,9 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         assert!(studio.pending_snowflake_receipts.lock().is_empty());
         let history = studio.history("").unwrap();
         assert_eq!(history.len(), 1);
-        assert_eq!(history[0].id, original.id);
-        assert_eq!(history[0].snowflake_ddl, original.snowflake_ddl);
-        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v6 WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
+        assert_eq!(history[0].id, original.0);
+        assert_eq!(history[0].snowflake_ddl, original.1.snowflake_ddl);
+        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v7 WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
         assert_eq!(terminal_audits, 1);
         assert_eq!(driver.ddl_calls.lock().len(), 1);
         assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);

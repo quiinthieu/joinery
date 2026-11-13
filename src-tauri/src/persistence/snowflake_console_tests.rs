@@ -136,7 +136,7 @@ fn downgrade_fixture_to_v3(connection: &Connection) {
                 .unwrap();
         }
     }
-    connection.execute_batch("ALTER TABLE profiles_v6 RENAME TO profiles; ALTER TABLE history_v6 RENAME TO history; ALTER TABLE audit_v6 RENAME TO audit; DROP TABLE snowflake_console_retention_v5;").unwrap();
+    connection.execute_batch("ALTER TABLE profiles_v7 RENAME TO profiles; ALTER TABLE history_v7 RENAME TO history; ALTER TABLE audit_v7 RENAME TO audit; DROP TABLE snowflake_console_retention_v5;").unwrap();
     for table in [
         "snowflake_console_runs_v5",
         "snowflake_console_rejections_v5",

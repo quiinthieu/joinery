@@ -1,5 +1,16 @@
 # Trying Joinery for daily database work
 
+## Evaluation version notice
+
+Schema-7 source passes full validation, actual PostgreSQL crash, browser and
+preserved-v6 migration checks. All 73 synthetic SDK and 27 offline runner cases
+pass; two optimized performance cases remain ignored. Packaging is next.
+The last verified normal app remains schema 6 at `f39dce3`. Use separate
+throwaway metadata roots for source evaluation and keep an original backup;
+older apps cannot open the upgraded schema. Follow the
+[durable-outcome contract](history-durable-outcomes-design.md) for current
+implementation limits. No replacement or installation acceptance is established.
+
 This is a local evaluation guide, not a declaration of DataGrip parity. The
 confirmed target and required workflows are recorded in
 [replacement acceptance](replacement-acceptance.md). Current test/build outcomes
@@ -8,7 +19,7 @@ Keep DataGrip available until your required workflows are accepted.
 
 For local execution history, follow the [paged history walkthrough](query-history.md):
 search all retained entries, browse summaries and open exact saved SQL explicitly
-without executing it. Schema-6 source saves admitted history before
+without executing it. Current source saves admitted history before
 dispatch and uses SQL-free completion tickets. Clear and profile opt-out prevent
 late completion from restoring removed text. Process-owned recovery has local
 SQLite and actual PostgreSQL crash coverage; full validation, browser and offline
@@ -24,7 +35,9 @@ Retained-console history, receipt and audit obligations now settle atomically;
 startup can recover original terminal evidence left by an unfinished publisher.
 For generic/typed admissions, startup recovers only proven dead local owners.
 Unbound/imported entries or missing proof stay unresolved; known durable
-completion remains intact. Durable failed completion payloads remain open.
+completion remains intact. Schema 7 separately captures compact original outcomes before secondary
+recording, so known captured results survive process death. Uncaptured results
+remain unknown; see the [capture contract](history-durable-outcomes-design.md).
 Never replay SQL to discover an uncertain outcome.
 
 The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
@@ -65,13 +78,12 @@ See the [query-limit contract](snowflake-console-query-limits.md) and current
 ledger for verification status. The current `f39dce3` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
-Current source upgrades local metadata to schema 6, adds SQL-free process
-ownership and physically fences cached schema-5 history/profile/audit writers. Restore holds
-an exclusive admission/privacy gate through replacement and refuses live or
-unverifiable current owners. The preceding `952758b` schema-5 package cannot
-open schema-6 metadata. It is separately preserved; the current `f39dce3` app
-includes this increment. All 562 source hashes match final local checks.
-Use a separate
+Current source upgrades local metadata to schema 7, adds independently durable
+SQL-free original outcomes and physically fences cached schema-6 history/profile/
+audit writers. Restore holds an exclusive admission/privacy gate through
+replacement, refuses live/unverifiable owners and settles current captured
+originals before merging backups. Imported evidence grants no execution authority.
+The preserved `f39dce3` schema-6 app cannot open schema-7 metadata. Use a separate
 evaluation data directory, preserve the original backup and never run old and new
 versions against one directory. Going back to an old backup can lose newer
 receipt knowledge, so it is not a safe way to determine whether SQL ran.

@@ -1,5 +1,15 @@
 # Query history browsing and search
 
+## Source evaluation notice
+
+Schema-7 durable capture passes full validation, isolated PostgreSQL crash tests,
+actual browser restart/reopen and preserved-v6 migration checks. All 73 synthetic
+SDK and 27 offline runner cases pass; two optimized performance cases remain
+ignored. Packaging is next. The last verified schema-6 app is
+separately preserved. See [durable original outcomes](history-durable-outcomes-design.md)
+for the implemented contract and open acceptance gates; this is not replacement
+acceptance.
+
 Open **Query history** to browse local executions. Search words may occur in
 different parts of the saved SQL, connection name or execution metadata. Search
 covers all retained entries, including text beyond the visible preview. The view
@@ -69,41 +79,60 @@ metadata restore preserves disjoint pending SQL and marks restored evidence;
 live clear/opt-out authority prevents an older backup from reviving removed text.
 Incomparable privacy branches are refused before creating undo or replacing data.
 
-Schema 6 binds generic and typed admissions to a process-held OS lease. On a
-fresh startup, only an existing, valid lease whose lock can be acquired proves
-that its owner has exited. Such a pending entry becomes Interrupted, with unknown
-status and unavailable duration. An already durable original completion is
-preserved. A live owner is left alone. Legacy or imported unbound admissions,
-and admissions whose lease file is missing, remain unresolved. Joinery never
-creates a replacement proof file to guess that an owner died. Invalid proof
-refuses startup recovery rather than asserting an outcome.
+Schema-7 source binds generic and typed admissions to a process-held OS lease
+and reserves a SQL-free operation before ordinary dispatch. An immutable compact
+original commits separately before history/audit projection. Projection, stable
+finished audit and owner release then settle atomically. A history UPDATE, audit
+INSERT or owner-release failure cannot erase an already captured original.
 
-Both history completion and finished audit recording must succeed before the
-runtime releases its binding. A release failure keeps the local recording hold
-and prevents ordinary shutdown until retry succeeds. Restore holds an exclusive
-admission/privacy gate through replacement and refuses current live, missing or
-invalid owner proofs before creating undo. Imported backup mappings never confer
-local execution authority, even if a matching lease filename exists.
+On fresh startup, only an existing valid lease whose lock can be acquired proves
+that its owner exited. Captured originals settle locally with their exact
+original evidence and one finished audit, without connecting or replaying SQL.
+If no original was captured, a proven dead pending admission becomes Interrupted
+with unknown status and unavailable duration. Death partway through a script
+does not prove its prefix was rolled back or its suffix was attempted. Legacy or
+imported unbound admissions and missing proof files remain unresolved. Invalid,
+corrupt or expected-but-missing evidence fails safely; no replacement proof file
+is created to guess owner death.
 
-The real PostgreSQL child-process crash and ten SQLite ownership cases pass;
-broader validation is recorded in the
-[ownership ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
-Generic and typed completion
-retry payloads remain process-local until SQLite accepts them; a durable history
-ticket alone does not preserve a failed completion payload across process death.
-Dead-owner recovery cannot reconstruct an audit payload that never became durable.
-The console publication-panic fallback preserves its known status with unavailable
-duration when the owner's monotonic timer is no longer available. No recovery
-automatically reconnects or replays SQL.
+If a notice says the original **was captured locally**, recording is still
+pending, but the capture is durable. If it says **is not durably recorded**, the
+original may be lost on process death. Keep Joinery open, restore writable local
+storage and let recording settle; do not rerun SQL merely to clear the notice.
+Ordinary admission and orderly shutdown retry pending recording and refuse while
+it remains unresolved. Preallocated recovery rollback capacity remains separate
+from ordinary work, and a volatile rollback acknowledgement stays explicitly
+non-durable until capture succeeds.
+
+Transaction-boundary originals have stable identities and audits without
+inventing history entries. Imported audits preserve historical acknowledgement,
+but imported full action/session/retired boundary witnesses are not available
+through the current-only boundary lookup. Complete historical boundary
+presentation remains a separate requirement.
+
+Restore holds an exclusive admission/privacy gate, proves current owners and
+reconciles captured local originals before replacement. Imported backup
+obligations never confer local execution authority. Clear, opt-out, pruning and
+profile deletion continue to suppress visible SQL/history; settlement cannot
+recreate a missing row or removed SQL.
+
+Full validation and both actual PostgreSQL child-process crash cases pass,
+including exact known completion after a failed history UPDATE. The
+[durable-outcome ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
+records completed browser/migration qualification. The normal app remains the
+schema-6 artifact until a separately verified package is recorded. The console
+publication-panic fallback preserves known status with unavailable duration when
+the monotonic timer is unavailable. No recovery automatically reconnects or
+replays SQL.
 
 History writes, full-detail reads, summary pages, compatibility reads and backup
 validation share lifecycle invariants. Missing legacy provenance defaults to
 Recorded; explicit null or unknown provenance is invalid. Admitted rows cannot
 carry a terminal status, measured duration or completed execution/DML/DDL
-evidence. An unknown completion cannot carry a measured duration. Schema 6 adds
-SQL-free ownership and physically fences cached schema-5 history/profile/audit writers.
-Preserve an original backup and use a separate evaluation metadata root; the
-previous `952758b` app cannot open schema-6 metadata. Do not run older and newer
+evidence. An unknown completion cannot carry a measured duration. Schema 7 adds
+bounded original capture and physically fences cached schema-6 history/profile/
+audit writers. Preserve an original backup and use a separate evaluation metadata
+root; the last verified `f39dce3` app cannot open schema-7 metadata. Do not run older and newer
 builds against the same directory. Lease files are retained, and ticket/privacy/
 owner lifetime budgets remain incomplete. The proof assumes Joinery's private
 directory and stable files; it does not defend against a same-user actor replacing
@@ -137,25 +166,25 @@ API still returns up to 1,000 full matching entries; the history view and palett
 use the new summary/detail APIs.
 
 The [atomic history/privacy contract](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
-now has local execution/storage coverage. Durable reservations and a complete
-resource/reclamation policy for lifetime tickets, clear eras and privacy
-generations remain required; console count gates do not bound these tables.
-Durable failed generic/typed completion payloads, full-capacity measurements,
-account qualification and normal packaged owner acceptance also remain open. Keep both count gates and
+now has local execution/storage coverage. Schema 7 adds bounded outcome
+reservations; a complete resource/reclamation policy for lifetime tickets, clear
+eras and privacy generations remains required. Console count gates do not bound
+these tables. Lifetime/full-capacity measurements,
+account qualification and normal packaged owner acceptance remain open. Keep both count gates and
 `retentionEnabled=false`. See the
 [capability matrix](datagrip-feature-matrix.md) and
 [verification ledger](replacement-verification.md).
 
 ## Reproducible local acceptance
 
-Current-source full validation passes 1,038 frontend and 687 standard Rust cases,
+The preceding schema-6 checkpoint passed 1,038 frontend and 687 standard Rust cases,
 including all eight history integration and nine encrypted history privacy cases.
 Ten actual isolated PostgreSQL script cases, the new actual child-process crash
 case, ten SQLite ownership cases and six actual browser cases pass. All 73
 synthetic Snowflake execution and 27 offline runner cases pass. Independent
 review finds no material issue. Exact
 source scopes, commands, initial failures and corrections are
-recorded in the ledger. The current normal SDK-bearing ARM64 package from clean
+recorded in the ledger. The preceding normal SDK-bearing ARM64 package from clean
 `f39dce3` passes resources, strict ad-hoc signature and guarded SDK startup with
 zero authentication/SQL. It is local and uninstalled at
 `src-tauri/target/release/bundle/macos/Joinery.app`. Its 562 captured source hashes
@@ -192,3 +221,19 @@ its summary. Confirm the complete statement opens without running. Repeat with
 history text disabled, then clear history and verify that refresh and the palette
 show no retained entries. Actual Snowflake and normal packaged macOS acceptance
 remain separate gates.
+
+For the schema-7 source checkpoint, full validation passes 1,038 frontend / 720
+standard Rust cases with strict checks. The actual isolated PostgreSQL known and
+unknown completion crash tests, seven browser workflows and two preserved-v6/v7
+migration cases pass. SDK qualification is recorded separately. Reproduce only
+with disposable local fixtures:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --lib persistence::outcomes:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test history_process postgres_history_preserves_known_completion_after_update_fault_and_process_death -- --ignored --exact --nocapture --test-threads=1
+```
+
+The process test creates unique synthetic objects, captures a real PostgreSQL
+completion, injects a failure only in its own SQLite root, kills/reaps only its
+own child and checks exact evidence, audit-once and no replay on fresh starts.
+Never run the helper-only ignored child test by itself.

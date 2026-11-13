@@ -1,38 +1,19 @@
 //! Completion retries carry no query text. Admission owns the sole durable SQL row.
 use super::*;
 
-pub(super) struct PendingHistory {
-    ticket: HistoryTicket,
-    completion: HistoryCompletion,
-    audit: AuditEntry,
-    history_pending: bool,
-    audit_pending: bool,
-    ownership_pending: bool,
-}
+pub(super) type PendingHistory = Arc<outcome_recording::OutcomeCell>;
 
 pub(super) struct AdmissionOwner<'a> {
     studio: &'a Studio,
-    ticket: HistoryTicket,
-    connection_id: String,
-    digest: String,
-    action: &'static str,
+    cell: Arc<outcome_recording::OutcomeCell>,
     armed: bool,
 }
 
 impl<'a> AdmissionOwner<'a> {
-    pub(super) fn new(
-        studio: &'a Studio,
-        ticket: HistoryTicket,
-        connection_id: &str,
-        digest: &str,
-        action: &'static str,
-    ) -> Self {
+    pub(super) fn new(studio: &'a Studio, cell: Arc<outcome_recording::OutcomeCell>) -> Self {
         Self {
             studio,
-            ticket,
-            connection_id: connection_id.into(),
-            digest: digest.into(),
-            action,
+            cell,
             armed: true,
         }
     }
@@ -46,20 +27,7 @@ impl Drop for AdmissionOwner<'_> {
         if !self.armed {
             return;
         }
-        let _ = self.studio.retain_history_completion_with_action(
-            self.ticket.clone(),
-            HistoryCompletion {
-                provenance: HistoryProvenance::Interrupted,
-                status: None,
-                elapsed_ms: None,
-                execution_summary: None,
-                snowflake_dml: None,
-                snowflake_ddl: None,
-            },
-            &self.connection_id,
-            &self.digest,
-            self.action,
-        );
+        self.studio.interrupt_outcome(&self.cell);
     }
 }
 
@@ -67,8 +35,7 @@ impl Drop for AdmissionOwner<'_> {
 pub(super) struct RunOwner {
     studio: Arc<Studio>,
     session: Arc<Session>,
-    ticket: HistoryTicket,
-    digest: String,
+    cell: Arc<outcome_recording::OutcomeCell>,
     events: EventHandler,
     completion: Arc<Mutex<Option<HistoryCompletion>>>,
     armed: bool,
@@ -78,16 +45,14 @@ impl RunOwner {
     pub(super) fn new(
         studio: Arc<Studio>,
         session: Arc<Session>,
-        ticket: HistoryTicket,
-        digest: String,
+        cell: Arc<outcome_recording::OutcomeCell>,
         events: EventHandler,
         completion: Arc<Mutex<Option<HistoryCompletion>>>,
     ) -> Self {
         Self {
             studio,
             session,
-            ticket,
-            digest,
+            cell,
             events,
             completion,
             armed: true,
@@ -103,25 +68,11 @@ impl Drop for RunOwner {
         if !self.armed {
             return;
         }
-        let id = self.ticket.id();
+        let id = self.cell.descriptor.operation_id.as_str();
         // A callback may panic after we retained or committed the known result.
         // Never replace that stronger evidence with an interrupted projection.
         let completion = self.completion.lock().clone();
-        if completion.is_none() {
-            let _ = self.studio.retain_history_completion(
-                self.ticket.clone(),
-                HistoryCompletion {
-                    provenance: HistoryProvenance::Interrupted,
-                    status: None,
-                    elapsed_ms: None,
-                    execution_summary: None,
-                    snowflake_dml: None,
-                    snowflake_ddl: None,
-                },
-                &self.session.profile.id,
-                &self.digest,
-            );
-        }
+        self.studio.interrupt_outcome(&self.cell);
         self.session.closed.store(true, Ordering::Release);
         self.session.driver.close();
         self.studio.jobs.lock().remove(id);
@@ -155,90 +106,7 @@ impl Drop for RunOwner {
 }
 
 impl Studio {
-    pub(super) fn retain_history_completion(
-        &self,
-        ticket: HistoryTicket,
-        completion: HistoryCompletion,
-        connection_id: &str,
-        digest: &str,
-    ) -> AppResult<()> {
-        self.retain_history_completion_with_action(
-            ticket,
-            completion,
-            connection_id,
-            digest,
-            "execute",
-        )
-    }
-
-    fn retain_history_completion_with_action(
-        &self,
-        ticket: HistoryTicket,
-        completion: HistoryCompletion,
-        connection_id: &str,
-        digest: &str,
-        action: &str,
-    ) -> AppResult<()> {
-        let id = ticket.id().to_owned();
-        let audit = AuditEntry {
-            id: format!("{id}:finished"),
-            occurred_at: now_ms(),
-            connection_id: connection_id.into(),
-            action: action.into(),
-            digest: digest.into(),
-            outcome: completion
-                .status
-                .map_or_else(|| "interrupted".into(), |status| format!("{status:?}")),
-        };
-        self.pending_history.lock().insert(
-            id,
-            PendingHistory {
-                ticket,
-                completion,
-                audit,
-                history_pending: true,
-                audit_pending: true,
-                ownership_pending: true,
-            },
-        );
-        self.flush_pending_history()
-    }
-
     pub(super) fn flush_pending_history(&self) -> AppResult<()> {
-        let mut pending = self.pending_history.lock();
-        for receipt in pending.values_mut() {
-            if receipt.history_pending
-                && self
-                    .persistence
-                    .finish_history(&receipt.ticket, &receipt.completion)
-                    .is_ok()
-            {
-                receipt.history_pending = false;
-            }
-            if receipt.audit_pending && self.persistence.record_audit_once(&receipt.audit).is_ok() {
-                receipt.audit_pending = false;
-            }
-            if receipt.ownership_pending
-                && !receipt.history_pending
-                && !receipt.audit_pending
-                && self
-                    .persistence
-                    .release_owned_history(&self.history_owner, &receipt.ticket)
-                    .is_ok()
-            {
-                receipt.ownership_pending = false;
-            }
-        }
-        pending.retain(|_, receipt| {
-            receipt.history_pending || receipt.audit_pending || receipt.ownership_pending
-        });
-        if pending.is_empty() {
-            Ok(())
-        } else {
-            Err(AppError::new(
-                ErrorCode::Conflict,
-                "A query outcome could not be recorded locally; keep Joinery open and retry closing after local storage is available",
-            ))
-        }
+        self.flush_outcome_map(&self.pending_history)
     }
 }

@@ -729,9 +729,23 @@ mod tests {
             snowflake_dml: None,
             snowflake_ddl: None,
         };
-        let ticket = studio.persistence.begin_history(&seed).unwrap();
+        let cell = studio
+            .admit_outcome(
+                studio.outcome_memory.ordinary().unwrap(),
+                Some(&seed),
+                crate::persistence::OutcomeDescriptor {
+                    operation_id: seed.id.clone(),
+                    connection_id: seed.connection_id.clone(),
+                    session_id: new_id(),
+                    started_at: seed.started_at,
+                    digest: "a".repeat(64),
+                    kind: crate::persistence::OutcomeKind::Execute { planned: 1 },
+                },
+                crate::persistence::OutcomePool::Ordinary,
+            )
+            .unwrap();
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v7 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
         let completion = HistoryCompletion {
             provenance: HistoryProvenance::Recorded,
             status: Some(RunStatus::Completed),
@@ -740,11 +754,7 @@ mod tests {
             snowflake_dml: None,
             snowflake_ddl: None,
         };
-        assert!(
-            studio
-                .retain_history_completion(ticket, completion, &seed.connection_id, &"a".repeat(64))
-                .is_err()
-        );
+        assert!(studio.finish_outcome_history(&cell, &completion).is_err());
         assert_eq!(studio.pending_history.lock().len(), 1);
         assert_eq!(
             studio.history_entry(&seed.id).unwrap().unwrap().provenance,

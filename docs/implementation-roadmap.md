@@ -1,5 +1,25 @@
 # Joinery implementation roadmap
 
+## Current work: durable original outcomes
+
+Schema-7 reserve/capture/settle authority, separate emergency rollback capacity,
+bounded compact retry cells and current-only recovery now pass full validation
+(1,038 frontend / 720 standard Rust cases), actual PostgreSQL script/crash tests,
+seven browser workflows and preserved-v6 migration checks. Independent review
+found no remaining material issue in its scope. All 73 synthetic SDK and 27
+offline runner cases pass; two optimized performance cases remain ignored.
+Commit the reviewed increment and package from that clean feature commit.
+The prior schema-6 app is separately preserved. See the
+[ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
+for exact results, initial failures and source-pin qualifications.
+
+Next required increments: safe lifetime marker/owner/ticket/privacy reclamation,
+full-capacity memory/recovery measurements, the exact delayed-preclaim migration
+race and complete imported historical boundary details. Then demonstrate normal
+packaged/account/hands-on workflows; all applicable DataGrip requirements remain
+open until individually accepted. The [contract](history-durable-outcomes-design.md)
+records bounds and limitations. The following schema-6 checkpoint is historical.
+
 ## Process-owned history recovery (13 November 2026, locally verified)
 
 The schema-6 increment binds generic/typed admission to an OS-held owner lease.
@@ -35,7 +55,7 @@ decisions, and the real-process acceptance required before implementation claims
 
 This preceding checkpoint is pinned to schema 5 and clean `952758b`; its source
 status and remaining crash-owner work describe that historical point. Follow the
-schema-6 section above for current source and its still-open acceptance gates.
+schema-7 current-work section above for current source and open acceptance gates.
 
 The coordinated schema-5 increment is local to the feature branch and is not
 release-qualified. It admits history before dispatch, retains exact

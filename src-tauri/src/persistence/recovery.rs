@@ -470,10 +470,15 @@ mod tests {
     // These fixtures start with an empty current journal. Rebuild an actual
     // legacy schema, rather than changing only user_version on newer tables.
     fn legacy_empty_backup(path: &Path, version: i64) {
-        assert!((1..=5).contains(&version));
+        assert!((1..=6).contains(&version));
         let old = Connection::open(path).unwrap();
+        if version == 6 {
+            old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; ALTER TABLE profiles_v7 RENAME TO profiles_v6; ALTER TABLE history_v7 RENAME TO history_v6; ALTER TABLE audit_v7 RENAME TO audit_v6; PRAGMA user_version=6;").unwrap();
+            validate(&old).unwrap();
+            return;
+        }
         if version == 5 {
-            old.execute_batch("DROP TABLE history_owners_v6; ALTER TABLE profiles_v6 RENAME TO profiles_v5; ALTER TABLE history_v6 RENAME TO history_v5; ALTER TABLE audit_v6 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
+            old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; DROP TABLE history_owners_v6; ALTER TABLE profiles_v7 RENAME TO profiles_v5; ALTER TABLE history_v7 RENAME TO history_v5; ALTER TABLE audit_v7 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
             validate(&old).unwrap();
             return;
         }
@@ -502,7 +507,7 @@ mod tests {
             }
         }
         for base in ["profiles", "history", "audit"] {
-            old.execute_batch(&format!("ALTER TABLE {base}_v6 RENAME TO {base};"))
+            old.execute_batch(&format!("ALTER TABLE {base}_v7 RENAME TO {base};"))
                 .unwrap();
         }
         if version >= 2 {
@@ -1002,14 +1007,14 @@ mod tests {
         let path = db.backup_path(&snapshot.id).unwrap();
         let edited = Connection::open(&path).unwrap();
         edited
-            .execute("INSERT INTO profiles_v6 VALUES('bad','{}')", [])
+            .execute("INSERT INTO profiles_v7 VALUES('bad','{}')", [])
             .unwrap();
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(
             db.restore_metadata_backup(&snapshot.id, &changed.digest)
                 .is_err()
         );
-        edited.execute_batch("DELETE FROM profiles_v6; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v6; END;").unwrap();
+        edited.execute_batch("DELETE FROM profiles_v7; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v7; END;").unwrap();
         drop(edited);
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(

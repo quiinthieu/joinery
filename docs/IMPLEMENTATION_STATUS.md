@@ -1,5 +1,29 @@
 # Implementation and release status
 
+## Durable original outcomes (13 November 2026, local verification)
+
+Schema 7 reserves ordinary work before dispatch, captures compact immutable
+original outcomes before secondary writes/callbacks and atomically settles
+history, audit-once and owner release. Captured originals survive process death;
+uncaptured results remain truthfully unknown. Separate preallocated rollback
+capacity preserves recovery when ordinary recording is unavailable.
+
+Full validation passes 1,038 frontend / 720 standard Rust tests and strict checks.
+Ten actual PostgreSQL script cases, both actual owned-child crash cases, two
+preserved-v6/current-v7 migration cases and seven actual Chromium workflows pass.
+Independent review found no remaining material issue in its recorded scope.
+All 73 synthetic SDK and 27 offline runner cases pass (two optimized performance
+cases remain ignored). Packaging is next. The prior normal
+schema-6 app is separately preserved; source checks do not qualify its replacement.
+See the [ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
+for initial failures, corrections and the one browser-fixture source-pin difference.
+
+Lifetime marker/owner/ticket/privacy collection, full-capacity/RSS evidence, the
+exact delayed-preclaim migration race, imported historical boundary details and
+normal packaged/account/hands-on acceptance remain incomplete. The
+[contract](history-durable-outcomes-design.md) records precise resource bounds.
+No installation, publication or account activity is part of this increment.
+
 ## Process-owned history recovery (13 November 2026, locally verified)
 
 Schema-6 source implements OS-leased generic/typed history ownership, truthful
@@ -18,7 +42,7 @@ strict ad-hoc signature, original license bytes and guarded SDK startup with zer
 authentication/SQL; see the
 [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
 
-The current local, uninstalled app is schema 6 at
+At this historical checkpoint, the local, uninstalled app is schema 6 at
 `src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0. Packaging took
 263.887 seconds; the existing nonfatal LLVM stripping warning remains.
 Executable SHA-256 is
@@ -29,8 +53,9 @@ receipts. The preceding `952758b` schema-5 app is separately preserved with all
 that older app. About 192 GiB is free; debug artifacts occupy 8.9 GiB and release
 artifacts 3.0 GiB. The approved cleanup reclaimed 135.8 GiB; nothing further was
 deleted.
-Durable failed completion payloads, lifetime resource budgets, full-capacity and
-actual account/normal owner workflows remain incomplete. No installation,
+At this checkpoint, durable failed completion payloads, lifetime resource budgets,
+full-capacity and actual account/normal owner workflows remained incomplete.
+The schema-7 section above records subsequent source work. No installation,
 publication or account activity is part of these checks.
 
 ## Atomic history/privacy integration (13 November 2026, locally verified)

@@ -271,6 +271,8 @@ impl Studio {
         approval: Option<&str>,
     ) -> AppResult<SnowflakeDdlResult> {
         let _recovery_activity = self.begin_recovery_activity()?;
+        // Bound queued tasks before TaskTracker allocates/spawns them.
+        let memory = self.outcome_memory.ordinary()?;
         let studio = self.clone();
         let plan_id = plan_id.to_owned();
         let approval = approval.map(str::to_owned);
@@ -286,7 +288,7 @@ impl Studio {
             self.dml_tasks.spawn(async move {
                 let _recovery_activity = recovery_activity;
                 studio
-                    .execute_snowflake_ddl_owned(&plan_id, approval.as_deref())
+                    .execute_snowflake_ddl_owned(&plan_id, approval.as_deref(), memory)
                     .await
             })
         };
@@ -302,6 +304,7 @@ impl Studio {
         &self,
         plan_id: &str,
         approval: Option<&str>,
+        memory: outcome_memory::MemoryLease,
     ) -> AppResult<SnowflakeDdlResult> {
         let session_id = {
             let plans = self.plans.lock();
@@ -317,7 +320,7 @@ impl Studio {
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
-        let (request, preflight, digest, history_ticket, history_started_at) = {
+        let (request, preflight, cell, mut history_owner) = {
             let _configuration = self.configuration_mutation_guard()?;
             self.flush_pending_history()?;
             self.flush_pending_snowflake_receipts()?;
@@ -366,12 +369,6 @@ impl Studio {
                 ));
             }
             session.driver.validate_snowflake_ddl(&request)?;
-            self.persistence.audit(
-                &session.profile.id,
-                "snowflake-ddl",
-                &stored.digest,
-                "started",
-            )?;
             let seed = HistoryEntry {
                 provenance: HistoryProvenance::Admitted,
                 execution_summary: None,
@@ -386,9 +383,24 @@ impl Studio {
                 status: None,
                 elapsed_ms: None,
             };
-            let history_ticket = self
-                .persistence
-                .begin_owned_history(&self.history_owner, &seed)?;
+            let cell = self.admit_outcome(
+                memory,
+                Some(&seed),
+                crate::persistence::OutcomeDescriptor {
+                    operation_id: seed.id.clone(),
+                    connection_id: profile.id.clone(),
+                    session_id: session_id.clone(),
+                    started_at: seed.started_at,
+                    digest: stored.digest.clone(),
+                    kind: crate::persistence::OutcomeKind::SnowflakeDdl {
+                        kind: preflight.kind,
+                        qualified_target: preflight.qualified_target.clone(),
+                    },
+                },
+                crate::persistence::OutcomePool::Ordinary,
+            )?;
+            // Arm before invoking any driver callback after admission.
+            let history_owner = history_receipts::AdmissionOwner::new(self, cell.clone());
             session.metadata_gate.lock().hold_catalog();
             *session.observed_runtime.lock() = None;
             *session.completion.lock() = None;
@@ -398,21 +410,8 @@ impl Studio {
                 .retain(|_, plan| plan.plan.session_id != session_id);
             // The adapter consumes its composite grant before invalidating its
             // catalog. Calling invalidate_relation_catalog here would revoke it.
-            (
-                request,
-                preflight,
-                stored.digest,
-                history_ticket,
-                seed.started_at,
-            )
+            (request, preflight, cell, history_owner)
         };
-        let mut history_owner = history_receipts::AdmissionOwner::new(
-            self,
-            history_ticket.clone(),
-            &session.profile.id,
-            &digest,
-            "snowflake-ddl",
-        );
         let started = Instant::now();
         let mut result = session.driver.snowflake_ddl(&session_id, &request).await?;
         if result.kind != preflight.kind
@@ -430,9 +429,8 @@ impl Studio {
         {
             result.retired = true;
             result.state.transaction_control_authority = None;
-            self.disconnect(&session_id);
         }
-        let entry = HistoryEntry {
+        let completion = HistoryCompletion {
             provenance: HistoryProvenance::Recorded,
             execution_summary: None,
             snowflake_ddl: Some(SnowflakeDdlEvidence {
@@ -444,12 +442,6 @@ impl Studio {
                 retired: result.retired,
             }),
             snowflake_dml: None,
-            id: history_ticket.id().into(),
-            connection_id: session.profile.id.clone(),
-            connection_name: session.profile.name.clone(),
-            started_at: history_started_at,
-            sql: None,
-            statement_count: 1,
             status: Some(match result.statement_outcome {
                 SnowflakeDdlOutcome::Succeeded => RunStatus::Completed,
                 SnowflakeDdlOutcome::Rejected => RunStatus::Failed,
@@ -457,16 +449,14 @@ impl Studio {
             }),
             elapsed_ms: Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32),
         };
-        let recording =
-            self.retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(
-                history_ticket,
-                entry,
-                digest,
-                snowflake_receipts::OriginalResult::Ddl(result.clone()),
-            ));
+        let recording = self.finish_outcome_history(&cell, &completion);
         history_owner.disarm();
-        if recording.is_err() {
-            snowflake_receipts::recording_notice(&mut result.error);
+        // Preserve the returned original before retiring a driver; close may panic.
+        if result.retired {
+            self.disconnect(&session_id);
+        }
+        if let Err(recording) = recording {
+            snowflake_receipts::recording_notice(&mut result.error, &recording);
         }
         if !result.retired {
             self.publish_observed_runtime(&session, &result.state);

@@ -1,5 +1,19 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Durable original outcomes: current local source
+
+Schema-7 capture/settlement passes full validation (1,038 frontend / 720 standard
+Rust cases), actual PostgreSQL crash recovery, seven browser workflows and
+preserved-v6 migration checks. Independent review has no remaining material
+finding within scope. All 73 synthetic SDK and 27 offline runner cases pass;
+two optimized performance cases remain ignored. Packaging is next; the prior
+schema-6 `f39dce3` app is separately preserved. The
+[ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
+records the one corrected-browser-fixture source-pin difference. The
+[contract and remaining gates](history-durable-outcomes-design.md) distinguish
+captured originals from volatile results and current authority from imported
+history. This correctness prerequisite does not establish replacement readiness.
+
 ## Current Snowflake/macOS replacement readiness
 
 The confirmed target is the latest stable DataGrip with external-browser SSO,
@@ -20,7 +34,7 @@ new source or actual Snowflake behavior.
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
-| History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority, atomic console transitions and locally verified schema-6 process-owner recovery in the `f39dce3` app; [workflow and evidence](query-history.md) | Durable failed completion payloads, retention/lifetime policy, full-capacity behavior and normal packaged Snowflake/owner recovery remain open |
+| History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority, atomic console transitions, process-owner recovery and locally verified schema-7 reserve/capture/settle source; [workflow and evidence](query-history.md) | Retention/lifetime reclamation, full-capacity behavior, exact delayed-preclaim migration, imported historical boundary detail and normal packaged Snowflake/owner recovery remain open |
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |

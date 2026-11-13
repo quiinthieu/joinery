@@ -1,15 +1,33 @@
-# Durable original history outcomes: next increment
+# Durable original history outcomes: implementation and acceptance
 
-Status: design only. Schema 6 does not implement this outbox. This is a required
-correctness prerequisite, not DataGrip replacement acceptance.
+Status: schema-7 storage/runtime implementation passes full validation, actual
+PostgreSQL crash recovery, browser restart/reopen and preserved-v6 migration
+checks. All 73 synthetic SDK and 27 offline runner cases pass; two optimized
+performance cases remain ignored. Packaging is next. The last verified normal
+app remains schema 6 at `f39dce3`, separately preserved.
+This is a required correctness prerequisite, not DataGrip replacement acceptance.
 
-Generic and typed completion/audit retry payloads currently live in memory.
+The first source-stable core run (`outcomes-core-first`, 13 November 2026)
+compiled but failed: 544 passed, 112 failed, four ignored. Storage validation and
+schema-7 backup integration were corrected; the complete passing validation has
+1,038 frontend and 720 standard Rust cases. Initial failures remain in the ledger.
+The preceding actual PostgreSQL process regression reproduced loss of a known
+completion after a history UPDATE fault and process death. Evidence and final
+checks are recorded in the [verification ledger](replacement-verification.md).
+
+Runtime review required three corrections: ordinary BEGIN/COMMIT must also gate
+on generic recording failures; admission guards must precede driver callbacks;
+and original results must be captured before retirement/close callbacks. New
+regressions cover these boundaries and pass full validation. Independent review
+found no remaining material issue within its recorded scope.
+
+In the schema-6 baseline, generic and typed completion/audit retry payloads live in memory.
 The history ticket and owner lease survive a crash, but an original result whose
 history write failed does not. Proven dead-owner recovery must therefore keep its
 outcome unknown unless completion was already durable. Typed transaction-boundary
-receipts have no history ticket or owner binding today.
+receipts had no history ticket or owner binding in that baseline.
 
-## Proposed ordering and authority
+## Implemented ordering and authority
 
 Use the existing metadata SQLite database for a bounded, SQL-free obligation
 record, keyed by a stable operation identity. Reserve capacity and bind ordinary
@@ -29,18 +47,19 @@ not turn a settled boundary into a new operation. Budget compact settled markers
 and deduplication authority separately, or prove existing ticket/audit authority
 suffices for every producer, including history-less boundaries.
 
-Suggested APIs are `reserve_owned_operation`, `capture_original_outcome` and
-`settle_original_outcome`. The payload is a strict whitelist of owner identity,
-optional exact history ticket, original completion/evidence and frozen audit
-tuples. It must exclude SQL, credentials, bound values, result rows, arbitrary
+The storage APIs are `reserve_owned_operation`, `capture_original_outcome` and
+`settle_original_outcome`. The captured payload is a strict whitelist of descriptor identity, original
+completion/evidence and a frozen completion timestamp. Separate immutable
+reservation metadata binds the owner, pool and optional exact history ticket;
+stable audit tuples are derived from that binding and frozen timestamps. It must exclude SQL, credentials, bound values, result rows, arbitrary
 error strings, `HistoryEntry` and complete SDK result objects. Typed audits need
-stable identities/timestamps and `record_audit_once`; the current `audit()` creates
+stable identities/timestamps and `record_audit_once`; the legacy `audit()` creates
 a new identity on each retry. Preserve original acknowledgement, rejection and
 unknown classifications without claiming verified database effects.
 
 Keep initial capture separate from projection so an UPDATE, audit INSERT or
 binding DELETE fault does not roll back the captured original. If the initial
-outbox INSERT/commit also fails, retain the original in bounded memory, retain
+capture transaction also fails, retain the original in bounded memory, retain
 ownership, warn that it is not durable and block ordinary admission. Capacity
 reservation does not guarantee a later write succeeds during ENOSPC, I/O failure,
 read-only storage or lock contention. A second journal adds cross-store recovery
@@ -84,33 +103,36 @@ under EX. Recheck the exact current schema version after acquiring SH and before
 returning a Studio; preserve a genuine version bump and physical writer fencing.
 The existing v6 startup already rejects a newer schema through its post-SH
 `schema_version` validation, including an opener paused before owner claim.
-Already initialized idle or boundary-only v6 Studios still require live-lease
-exclusion. Test both races in actual separate processes; this design is not a
-claim that migration exclusion has been implemented or proved.
+Already initialized idle or boundary-only v6 Studios require live-lease exclusion.
+The implementation holds these proofs; actual preserved-v6 process checks prove
+idle-owner exclusion and old-binary rejection after upgrade. The exact delayed
+pre-owner-claim interleaving remains unverified, as detailed below.
 
 ## Required resource decisions
 
-The read-only field inventory found: history completion readers cap encoding at
+The schema-6 read-only field inventory found: history completion readers cap encoding at
 65,536 bytes, without the matching write-size guard; audit strings have no
 general size validation; typed retry maps retain full results containing unbounded
 errors/session state. New outbox validation must use its own strict whitelist
 without silently tightening legacy history decoding.
 
-Proposed initial limits, requiring implementation and exact boundary tests:
+Implemented admission/encoding limits; complete capacity and lifetime acceptance
+remain open:
 
-| Resource | Proposed limit / behavior |
+| Resource | Implemented limit / behavior |
 | --- | --- |
-| Entire canonical obligation | 32 KiB encoded UTF-8, including identities/evidence/audits; bounded serialization, no truncation |
+| Canonical captured payload | 32 KiB encoded UTF-8 for descriptor, completion or boundary evidence, and frozen timestamp; bounded serialization, no truncation. Reservation, binding and audit metadata are additional |
 | Ordinary reservations | 32 per Studio, 128 per metadata root; include in-flight and captured/unsettled records |
 | Separate emergency rollback pool | 32 per Studio, 128 per root; ordinary work cannot use it. Recording failure/full capacity still permits recovery rollback in a preallocated volatile session slot with an explicit warning |
-| Root reserved payload | 8 MiB, 256 total slots × 32 KiB; reserve worst-case bytes before ordinary dispatch |
-| Retained payload memory | 64 slots / 2 MiB per Studio plus at most 256 KiB replay scratch; account for temporary copies and replace full result objects in retry maps |
-| Replay transaction | At most eight records / 256 KiB; keyset batches, yield between them, stop the pass on write failure |
+| Root reserved captured-payload allowance | 8 MiB, 256 total slots × 32 KiB; reserve worst-case payload bytes before ordinary dispatch. This excludes reservation/binding/audit/history metadata and SQLite/WAL/index overhead |
+| Retained payload memory | 64 preallocated 32 KiB buffers / 2 MiB per Studio; descriptor, lease and other metadata are additional. Bounded serialization borrows fields rather than cloning payloads. Replay scratch is at most eight 32 KiB payloads, plus decoded metadata; overall RSS is not established |
+| Replay transaction | At most eight records / 256 KiB of encoded source payload; decoded metadata and canonicalization scratch are additional. Keyset batches, yield between them, stop the pass on write failure |
 | Owner files | 4,096/root admission ceiling, counted safely before creation; refuse new ownership at the ceiling. Safe dead/unreferenced collection is still required for practical lifetime behavior |
 
 The 64-slot memory pool includes every preallocated volatile rollback slot and
 all retained originals, including those from disconnected sessions. Temporary
-copies count against the byte budget, not just encoded payload length. Opening a
+canonicalization copies are additional to this pool, as quantified below;
+overall memory accounting and capacity measurements remain incomplete. Opening a
 new session/task requires its safety slot to be available; refuse churn that
 would allocate around a full pool. Never evict an unsettled original to provide
 a new session's fallback slot.
@@ -145,7 +167,14 @@ existing lifetime stores, audit storage or all restore proof handles; keep their
 acceptance gates open until demonstrated. Complete applicable DataGrip history,
 SQL error logs and daily workload acceptance remain separate required work.
 
-## Reproducible acceptance to add
+## Acceptance coverage and remaining checks
+
+The ledger records 21 real SQLite outcome cases, ten actual PostgreSQL script
+cases, both owned-child crash cases, two genuine v6/v7 migration cases and seven
+actual browser workflows. These cover the principal capture/settlement and
+privacy paths below. The following inventory also includes checks not yet
+demonstrated; it must not be read as a list of passing tests. Full-capacity/RSS,
+all exact crash interleavings and normal packaged/account acceptance remain open.
 
 Inject history UPDATE, audit INSERT and ownership DELETE faults separately in a
 real local SQLite store. Prove original capture committed, kill/reap only the
@@ -178,5 +207,51 @@ that is a best-effort signal, not completeness proof. No implementation or
 external qualification was performed by that review.
 The follow-up review also checked transaction boundary admission, schema-version
 validation, fallback ownership, memory accounting and settled deduplication.
-Its three material design clarifications are recorded above; implementation and
-real-process proof remain required.
+Its three material design clarifications are implemented with passing
+regressions. The subsequent read-only implementation review found no remaining
+material issue in storage, runtime, restore and changed browser paths; recorded
+coverage is best-effort, not proof of exhaustive correctness.
+
+## Implementation limits still requiring acceptance
+
+The implementation has a 65,536 settled-marker ceiling and a 4,096 owner-file
+ceiling per root. Safe collection, ticket/privacy ancestry compaction and audit
+retention remain required; these admission ceilings do not establish useful
+lifetime behavior or DataGrip parity.
+
+Imported original-outcome records do not confer local ownership authority. An
+imported settled boundary retains its historical audit acknowledgement, but its
+full action/session/retired witness is not imported into the current-only
+boundary lookup. Complete historical boundary presentation remains incomplete.
+
+If original encoding fails or panics, the cell retains its ownership/admission
+hold and does not fabricate a completion. A result that never reached durable
+capture cannot be recovered as an original after process death. This is a
+separate failure from a captured original awaiting projection.
+
+The preserved real schema-6 harness can test migration against an already idle
+live owner and reject opening schema-7 data with the old binary. The delayed
+pre-owner-claim migration race remains unverified: that frozen harness has no
+pause hook for the exact interleaving. Do not infer it from a hand-built PRAGMA.
+
+No account, normal packaged UI/SSO/restart, installation or hands-on acceptance
+is established by this source increment. Existing schema-6 evidence must not be
+reported as proof of the schema-7 implementation.
+
+Resource review checked JSON escaping against legal identity bounds: targets
+forbid control characters and have three components of at most 255 characters;
+connection IDs have at most 256 UTF-8 bytes. With fixed UUIDs, digests, enums and
+numeric fields, legal typed payloads remain conservatively below 10 KiB even
+with escaping. This supports the 32 KiB encoder allowance; it is not a measured
+RSS ceiling. Reservation metadata is additional, conservatively below 6 KiB per
+record. Multiple descriptor copies, decoded replay fields and encoder scratch
+must be included in future process-memory and full-capacity measurements.
+
+Capture validation canonicalizes into a separate 32 KiB buffer before acquiring
+the database connection lock. Up to 64 producer cells can validate concurrently,
+so this adds up to 2 MiB of transient canonicalization buffers per Studio, plus
+decoded metadata. The runtime encoding mutex alone does not serialize this stage.
+The replay source-byte batch ceiling is not a global scratch or RSS ceiling.
+SDK result/error/request lifetimes, allocator overhead and SQLite caches are
+outside the retained-original buffer allowance; full-capacity memory acceptance
+remains open.

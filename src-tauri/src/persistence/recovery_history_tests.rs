@@ -114,7 +114,7 @@ fn encrypted_history_restore_preserves_disjoint_pending_exact_sql_and_unknown_co
     let connection = store.connection.lock();
     let copies: i64 = connection
         .query_row(
-            "SELECT count(*) FROM history_v6 WHERE json_extract(json,'$.sql')=?1",
+            "SELECT count(*) FROM history_v7 WHERE json_extract(json,'$.sql')=?1",
             [recovered.sql.as_deref()],
             |row| row.get(0),
         )
@@ -293,7 +293,7 @@ fn encrypted_history_restore_conflicting_original_sql_rejects_before_undo() {
             .connection
             .lock()
             .execute(
-                "UPDATE history_v6 SET json=?1 WHERE id=?2",
+                "UPDATE history_v7 SET json=?1 WHERE id=?2",
                 rusqlite::params![serde_json::to_string(&conflicting).unwrap(), original.id],
             )
             .unwrap();
@@ -382,7 +382,7 @@ fn encrypted_history_restore_missing_row_stays_suppressed_after_late_finish() {
     store
         .connection
         .lock()
-        .execute("DELETE FROM history_v6 WHERE id=?1", [&original.id])
+        .execute("DELETE FROM history_v7 WHERE id=?1", [&original.id])
         .unwrap();
     history_restore_apply(&store, &backup, &passphrase).unwrap();
     assert!(store.history_entry(&original.id).unwrap().is_none());
@@ -490,7 +490,7 @@ fn encrypted_history_restore_migrated_v4_sql_cannot_return_after_live_clear() {
     let connection = store.connection.lock();
     let retained: i64 = connection
         .query_row(
-            "SELECT count(*) FROM history_v6 WHERE json_extract(json,'$.sql')=?1",
+            "SELECT count(*) FROM history_v7 WHERE json_extract(json,'$.sql')=?1",
             [original.sql.as_deref()],
             |row| row.get(0),
         )

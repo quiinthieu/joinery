@@ -1,11 +1,14 @@
 //! SQL-free runtime ownership. Only a retained OS lease proves liveness/death.
+#[cfg(test)]
+use super::HistoryTicket;
 use super::history::lifecycle;
-use super::{HistoryCompletion, HistoryTicket, Persistence, db_error, schema_version};
+use super::{HistoryCompletion, Persistence, db_error, schema_version};
 use crate::domain::*;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 pub(super) const TABLE: &str = "history_owners_v6";
@@ -27,8 +30,37 @@ fn canonical_nonce(value: &str) -> bool {
 
 /// Never unlink this file: its stable inode is the durable ownership identity.
 pub(crate) struct HistoryOwner {
-    nonce: String,
+    pub(super) nonce: String,
     lease: PrivateFile,
+    operation_gate: Arc<OperationGateState>,
+}
+
+/// All operation guards in one Studio share one open description and lock.
+/// No descriptor duplication or per-operation filesystem writes are needed.
+struct OperationGateState {
+    lease: PrivateFile,
+    users: parking_lot::Mutex<usize>,
+}
+pub(crate) struct OperationGate {
+    state: Arc<OperationGateState>,
+}
+impl Drop for OperationGate {
+    fn drop(&mut self) {
+        let mut users = self.state.users.lock();
+        *users -= 1;
+        if *users == 0 {
+            let _ = self.state.lease.file.unlock();
+        }
+    }
+}
+impl OperationGate {
+    pub(super) fn validate(&self, owner: &HistoryOwner, root: &Path) -> AppResult<()> {
+        if !Arc::ptr_eq(&self.state, &owner.operation_gate) {
+            return Err(conflict());
+        }
+        owner.lease.validate(root)?;
+        self.state.lease.validate(root)
+    }
 }
 
 struct PrivateFile {
@@ -207,19 +239,64 @@ pub(super) struct AdmissionGate {
 }
 impl AdmissionGate {
     pub(super) fn claim(root: &Path, exclusive: bool) -> AppResult<Self> {
-        let lease = match PrivateFile::open(root, false, "history-admission.lock", true) {
-            Ok(Some(file)) => file,
-            _ => PrivateFile::open(root, false, "history-admission.lock", false)?
-                .ok_or_else(conflict)?,
-        };
-        // Every opener makes the stable gate durable before admitting work.
-        lease.file.sync_all().map_err(|_| conflict())?;
-        #[cfg(unix)]
-        lease.directory_file.sync_all().map_err(|_| conflict())?;
+        let lease = durable_root_file(root, "history-admission.lock")?;
         if !lease.lock(!exclusive)? {
             return Err(conflict());
         }
         Ok(Self { _lease: lease })
+    }
+}
+
+fn durable_root_file(root: &Path, name: &str) -> AppResult<PrivateFile> {
+    let lease = match PrivateFile::open(root, false, name, true) {
+        Ok(Some(file)) => file,
+        _ => PrivateFile::open(root, false, name, false)?.ok_or_else(conflict)?,
+    };
+    lease.file.sync_all().map_err(|_| conflict())?;
+    #[cfg(unix)]
+    lease.directory_file.sync_all().map_err(|_| conflict())?;
+    Ok(lease)
+}
+
+const MAX_OWNER_FILES: usize = 4096;
+fn owner_names(root: &Path) -> AppResult<Vec<String>> {
+    let directory = root.join("history-owners");
+    if fs::symlink_metadata(&directory)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Ok(Vec::new());
+    }
+    let _directory = directory_file(&directory)?;
+    let mut result = Vec::new();
+    for entry in fs::read_dir(&directory).map_err(|_| conflict())? {
+        let name = entry.map_err(|_| conflict())?.file_name();
+        let name = name.to_str().ok_or_else(conflict)?;
+        let nonce = name.strip_suffix(".lock").ok_or_else(conflict)?;
+        if !canonical_nonce(nonce) || result.len() >= MAX_OWNER_FILES {
+            return Err(conflict());
+        }
+        result.push(nonce.to_owned());
+    }
+    result.sort();
+    Ok(result)
+}
+
+/// Migration must exclude idle and boundary-only Studios too. The admission
+/// gate is already EX before enumerating, and these locks survive its commit.
+pub(super) struct MigrationOwners {
+    _owners: Vec<PrivateFile>,
+}
+impl MigrationOwners {
+    pub(super) fn prove(root: &Path) -> AppResult<Self> {
+        let mut owners = Vec::new();
+        for nonce in owner_names(root)? {
+            let file = existing_owner(root, &nonce)?.ok_or_else(conflict)?;
+            if !file.lock(false)? {
+                return Err(conflict());
+            }
+            owners.push(file);
+        }
+        Ok(Self { _owners: owners })
     }
 }
 
@@ -281,12 +358,12 @@ pub(super) fn merge_for_restore(current: &Connection, candidate: &Connection) ->
     Ok(())
 }
 
-fn recover_nonce(connection: &Connection, nonce: &str) -> AppResult<()> {
+fn recover_legacy_nonce(connection: &Connection, nonce: &str) -> AppResult<()> {
     // A keyset cursor remains deterministic while each recovered binding is removed.
     let mut after = String::new();
     loop {
         let id: Option<String> = connection.query_row(
-            "SELECT ticket_id FROM history_owners_v6 WHERE owner_nonce=?1 AND ticket_id>?2 ORDER BY ticket_id LIMIT 1",
+            "SELECT ticket_id FROM history_owners_v6 WHERE owner_nonce=?1 AND ticket_id>?2 AND ticket_id NOT IN (SELECT ticket_id FROM outcome_bindings_v7 WHERE ticket_id IS NOT NULL) ORDER BY ticket_id LIMIT 1",
             params![nonce,after], |row| row.get(0),
         ).optional().map_err(db_error)?;
         let Some(id) = id else {
@@ -318,6 +395,24 @@ fn recover_nonce(connection: &Connection, nonce: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn recover_proven(connection: &mut Connection, nonce: &str, lease: &PrivateFile) -> AppResult<()> {
+    loop {
+        lease.validate(&lease.root)?;
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let more = super::outcomes::recover_batch(&tx, nonce)?;
+        if !more {
+            recover_legacy_nonce(&tx, nonce)?;
+        }
+        tx.commit().map_err(db_error)?;
+        if !more {
+            return Ok(());
+        }
+        std::thread::yield_now();
+    }
+}
+
 /// All returned handles remain locked until live replacement has completed.
 pub(super) struct RestoreOwners {
     owners: Vec<(String, PrivateFile)>,
@@ -336,14 +431,10 @@ impl RestoreOwners {
         Ok(result)
     }
     pub(super) fn recover(&self, connection: &mut Connection) -> AppResult<()> {
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(db_error)?;
         for (nonce, lease) in &self.owners {
-            lease.validate(&lease.root)?;
-            recover_nonce(&tx, nonce)?;
+            recover_proven(connection, nonce, lease)?;
         }
-        tx.commit().map_err(db_error)
+        Ok(())
     }
 }
 fn existing_owner(root: &Path, nonce: &str) -> AppResult<Option<PrivateFile>> {
@@ -357,10 +448,11 @@ fn visit_owners(
     mut visit: impl FnMut(&str) -> AppResult<()>,
 ) -> AppResult<()> {
     validate_records(connection)?;
+    super::outcomes::validate_records(connection)?;
     let mut after = String::new();
     loop {
         let nonce: Option<String> = connection.query_row(
-            "SELECT owner_nonce FROM history_owners_v6 WHERE owner_nonce>?1 ORDER BY owner_nonce LIMIT 1",
+            "SELECT owner_nonce FROM (SELECT owner_nonce FROM history_owners_v6 UNION SELECT owner_nonce FROM outcome_operations_v7 WHERE phase!='settled') WHERE owner_nonce>?1 ORDER BY owner_nonce LIMIT 1",
             [&after], |row| row.get(0),
         ).optional().map_err(db_error)?;
         let Some(nonce) = nonce else {
@@ -374,30 +466,64 @@ fn visit_owners(
 
 impl Persistence {
     pub(crate) fn claim_history_owner(&self) -> AppResult<HistoryOwner> {
+        let startup_gate = AdmissionGate::claim(&self.root, false)?;
+        let registration = durable_root_file(&self.root, "history-owner-registration.lock")?;
+        if !registration.lock(false)? || owner_names(&self.root)?.len() >= MAX_OWNER_FILES {
+            return Err(conflict());
+        }
         let nonce = new_id();
         let lease = PrivateFile::open(&self.root, true, &format!("{nonce}.lock"), true)?
             .ok_or_else(conflict)?;
         if !lease.lock(false)? {
             return Err(conflict());
         }
-        let owner = HistoryOwner { nonce, lease };
-        let _gate = AdmissionGate::claim(&self.root, false)?;
+        let operation_gate = Arc::new(OperationGateState {
+            lease: durable_root_file(&self.root, "history-admission.lock")?,
+            users: parking_lot::Mutex::new(0),
+        });
+        let owner = HistoryOwner {
+            nonce,
+            lease,
+            operation_gate,
+        };
+        drop(registration);
         let mut connection = self.connection.lock();
         let tx = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        if schema_version(&tx)? != super::SCHEMA_VERSION {
+            return Err(conflict());
+        }
+        let mut proven = Vec::new();
         visit_owners(&tx, |nonce| {
             let Some(lease) = existing_owner(&self.root, nonce)? else {
                 return Ok(());
             };
             if lease.lock(false)? {
-                recover_nonce(&tx, nonce)?;
+                proven.push((nonce.to_owned(), lease));
             }
             Ok(())
         })?;
         tx.commit().map_err(db_error)?;
+        for (nonce, lease) in &proven {
+            recover_proven(&mut connection, nonce, lease)?;
+        }
+        drop(startup_gate);
         Ok(owner)
     }
+    pub(crate) fn operation_gate(&self, owner: &HistoryOwner) -> AppResult<OperationGate> {
+        owner.lease.validate(&self.root)?;
+        let state = owner.operation_gate.clone();
+        {
+            let mut users = state.users.lock();
+            if *users == 0 && !state.lease.lock(true)? {
+                return Err(conflict());
+            }
+            *users = users.checked_add(1).ok_or_else(conflict)?;
+        }
+        Ok(OperationGate { state })
+    }
+    #[cfg(test)]
     pub(crate) fn begin_owned_history(
         &self,
         owner: &HistoryOwner,
@@ -432,6 +558,7 @@ impl Persistence {
         tx.commit().map_err(db_error)?;
         Ok(ticket)
     }
+    #[cfg(test)]
     pub(crate) fn release_owned_history(
         &self,
         owner: &HistoryOwner,

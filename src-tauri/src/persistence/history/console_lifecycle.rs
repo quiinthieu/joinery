@@ -42,7 +42,7 @@ fn audit(
             "started".into()
         },
     };
-    connection.execute("INSERT INTO audit_v6(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![entry.id,sqlite_integer(entry.occurred_at)?,entry.connection_id,entry.action,entry.digest,entry.outcome]).map_err(db_error)?;
+    connection.execute("INSERT INTO audit_v7(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![entry.id,sqlite_integer(entry.occurred_at)?,entry.connection_id,entry.action,entry.digest,entry.outcome]).map_err(db_error)?;
     check_audit(connection, &entry)
 }
 

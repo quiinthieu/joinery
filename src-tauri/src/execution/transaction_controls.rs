@@ -67,6 +67,25 @@ impl Studio {
         approval: Option<&str>,
     ) -> AppResult<TransactionControlResult> {
         let _recovery_activity = self.begin_recovery_activity()?;
+        // Bound tasks before spawning. Rollback uses the safety cell reserved
+        // before authentication, independently of ordinary recording capacity.
+        let memory = {
+            let (session_id, action) = {
+                let plans = self.plans.lock();
+                let stored = plans.get(plan_id).ok_or_else(expired)?;
+                let Action::TransactionControl { request } = &stored.action else {
+                    return Err(AppError::invalid(
+                        "This is not a prepared transaction action",
+                    ));
+                };
+                (stored.plan.session_id.clone(), request.action)
+            };
+            if action == ExplicitTransactionAction::Rollback {
+                self.rollback_memory(self.session(&session_id)?.as_ref())?
+            } else {
+                self.outcome_memory.ordinary()?
+            }
+        };
         let studio = self.clone();
         let plan_id = plan_id.to_owned();
         let approval = approval.map(str::to_owned);
@@ -82,7 +101,7 @@ impl Studio {
             self.dml_tasks.spawn(async move {
                 let _recovery_activity = recovery_activity;
                 studio
-                    .execute_transaction_control_owned(&plan_id, approval.as_deref())
+                    .execute_transaction_control_owned(&plan_id, approval.as_deref(), memory)
                     .await
             })
         };
@@ -98,6 +117,7 @@ impl Studio {
         &self,
         plan_id: &str,
         approval: Option<&str>,
+        memory: outcome_memory::MemoryLease,
     ) -> AppResult<TransactionControlResult> {
         // Keep the stored plan pending while queued. A profile/passphrase save
         // must still be able to invalidate it before the console lane is owned.
@@ -115,13 +135,15 @@ impl Studio {
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
-        let (request, digest, started_pending) = {
+        let (request, cell, mut history_owner) = {
             let _configuration = self.configuration_mutation_guard()?;
             // Recovery rollback remains available while local recording is
             // unavailable. It never replays the earlier action or its SQL.
-            let flush = self.flush_pending_snowflake_receipts();
+            let generic_flush = self.flush_pending_history();
+            let typed_flush = self.flush_pending_snowflake_receipts();
             if action != ExplicitTransactionAction::Rollback {
-                flush?;
+                generic_flush?;
+                typed_flush?;
             } else if self.has_pending_rollback_receipt(&session_id) {
                 return Err(AppError::new(
                     ErrorCode::Conflict,
@@ -168,16 +190,28 @@ impl Studio {
                 ));
             }
             session.driver.validate_transaction_control(&request)?;
-            let audit = self.persistence.audit(
-                &session.profile.id,
-                "transaction-boundary",
-                &stored.digest,
-                "started",
-            );
-            let started_pending = audit.is_err();
-            if request.action != ExplicitTransactionAction::Rollback {
-                audit?;
-            }
+            let pool = if request.action == ExplicitTransactionAction::Rollback {
+                crate::persistence::OutcomePool::EmergencyRollback
+            } else {
+                crate::persistence::OutcomePool::Ordinary
+            };
+            let cell = self.admit_outcome(
+                memory,
+                None,
+                crate::persistence::OutcomeDescriptor {
+                    operation_id: new_id(),
+                    connection_id: session.profile.id.clone(),
+                    session_id: session_id.clone(),
+                    started_at: now_ms(),
+                    digest: stored.digest,
+                    kind: crate::persistence::OutcomeKind::Boundary {
+                        action: request.action,
+                    },
+                },
+                pool,
+            )?;
+            // Arm before invoking any driver callback after admission.
+            let history_owner = history_receipts::AdmissionOwner::new(self, cell.clone());
             session.metadata_gate.lock().hold();
             *session.observed_runtime.lock() = None;
             *session.completion.lock() = None;
@@ -185,7 +219,7 @@ impl Studio {
             self.plans
                 .lock()
                 .retain(|_, plan| plan.plan.session_id != session_id);
-            (request, stored.digest, started_pending)
+            (request, cell, history_owner)
         };
         // Profile saves close the driver too. Check again after policy review
         // and immediately before entering the adapter's own admission checks.
@@ -210,18 +244,22 @@ impl Studio {
         {
             result.retired = true;
             result.state.transaction_control_authority = None;
+        }
+        let recording = self.finish_outcome_boundary(
+            &cell,
+            &crate::persistence::BoundaryEvidence {
+                action: result.action,
+                boundary_outcome: result.boundary_outcome,
+                retired: result.retired,
+            },
+        );
+        history_owner.disarm();
+        // Preserve the returned original before retiring a driver; close may panic.
+        if result.retired {
             self.disconnect(&session_id);
         }
-        if self
-            .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::boundary(
-                session.profile.id.clone(),
-                digest,
-                result.clone(),
-                started_pending,
-            ))
-            .is_err()
-        {
-            snowflake_receipts::recording_notice(&mut result.error);
+        if let Err(recording) = recording {
+            snowflake_receipts::recording_notice(&mut result.error, &recording);
         }
         if !result.retired {
             self.publish_observed_runtime(&session, &result.state);

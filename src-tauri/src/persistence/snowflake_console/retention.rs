@@ -73,7 +73,7 @@ pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
             "snowflake_console_steps_v3",
             "snowflake_console_rejections_v3",
         ],
-        5 | 6 => &[RUNS, "snowflake_console_steps_v5", REJECTIONS, CONTROL],
+        5..=7 => &[RUNS, "snowflake_console_steps_v5", REJECTIONS, CONTROL],
         _ => return Err(invalid()),
     };
     let mut names: Vec<_> = tables
