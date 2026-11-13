@@ -74,10 +74,17 @@ cells. Its atomic native handoff retains the real terminal, binds exact physical
 helper/private operation/request identity, excludes abandonment and preserves a
 conservative hold across dispatch unwind. Idle groups retain rollback safety
 memory and exact retirement observers. Shutdown/restore account for these local
-obligations. The complete freshness bracket, typed adapter and Studio run owner
-remain required; a single metadata read cannot establish freshness. Build the
-adapter and connect its initial pin, retained original recording, native manual
-owner and post-reap release.
+obligations. The typed native adapter and complete eleven-observation freshness
+bracket are now implemented, with a private same-helper manual owner and
+six-observation commit context check. Protected rollback remains available after
+local original recording fails; authentic nonadmission and queued refusal take
+separate recovery paths. A refused rollback retires its helper even if the proof
+recorder panics. See the [native dispatch contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback).
+The next product step is the TaskTracker-owned Studio run owner, connecting
+initial pin, retained originals, native manual owner, protected credit and
+post-reap release. In particular, initial pinned/noqueue refusal requires exact
+helper retirement before group release. No native adapter-only test enables a
+user editing capability.
 The generic grid's committed-success return cannot represent pending work, and
 its primary-key deduplication cannot represent distinct keyless originals.
 Complete native review/dispatch integration. Add a reviewed owner-scoped

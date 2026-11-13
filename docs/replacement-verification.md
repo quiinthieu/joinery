@@ -8,6 +8,107 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Native Snowflake edit dispatch (13 November 2026, local foundation)
+
+Base `1d94997`, existing feature branch. Three reused `gpt-6.1-sol` high-effort
+agents own the native freshness/adapter process tests, protected storage recovery,
+and independent correctness review. The lead owns native dispatch, shared wiring,
+dispatch memory accounting, integration planning, documentation and serialized
+verification. No model fallback or global settings change occurs. Graph status
+and coverage calls fail with `Transport closed`; bounded direct-source inspection
+and review provide evidence, without an exhaustive graph claim.
+
+The [native dispatch contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback)
+now implements an owned lane, one-use native plans, final binding/expiry checks,
+single atomic dispatch, synchronous genuine original recording and a private
+manual owner. Preparation brackets eleven fixed observations; commit brackets
+full owner context with six. Coherent drift refuses new work; abandonment,
+protocol loss and unknown disposition retire the helper. Protected rollback
+requires no freshness probe. Shared logical dispatch memory is reserved before
+JSON allocation; a bounded borrowed frame avoids another payload clone. This
+does not establish RSS or lifetime-capacity acceptance.
+
+Actual Pending operations mint compact rollback authority. Capture or settlement
+failure retains its immutable original and does not prevent protected rollback.
+Promotion settles the predecessor before rollback recording. Genuine no-queue
+proof and actual queued Rejected/Admission originals remain distinct. The latter
+must preserve the exact earlier transaction ID. The unpublished schema8 contract
+adds a settled historical `noDispatch` witness; the normal schema7 app is not
+migrated and older evaluation schema8 compatibility is not claimed.
+
+Review corrected an actual pending-recording safety gap and the prior-transaction
+shape of queued refusal. It also required retirement when protected rollback
+cannot queue, including proof-recorder panic with the caller's native owner still
+retained. These paths issue no replay or transaction boundary; reap is local
+cleanup proof, not remote rollback. Initial durable pin followed by noqueue still
+requires exact helper retirement in the forthcoming Studio owner. No application
+editing command is enabled by this native adapter.
+
+Development attempts are retained under
+`.cache/verification/snowflake-grid-native-adapter/`. The corrected
+`pending-rollback-red-corrected` run compiles and reproduces the actual Conflict
+that prevented rollback after local original-recording failure. Its preceding
+attempt fails to compile because a temporary fixture response array was borrowed;
+that fixture lifetime was corrected before the behavioral RED.
+`grid-freshness-first` passes five of six cases; the sixth assumed a credit frame
+was necessary for small reads. The corrected case asserts initial credit one,
+while the overflow case verifies actual multi-credit draining. No deadline or
+production bound was loosened. `native-focused-first` passes eight of nine adapter
+cases but uses the old rollback-refusal retry expectation; the final tests
+separate recoverable Commit refusal from mandatory rollback-refusal retirement.
+`native-focused-final` passes all four selected stages while the panic guard/test
+are still evolving. Only the later frozen receipts establish final source scope.
+
+`reviewed-validation` passes all 29 focused cases, 12 recording cases, six existing
+snapshot-adapter cases, 55 native process cases, and 42 storage cases with one
+default fixture ignored. Its full validation passes 1,038 frontend and 829
+standard Rust cases (146 fixture ignores), application build and desktop check,
+then fails strict Clippy on two eight-argument recovery APIs. Narrow documented
+lint exceptions retain the distinct identity/proof inputs; runtime code is
+unchanged by that correction. `reviewed-final-validation` reruns all 29 focused
+cases successfully with all 577 source inputs unchanged. Its broad storage command
+incorrectly includes the ignored child-only process fixture: all 42 proper cases
+pass, but the child entrypoint fails without the environment supplied by its
+parent regressions. This is a runner selection error, not a product defect. The
+three actual process regressions already invoke that fixture with isolated roots.
+`completion-validated` passed storage (`42` passed, `1` ignored) and was paused
+mid-`ssh_startup`; `completion-resumed` failed inside a loopback-restricted
+sandbox. The completed host storage/full-check run is `completion-resumed-host.json`
+and its per-command logs (`42` storage cases with `1` child-only fixture ignored,
+`1,038` frontend tests across `72` files, `829` standard Rust tests with `146`
+fixture ignores, strict Clippy, frontend build and desktop check, with all `577`
+source inputs unchanged).
+
+Reproduce with the README toolchain/runtime setup and `JOINERY_TEST_NODE` pointing
+to the isolated Node 24 executable. The exact focused commands are:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests::grid_freshness_tests:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_external::session_tests::grid_adapter_tests:: -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib batch_pending_rollback_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_edit_snapshot::tests:: -- --test-threads=1
+pnpm validate
+```
+
+These tests use actual owned helper children/native framing with an injected
+synthetic SDK, and isolated SQLite for storage behavior. They are not live-account
+or application-UI acceptance. The adapter cases cover preview/preparation,
+automatic commit, exact large decimals and null/empty values, 38-digit cardinality
+mismatch with no suffix write, manual finish, recorder failures, stale plans,
+oversize escaping, caller loss/panic and genuine noqueue/SQLite safety rollback.
+Manual continuation is intentionally not claimed tested: new snapshots still
+need the owner-scoped data-preview integration.
+
+No owner profile/private application state, authentication, account query,
+billable action, installation or publication occurs. The approved debug-cache
+cleanup already reclaimed 135.8 GiB and is not repeated. Reduced debug profiles,
+serialized Cargo and the 20 GiB free-space floor remain in force. The prior normal
+schema7 app is preserved. Studio TaskTracker ownership, pending-owner data
+refresh, complete staging/CSV, broader codecs, real Snowflake/package/restart and
+owner hands-on acceptance remain required. Full DataGrip replacement is not
+established. The next concrete application file/API plan is in the
+[integration contract](snowflake-owned-edit-integration.md#required-next-integration-and-acceptance).
+
 ### Snowflake owned edit integration (13 November 2026, local foundation)
 
 Base `c51e0bc`, existing feature branch. Three reused `gpt-6.1-sol` high-effort

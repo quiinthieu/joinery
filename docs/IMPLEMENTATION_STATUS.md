@@ -1,5 +1,21 @@
 # Implementation and release status
 
+## Native Snowflake edit dispatch (13 November 2026, local foundation)
+
+One-use native plans now dispatch through a private lane-bearing adapter and
+manual owner, with eleven-observation preparation freshness, exact cardinality
+evidence and synchronous original recording. Commit checks full owner context;
+safety rollback remains available after local recording failure. Actual no-queue
+proof and queued refusal retain distinct recovery paths. Refused rollback retires
+its helper even if recording panics. All 29 focused cases pass; see the
+[source-scoped ledger](replacement-verification.md#native-snowflake-edit-dispatch-13-november-2026-local-foundation)
+and [contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback).
+The Studio TaskTracker run owner, pending data refresh, complete grid/CSV staging,
+broader codecs and real Snowflake/normal-package/hands-on acceptance remain
+required. No public editing capability is enabled. The prior schema7 normal app
+is preserved; no account effect, publication, installation or further cleanup
+occurs. Replacement remains incomplete.
+
 ## Owned Snowflake edit integration (13 November 2026, local foundation)
 
 A closed pending-owner metadata transport and Studio-owned original-recording

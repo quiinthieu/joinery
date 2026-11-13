@@ -15,15 +15,15 @@ only exact database/schema/name components and base/temporary table types.
 
 The helper constructs one fixed statement for each kind:
 
-| Kind | Fixed operation | Maximum rows | Aggregate bytes |
-| --- | --- | ---: | ---: |
-| `context` | Full context observation | 1 | 65,536 |
-| `quotedIdentifierPolicy` | Session quoted-name parameter | 1 | 65,536 |
-| `currentTransaction` | Current transaction ID | 1 | 65,536 |
-| `exactRelation` | Exact information-schema relation lookup | 3 | 2,097,152 |
-| `columns` | Ordered complete column projection | 1,001 | 1,048,576 |
-| `describe` | DESCRIBE TABLE columns | 1,001 | 1,048,576 |
-| `zeroRowResolution` | Fully qualified SELECT with LIMIT 0 | 0 | 1,048,576 |
+| Kind                     | Fixed operation                          | Maximum rows | Aggregate bytes |
+| ------------------------ | ---------------------------------------- | -----------: | --------------: |
+| `context`                | Full context observation                 |            1 |          65,536 |
+| `quotedIdentifierPolicy` | Session quoted-name parameter            |            1 |          65,536 |
+| `currentTransaction`     | Current transaction ID                   |            1 |          65,536 |
+| `exactRelation`          | Exact information-schema relation lookup |            3 |       2,097,152 |
+| `columns`                | Ordered complete column projection       |        1,001 |       1,048,576 |
+| `describe`               | DESCRIBE TABLE columns                   |        1,001 |       1,048,576 |
+| `zeroRowResolution`      | Fully qualified SELECT with LIMIT 0      |            0 |       1,048,576 |
 
 The row ceilings include overflow sentinels where applicable. Serialized column
 metadata and emitted batches count toward the byte ceiling. Existing frame,
@@ -39,12 +39,17 @@ Queued cancel/discard removes only that read; active cancellation retires the
 helper without issuing a transaction boundary. Reaping establishes local child
 retirement, not remote rollback.
 
-This is a single-read primitive. The driver still needs a lane-owned complete
-freshness bracket: full context, quoted-name policy and transaction observation;
-exact relation plus all inspection sources; repeated observations and final
-owner/revision/transaction checks. Partial, discarded, interrupted, ambiguous or
-changed observations cannot authorize mutation. No complete manual refresh or
-data-preview route is enabled by these seven metadata kinds.
+The native driver now brackets preparation with eleven fixed observations: full
+context, quoted-name policy and transaction; exact relation; ordered columns,
+DESCRIBE and zero-row resolution; exact relation again; then context, policy and
+transaction again. All sources must match the native binding. Idle preparation
+requires no transaction; owner reads require the exact retained transaction.
+Commit brackets the full owner context with six observations. A bracket holds
+the same lane through final admission. Abandonment or protocol loss retires the
+helper; coherent drift refuses new work. No automatic retry repairs drift.
+Partial, discarded, interrupted, ambiguous or changed observations cannot
+authorize mutation. A complete owner-scoped data-preview route remains required
+before manual continuation can obtain new prepared snapshots.
 
 Snowflake documents SELECT and transaction behavior in its
 [transaction reference](https://docs.snowflake.com/en/sql-reference/transactions),
@@ -90,14 +95,87 @@ cells and 32 groups. These logical bounds are not measured allocator/RSS or
 lifetime-capacity acceptance. Actual SQLite fault and owned-child tests qualify
 local behavior only; synthetic batch receipts do not qualify Snowflake effects.
 
+## Typed native dispatch and protected rollback
+
+`PreparedGridOperation` consumes one native snapshot and retains an owned lane
+guard, exact compiled payload, operation ID and digest. Shared logical memory is
+reserved before JSON allocation; a bounded borrowed frame computes the digest
+without cloning the payload. Final native binding/expiry validation shares the
+shutdown and browsing gates with the synchronous admission callback. A callback
+cannot dispatch twice. Actual supervisor acceptance determines whether a request
+was queued; a local callback error cannot turn an accepted request into proof of
+no dispatch.
+
+The caller retains `GridManualTransaction` before dispatch. Its private owner
+excludes ordinary SQL and metadata, survives recording failure and allows only
+the same physical helper to finish. Recording captures the actual native terminal
+synchronously. Recording failure blocks commit and further mutations; safety
+rollback performs no freshness SQL. SQL-free settlement must name the exact
+blocked operation; settling an older receipt cannot unblock a newer attempt.
+Unknown outcomes or abandoned execution retire the helper without SQL replay.
+
+Compact pending authority is minted while the genuine native Pending operation
+is available. It retains no live operation or full terminal report. Protected
+rollback may retain an immutable predecessor original across capture/settlement
+faults and settles that original before promoting the rollback receipt. A queued
+zero-step admission refusal must retain the exact prior transaction and its own
+original; it is never classified as no dispatch.
+
+Only the native adapter can mint `GridNoDispatch`, after actual nonadmission.
+It binds the exact helper, operation and request. A refused Continue/Commit can
+precede protected rollback using that proof. The unreleased schema8 contract adds
+a settled `noDispatch` membership witness, with no fabricated original; restored
+witnesses are historical only and can authorize no new execution. This changes
+the unpublished schema8 validation contract, not the packaged schema7 database.
+Compatibility with older evaluation schema8 writers is not claimed.
+
+If protected rollback itself is refused before queueing, its exact recording
+credit may already be claimed. The adapter retains proof through the recording
+callback, then retires the helper rather than suggesting that a new ID can reuse
+the credit. Reaping proves local cleanup, never remote rollback.
+
+The Studio run owner must retain the native manual handle, recording authority,
+originals and safety slot independently of the IPC caller. If initial admission
+has already reserved/pinned a group and then proves no dispatch, retire that
+exact helper, preserve no-original membership, and release only after genuine
+reap. A refusal before any durable reservation has no such obligation. Neither
+case may silently discard known originals. These application policies remain
+integration work; the adapter is not a public grid command.
+
 ## Required next integration and acceptance
 
-Connect the typed compiler/prepared snapshots to a lane-bearing driver adapter,
-the atomic recording handoff and a TaskTracker-owned Studio run owner. Retain the
-native manual owner even when recording fails or the initiating caller vanishes.
-Implement the complete pending-owner freshness bracket and data refresh before
-enabling later submissions. Then expose staging/review/submit and truthful pending
+Connect the typed lane-bearing adapter to the atomic recording handoff and a
+TaskTracker-owned Studio run owner. Retain the native manual owner even when
+recording fails or the initiating caller vanishes. Implement owner-scoped data
+refresh before enabling later submissions. Then expose staging/review/submit and truthful pending
 commit/rollback states, CSV batching and broader lossless codecs.
+
+The next bounded application increment belongs in `execution/snowflake_grid.rs`
+with dedicated tests and narrow `execution/batch_outcome_recording.rs` extensions:
+
+1. Preserve the typed external-driver handle when publishing a session, and
+   expose only its helper/retirement identity needed by recording. The generic
+   `Arc<dyn Driver>` has no generated-edit preparation API.
+2. Construct an owned run before spawning into `dml_tasks`; acquire the existing
+   session lane, prepare/freshness-check natively, then reserve/pin from the
+   prepared immutable ID/request/digest. Register the manual handle before
+   dispatch. A detached IPC waiter must leave the run and evidence alive.
+3. Record the genuine terminal with its actual `Operation`: encode the compact
+   original first, mint pending authority while the operation exists, then flush.
+   Retain the compact original and authority through any storage failure.
+4. Retain actual no-dispatch proof before automatic abandonment can forget a
+   manual successor. Select protected rollback from the existing volatile,
+   unsettled-Pending, queued-refusal or no-dispatch path as appropriate. Retain
+   predecessor cells through ordered settlement; reuse the existing safety slot.
+5. Notify the native owner of durable settlement only for the matching blocked
+   operation. Keep its registry independent of a tab or removed session-map entry;
+   drain recording/reaping during shutdown and exclude restore while it remains.
+
+Acceptance for that increment includes an unpolled/detached caller, panic after
+admission, both originals retained across SQLite failure, truthful Pending and
+verified Committed/RolledBack, both kinds of refusal, stale settlement callbacks,
+session removal and shutdown/reap retry. Full UI/native/account acceptance is a
+subsequent gate; none of these internal APIs alone enables editing.
 
 Run real disposable-table acceptance only under a fresh reviewed account plan;
 earlier approvals are consumed or expired. The owner identified
