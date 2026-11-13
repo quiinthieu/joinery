@@ -3,9 +3,10 @@
 ## Query history acceptance
 
 The [paged history guide](query-history.md) and
-[ledger](replacement-verification.md#paged-query-history-13-november-2026) record
-automated real-SQLite/browser verification, native command checks and the normal
-local `99a3ca3` package. Normal packaged owner interaction and application-restart
+[ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026) record
+current real-SQLite/PostgreSQL/browser verification and atomic history/privacy
+coverage. The new normal package is pending; the existing normal app is the
+preceding schema-4 `adabd44` package. Normal packaged owner interaction and application-restart
 acceptance remain open. Use disposable local data; this walkthrough authorizes
 no Snowflake activity or access to existing private application state.
 
@@ -31,9 +32,36 @@ also has a fixed local-fixture walkthrough: Query history and the keyboard
 palette must show admitted completion pending, interrupted/restored completion
 unknown, original known completion and unavailable duration without inventing
 status or zero timing. Explicitly opening saved SQL must not connect or execute.
-This exercises representation and rendering, not actual crash recovery: normal
-admission/recovery/restore producers remain incomplete until the atomic lifecycle
-and privacy workflow is implemented.
+This fixture exercises representation and rendering. Current schema-5 source
+also has actual admission, completion, console publisher and encrypted restore
+coverage in the [atomic history ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
+Generic process-crash ownership remains incomplete.
+
+For the new privacy workflow, use an isolated PostgreSQL fixture and a separate
+evaluation application root. Preserve the original backup; do not open schema-5
+metadata with the previous app.
+
+1. Enable SQL text, execute `/* privacy acceptance */ SELECT pg_sleep(15);`,
+   and open Query history before it finishes. Require **Admitted; completion
+   pending**, unavailable duration and the exact original SQL. Admission alone
+   must not claim server submission.
+2. Clear history while the query runs. Let the original complete, refresh and
+   restart the evaluation app. Neither history nor the palette may restore it;
+   audit evidence and already opened editor tabs remain independent.
+3. Repeat with text storage disabled during the query, then re-enable it.
+   Metadata may remain, but the earlier SQL must not return. Repeat with profile
+   deletion/recreation. Do not use private or production SQL for these checks.
+4. Create an encrypted backup before clearing. After clear, restore the compatible
+   backup using the product workflow. Removed SQL must remain absent; preserve
+   original known completion and honest unknown evidence. Automated coverage also
+   requires incompatible privacy branches to fail before replacement or undo.
+5. Run the isolated script, history/recovery and console suites in the ledger.
+   They inject local write failures and callback/owner interruptions; browser
+   screenshots alone do not establish atomic persistence or replay safety.
+
+These steps do not establish generic crash-owner recovery, durable failed generic
+completion payloads, lifetime resource bounds, Snowflake account effects or owner
+acceptance. No step authorizes billable account activity.
 
 ## Local metadata recovery acceptance
 

@@ -2,7 +2,8 @@
 use super::*;
 use crate::{
     execution::snowflake_console_tests::{
-        FIXTURE_LANE, approved, connected, database, finished, new_studio, queries, start_run,
+        FIXTURE_LANE, approved, connected, database, finished, new_studio, profile, queries,
+        start_run,
     },
     snowflake_runtime::studio_fixture::Fixture,
 };
@@ -44,9 +45,10 @@ fn retained(run: ConsoleRunSnapshot) -> Retained {
     Retained {
         run,
         writes: VecDeque::new(),
-        started_pending: false,
-        history: None,
-        finished_pending: false,
+        prepare_confirmed: true,
+        completion: None,
+        seal_pending: false,
+        publisher_sealed: true,
     }
 }
 
@@ -105,6 +107,11 @@ fn abandoned_and_terminal(studio: &Studio) -> (ConsoleRunSnapshot, ConsoleRunSna
             3,
         )
         .unwrap();
+    let sealed = store
+        .console_seal_publishers(&owner, &settled.metadata.run_id, settled.revision)
+        .unwrap();
+    assert!(sealed.publisher_sealed);
+    assert_eq!(sealed.run, settled);
     (pending, settled)
 }
 
@@ -165,7 +172,7 @@ async fn reviewed_console_archive_temporary_lease_preserves_unrelated_pending_or
 }
 
 #[tokio::test]
-async fn reviewed_console_new_normal_lease_discards_details_read_before_another_writer() {
+async fn reviewed_console_new_normal_lease_discards_unowned_details_and_recovers_pending() {
     let f = Fixture::new();
     let studio = new_studio(&f);
     let (pending, settled) = abandoned_and_terminal(&studio);
@@ -178,11 +185,33 @@ async fn reviewed_console_new_normal_lease_discards_details_read_before_another_
     assert_eq!(studio.console.journal.lock().details.entries.len(), 1);
     let other = Persistence::open(&f.directory.path().join("workspace")).unwrap();
     let owner = other.claim_console_archive_owner().unwrap();
-    let updated = other
+    assert_eq!(
+        other
+            .console_observe(
+                &owner,
+                &settled.metadata.run_id,
+                settled.revision,
+                None,
+                ConsoleObservations {
+                    delivery_failed: true,
+                    first_error: Some(ConsoleErrorCode::Delivery),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict,
+        "sealed details cannot acquire late observations"
+    );
+    assert_eq!(
+        other.console_run(&settled.metadata.run_id).unwrap(),
+        Some(settled.clone())
+    );
+    let updated_pending = other
         .console_observe(
             &owner,
-            &settled.metadata.run_id,
-            settled.revision,
+            &pending.metadata.run_id,
+            pending.revision,
             None,
             ConsoleObservations {
                 delivery_failed: true,
@@ -191,19 +220,49 @@ async fn reviewed_console_new_normal_lease_discards_details_read_before_another_
             },
         )
         .unwrap();
-    drop(owner);
-    // Lookup of another incomplete original is a real None->Some normal lease
-    // acquisition, not an artificial cache reset inside this regression.
-    studio
+    let held = studio
         .snowflake_console_run(&pending.metadata.client_request_id)
         .unwrap()
         .unwrap();
+    assert_eq!(held.run, updated_pending);
+    assert!(held.pending_recording);
+    assert!(studio.console.journal.lock().owner.is_none());
+    drop(owner);
+    // Lookup of another incomplete original is a real None->Some normal lease
+    // acquisition, not an artificial cache reset inside this regression.
+    let recovered = studio
+        .snowflake_console_run(&pending.metadata.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(!recovered.pending_recording);
+    assert!(recovered.run.terminal.is_some());
+    assert!(recovered.run.observations.delivery_failed);
+    assert_eq!(
+        recovered.run.observations.first_error,
+        updated_pending.observations.first_error
+    );
+    assert!(matches!(
+        recovered.run.steps[0].outcome,
+        Some(ConsoleStepOutcome::Unknown(_))
+    ));
+    {
+        let journal = studio.console.journal.lock();
+        assert!(journal.owner.is_some());
+        assert!(
+            journal
+                .details
+                .entries
+                .iter()
+                .all(|(client, _, _)| client != &settled.metadata.client_request_id),
+            "normal lease acquisition invalidates previously unowned details"
+        );
+    }
     let view = studio
         .snowflake_console_run(&settled.metadata.client_request_id)
         .unwrap()
         .unwrap();
-    assert_eq!(view.run, updated);
-    assert_ne!(view.run, cached.run);
+    assert_eq!(view.run, cached.run);
+    assert!(!view.pending_recording);
     assert!(
         !f.controls.join("queries").exists(),
         "no helper was launched"
@@ -260,13 +319,13 @@ fn reviewed_console_compaction_requires_owner_publisher_and_dirty_completion() {
     journal.compact();
     assert!(journal.runs.contains_key(&id));
     journal.dirty.remove(&id);
-    journal.runs.get_mut(&id).unwrap().finished_pending = true;
+    journal.runs.get_mut(&id).unwrap().publisher_sealed = false;
     journal.compact();
     assert!(
         journal.runs.contains_key(&id),
-        "audit outbox remains authoritative"
+        "publisher seal remains an authoritative obligation"
     );
-    journal.runs.get_mut(&id).unwrap().finished_pending = false;
+    journal.runs.get_mut(&id).unwrap().publisher_sealed = true;
     journal.compact();
     assert!(journal.runs.is_empty());
     assert!(journal.clients.is_empty());
@@ -401,7 +460,7 @@ async fn reviewed_console_late_finished_failure_blocks_archive_release_and_compa
         .snowflake_console_run(&start.client_request_id)
         .unwrap()
         .unwrap();
-    assert!(!original.pending_recording);
+    assert!(original.pending_recording, "held publisher is not settled");
     assert!(!studio.jobs.lock().contains_key(&id));
     {
         let journal = studio.console.journal.lock();
@@ -444,7 +503,7 @@ async fn reviewed_console_late_finished_failure_blocks_archive_release_and_compa
         vec![start.client_request_id.clone()]
     );
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_late_console_observation BEFORE UPDATE OF observations_json ON snowflake_console_runs_v4 BEGIN SELECT RAISE(FAIL,'fixture late observation failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_late_console_observation BEFORE UPDATE OF observations_json ON snowflake_console_runs_v5 BEGIN SELECT RAISE(FAIL,'fixture late observation failure'); END;").unwrap();
     release_tx.send(()).unwrap();
     let pending = finished(&studio, &start).await;
     assert!(pending.pending_recording);
@@ -484,6 +543,158 @@ async fn reviewed_console_late_finished_failure_blocks_archive_release_and_compa
         .unwrap();
     assert_eq!(released.run, durable.run);
     assert!(released.results.is_empty());
+    assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+    studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_seal_failure_restart_preserves_terminal_history_and_ack_without_sql() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let studio = new_studio(&f);
+    let mut saved = profile();
+    saved.store_query_text = true;
+    let saved = studio.save_profile(saved, None).unwrap();
+    let info = studio
+        .connect(&saved.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let db = database(&f);
+    db.execute_batch("CREATE TRIGGER deny_console_seal BEFORE UPDATE OF publisher_sealed ON console_lifecycle_v5 WHEN NEW.publisher_sealed=1 BEGIN SELECT RAISE(FAIL,'fixture seal failure'); END;").unwrap();
+    let start = approved(&studio, &info.id, "SELECT 1");
+    let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
+    let original = finished(&studio, &start).await;
+    assert!(original.pending_recording);
+    assert_eq!(
+        original.run.terminal.as_ref().unwrap().reason,
+        ConsoleStopReason::Completed
+    );
+    assert_eq!(
+        original
+            .run
+            .terminal
+            .as_ref()
+            .unwrap()
+            .accounting
+            .acknowledged,
+        1
+    );
+    let history = studio.persistence.history_entry(&id).unwrap().unwrap();
+    assert_eq!(history.sql.as_deref(), Some("SELECT 1"));
+    assert_eq!(history.status, Some(RunStatus::Completed));
+    assert!(history.elapsed_ms.is_some());
+    assert!(
+        !studio
+            .persistence
+            .console_lifecycle(&id)
+            .unwrap()
+            .unwrap()
+            .publisher_sealed
+    );
+    assert!(studio.snowflake_console_pending().unwrap().recording_hold);
+    assert!(
+        studio
+            .set_snowflake_console_receipt_archive(&archive_request(
+                &studio
+                    .snowflake_console_receipt_summary(&start.client_request_id)
+                    .unwrap()
+                    .unwrap()
+            ))
+            .is_err()
+    );
+    let before = queries(&f);
+    assert!(studio.shutdown_and_wait().await.is_err());
+    drop(studio);
+
+    let restarted = new_studio(&f);
+    let held = restarted
+        .snowflake_console_run(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        held.pending_recording,
+        "failed recovery seal cannot masquerade as settlement"
+    );
+    assert_eq!(held.run, original.run);
+    assert_eq!(
+        restarted
+            .persistence
+            .history_entry(&id)
+            .unwrap()
+            .unwrap()
+            .elapsed_ms,
+        history.elapsed_ms
+    );
+    db.execute_batch("DROP TRIGGER deny_console_seal;").unwrap();
+    let recovered = restarted
+        .snowflake_console_run(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert!(!recovered.pending_recording);
+    assert_eq!(recovered.run, original.run);
+    let recovered_history = restarted.persistence.history_entry(&id).unwrap().unwrap();
+    assert_eq!(recovered_history.sql, history.sql);
+    assert_eq!(recovered_history.provenance, history.provenance);
+    assert_eq!(recovered_history.status, history.status);
+    assert_eq!(recovered_history.elapsed_ms, history.elapsed_ms);
+    assert!(
+        restarted
+            .persistence
+            .console_lifecycle(&id)
+            .unwrap()
+            .unwrap()
+            .publisher_sealed
+    );
+    assert_eq!(
+        queries(&f),
+        before,
+        "recovery must not reopen or submit SQL"
+    );
+    restarted.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_finished_panic_seals_late_observations_without_replacing_completion() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let (studio, info) = connected(&f).await;
+    let start = approved(&studio, &info.id, "SELECT 1");
+    let first = Arc::new(AtomicBool::new(true));
+    let observed = first.clone();
+    let id = start_run(
+        &studio,
+        &start,
+        Arc::new(move |event| {
+            if matches!(event, QueryEvent::Finished { .. })
+                && observed.swap(false, Ordering::AcqRel)
+            {
+                panic!("fixture final publication panic after atomic completion");
+            }
+            true
+        }),
+    )
+    .unwrap();
+    let view = finished(&studio, &start).await;
+    assert!(!view.pending_recording);
+    assert_eq!(
+        view.run.terminal.as_ref().unwrap().reason,
+        ConsoleStopReason::Completed
+    );
+    assert_eq!(
+        view.run.terminal.as_ref().unwrap().accounting.acknowledged,
+        1
+    );
+    assert!(view.run.observations.delivery_failed);
+    assert!(view.run.observations.retired);
+    let lifecycle = studio.persistence.console_lifecycle(&id).unwrap().unwrap();
+    assert!(lifecycle.publisher_sealed);
+    let completion = lifecycle.completion.unwrap();
+    assert_eq!(completion.provenance, HistoryProvenance::Recorded);
+    assert_eq!(completion.status, Some(RunStatus::Completed));
+    let history = studio.persistence.history_entry(&id).unwrap().unwrap();
+    assert_eq!(history.status, completion.status);
+    assert_eq!(history.elapsed_ms, completion.elapsed_ms);
+    assert!(history.elapsed_ms.is_some());
     assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
     studio.shutdown_and_wait().await.unwrap();
 }

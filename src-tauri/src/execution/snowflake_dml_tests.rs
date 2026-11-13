@@ -482,7 +482,7 @@ async fn dml_studio_dropped_ipc_waiter_still_finishes_durable_evidence() {
     let history = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let history = studio.history("").unwrap();
-            if !history.is_empty() {
+            if history.iter().any(|entry| entry.snowflake_dml.is_some()) {
                 break history;
             }
             tokio::task::yield_now().await;
@@ -515,7 +515,7 @@ async fn dml_studio_post_statement_audit_or_history_failure_cannot_erase_ack() {
         let task = tokio::spawn(async move { owner.execute_snowflake_dml(&plan.id, None).await });
         entered.notified().await;
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-        database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'synthetic local persistence failure'); END;")).unwrap();
+        reject_receipt_write(&database, table);
         release.notify_one();
         let result = task.await.unwrap().unwrap();
         assert_eq!(result.statement_outcome, SnowflakeDmlOutcome::Succeeded);
@@ -546,7 +546,7 @@ async fn dml_studio_pre_statement_audit_failure_prevents_submission() {
         .prepare_execution(&session.info.id, SDK_DML_SQL)
         .unwrap();
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
     assert!(studio.execute_snowflake_dml(&plan.id, None).await.is_err());
     assert_no_dml_or_observer(&driver);
 }
@@ -695,7 +695,11 @@ async fn dml_studio_shutdown_waits_for_detached_owner_and_durable_ack_history() 
         .unwrap();
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
-    assert!(studio.history("").unwrap().is_empty());
+    let pending = studio.history("").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].provenance, HistoryProvenance::Admitted);
+    assert!(pending[0].status.is_none());
+    assert!(pending[0].snowflake_dml.is_none());
 
     let shutdown_owner = studio.clone();
     let mut shutdown = tokio::spawn(async move { shutdown_owner.shutdown_and_wait().await });
@@ -710,7 +714,11 @@ async fn dml_studio_shutdown_waits_for_detached_owner_and_durable_ack_history() 
     // Capture an early receipt, then release and reap before asserting, so even
     // the failing regression leaves no deliberately stalled task behind.
     let early_receipt = tokio::time::timeout(Duration::from_millis(50), &mut shutdown).await;
-    assert!(studio.history("").unwrap().is_empty());
+    let pending = studio.history("").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].provenance, HistoryProvenance::Admitted);
+    assert!(pending[0].status.is_none());
+    assert!(pending[0].snowflake_dml.is_none());
     assert!(
         studio
             .prepare_execution(&session.info.id, SDK_DML_SQL)
@@ -738,7 +746,7 @@ async fn dml_studio_shutdown_waits_for_detached_owner_and_durable_ack_history() 
     let history = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let history = studio.history("").unwrap();
-            if !history.is_empty() {
+            if history.iter().any(|entry| entry.snowflake_dml.is_some()) {
                 break history;
             }
             tokio::task::yield_now().await;
@@ -791,7 +799,7 @@ async fn receipt_dml_dropped_waiter_storage_failure_blocks_shutdown_until_local_
             .unwrap();
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
         for table in tables {
-            database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
+            reject_receipt_write(&database, table);
         }
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
@@ -816,7 +824,7 @@ async fn receipt_dml_dropped_waiter_storage_failure_blocks_shutdown_until_local_
         );
         let audits: u32 = database
             .query_row(
-                "SELECT COUNT(*) FROM audit WHERE action='snowflake-dml' AND outcome='succeeded'",
+                "SELECT COUNT(*) FROM audit_v5 WHERE action='snowflake-dml' AND outcome='succeeded'",
                 [],
                 |row| row.get(0),
             )
@@ -835,7 +843,7 @@ async fn receipt_boundary_terminal_audit_failure_preserves_ack_and_blocks_shutdo
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;").unwrap();
     let result = studio
         .execute_transaction_control(&plan.id, None)
         .await
@@ -857,7 +865,7 @@ async fn receipt_boundary_terminal_audit_failure_preserves_ack_and_blocks_shutdo
         .unwrap();
     studio.shutdown_and_wait().await.unwrap();
     studio.shutdown_and_wait().await.unwrap();
-    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
+    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v5 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
     assert_eq!(audits, 1);
     assert_eq!(driver.boundary_calls.lock().len(), 1);
 }

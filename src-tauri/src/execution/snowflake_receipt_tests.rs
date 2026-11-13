@@ -1,12 +1,134 @@
+// Test-owned fault injection happens after durable admission. Completion updates
+// the retained history row rather than inserting a second SQL-bearing payload.
+fn reject_receipt_write(database: &rusqlite::Connection, table: &str) {
+    let operation = match table {
+        "history" => "UPDATE",
+        "audit" => "INSERT",
+        _ => panic!("unknown fixture table"),
+    };
+    database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE {operation} ON {table}_v5 BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
+}
+
 // Included beside the Studio policy fixtures; no account or helper connection.
 fn receipt_database(root: &tempfile::TempDir) -> rusqlite::Connection {
     rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap()
 }
 
+#[tokio::test]
+async fn receipt_typed_history_privacy_survives_late_ack_and_retry_without_sql_reinsertion() {
+    for ddl in [false, true] {
+        for action in [
+            "clear",
+            "optout-reenable",
+            "delete-recreate",
+            "failed-completion-clear",
+        ] {
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (root, studio, driver, session, request) = if ddl {
+                let (root, studio, driver, session, request) = sdk_ddl_fixture(
+                    SafeMode::Silent,
+                    false,
+                    Some((entered.clone(), release.clone())),
+                );
+                (root, studio, driver, session, Some(request))
+            } else {
+                let (root, studio, driver, session) =
+                    sdk_dml_fixture(SafeMode::Silent, Some((entered.clone(), release.clone())));
+                (root, studio, driver, session, None)
+            };
+            let mut profile = session.profile.clone();
+            profile.store_query_text = true;
+            studio.persistence.save_profile(&profile).unwrap();
+            let (plan, approval) = if let Some(request) = &request {
+                let plan = ddl_review(&studio, request).await;
+                let approval = ddl_approve(&studio, &plan);
+                (plan, Some(approval))
+            } else {
+                (
+                    studio
+                        .prepare_snowflake_dml(&session.info.id, SDK_DML_SQL, None)
+                        .unwrap(),
+                    None,
+                )
+            };
+            let owner = studio.clone();
+            let waiter = tokio::spawn(async move {
+                if ddl {
+                    serde_json::to_value(
+                        owner
+                            .execute_snowflake_ddl(&plan.id, approval.as_deref())
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap()
+                } else {
+                    serde_json::to_value(owner.execute_snowflake_dml(&plan.id, None).await.unwrap())
+                        .unwrap()
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(3), entered.notified())
+                .await
+                .unwrap();
+            let pending = studio.history("").unwrap();
+            assert_eq!(pending.len(), 1);
+            let id = pending[0].id.clone();
+            assert_eq!(pending[0].provenance, HistoryProvenance::Admitted);
+            assert!(pending[0].sql.is_some());
+            let database = receipt_database(&root);
+            match action {
+                "clear" => studio.clear_history().unwrap(),
+                "optout-reenable" => {
+                    profile.store_query_text = false;
+                    studio.save_profile(profile.clone(), None).unwrap();
+                    assert!(studio.history_entry(&id).unwrap().unwrap().sql.is_none());
+                    profile.store_query_text = true;
+                    studio.save_profile(profile, None).unwrap();
+                }
+                "delete-recreate" => {
+                    studio.delete_profile(&profile.id).unwrap();
+                    studio.save_profile(profile, None).unwrap();
+                }
+                "failed-completion-clear" => reject_receipt_write(&database, "history"),
+                _ => unreachable!(),
+            }
+            release.notify_one();
+            let result = waiter.await.unwrap();
+            assert_eq!(result["statementOutcome"], "succeeded");
+            if action == "failed-completion-clear" {
+                assert!(result["error"].is_object());
+                assert_eq!(studio.pending_snowflake_receipts.lock().len(), 1);
+                studio.clear_history().unwrap();
+                database
+                    .execute_batch("DROP TRIGGER reject_history")
+                    .unwrap();
+            }
+            studio.shutdown_and_wait().await.unwrap();
+            let row = studio.history_entry(&id).unwrap();
+            if action.contains("clear") {
+                assert!(row.is_none());
+            } else {
+                assert!(row.unwrap().sql.is_none());
+            }
+            assert_eq!(driver.dml_calls.lock().len(), usize::from(!ddl));
+            assert_eq!(driver.ddl_calls.lock().len(), usize::from(ddl));
+            assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);
+            drop(studio);
+            let reopened = Persistence::open(root.path()).unwrap();
+            assert!(
+                reopened
+                    .history_entry(&id)
+                    .unwrap()
+                    .is_none_or(|entry| entry.sql.is_none())
+            );
+        }
+    }
+}
+
 fn terminal_audits(database: &rusqlite::Connection, action: &str, outcome: &str) -> u32 {
     database
         .query_row(
-            "SELECT COUNT(*) FROM audit WHERE action=?1 AND outcome=?2",
+            "SELECT COUNT(*) FROM audit_v5 WHERE action=?1 AND outcome=?2",
             [action, outcome],
             |row| row.get(0),
         )
@@ -29,7 +151,7 @@ async fn receipt_dml_original_rejection_unknown_and_observer_error_survive_local
             .prepare_execution(&session.info.id, SDK_DML_SQL)
             .unwrap();
         let database = receipt_database(&root);
-        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE INSERT ON history BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
         let result = studio.execute_snowflake_dml(&plan.id, None).await.unwrap();
         assert_eq!(result.statement_outcome, outcome);
         let returned = result.error.as_ref().unwrap();
@@ -112,7 +234,7 @@ async fn receipt_boundary_dropped_waiter_preserves_each_original_outcome_until_l
             .await
             .unwrap();
         let database = receipt_database(&root);
-        database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
         release.notify_one();
@@ -170,7 +292,7 @@ async fn receipt_boundary_dropped_waiter_preserves_each_original_outcome_until_l
 async fn receipt_pending_dml_blocks_mutations_but_allows_one_retained_recovery_rollback() {
     let (root, studio, driver, session) = sdk_dml_fixture(SafeMode::Silent, None);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE INSERT ON history BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_execution(&session.info.id, SDK_DML_SQL)
         .unwrap();
@@ -225,7 +347,7 @@ async fn receipt_pending_dml_blocks_mutations_but_allows_one_retained_recovery_r
         .unwrap();
     assert_eq!(studio.pending_snowflake_receipts.lock().len(), 1);
     // Even a failed rollback started audit must not strand an active transaction.
-    database.execute_batch("DROP TRIGGER reject_terminal; CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("DROP TRIGGER reject_terminal; CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let mut recovery = driver.runtime_override.lock().as_ref().unwrap().clone();
     recovery.transaction_control_authority = Some(TransactionControlAuthority::RollbackOnly {
         revision: revision.clone(),
@@ -296,7 +418,7 @@ async fn receipt_rollback_keeps_only_failed_started_stage_when_terminal_audit_su
     let (root, studio, driver, session, request) =
         explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Rollback, None);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v5 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();
@@ -353,7 +475,7 @@ async fn receipt_rollback_predispatch_error_does_not_invent_a_finished_outcome()
         explicit_control_fixture(SafeMode::Silent, ExplicitTransactionAction::Rollback, None);
     *driver.boundary_predispatch_error.lock() = Some(ErrorCode::Conflict);
     let database = receipt_database(&root);
-    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_started BEFORE INSERT ON audit_v5 WHEN NEW.outcome='started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     let plan = studio
         .prepare_transaction_control(&session.info.id, &request)
         .unwrap();

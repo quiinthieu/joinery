@@ -189,7 +189,10 @@ pub(super) fn purge_connection(connection: &Connection, id: &str) -> AppResult<(
 
 fn enforce_opt_in(connection: &Connection, workspace: &mut SavedWorkspace) -> AppResult<()> {
     let mut statement = connection
-        .prepare("SELECT json FROM profiles")
+        .prepare(&format!(
+            "SELECT json FROM {}",
+            super::metadata_table(connection, "profiles")?
+        ))
         .map_err(db_error)?;
     let profiles = statement
         .query_map([], |r| r.get::<_, String>(0))

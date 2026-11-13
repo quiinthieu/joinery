@@ -4,7 +4,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-mod history;
+pub(super) mod history;
+pub use history::{HistoryCompletion, HistoryDisposition, HistoryTicket};
 mod library;
 mod recovery;
 pub(crate) mod recovery_crypto;
@@ -54,7 +55,7 @@ impl Persistence {
     }
 
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
-        self.json_rows("SELECT json FROM profiles ORDER BY id")
+        self.json_rows("SELECT json FROM profiles_v5 ORDER BY id")
     }
     pub fn groups(&self) -> AppResult<Vec<ConnectionGroup>> {
         self.json_rows("SELECT json FROM groups ORDER BY id")
@@ -87,7 +88,11 @@ impl Persistence {
             .map_err(|_| AppError::internal("Could not encode profile"))?;
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
-        tx.execute("INSERT INTO profiles(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
+        tx.execute("INSERT INTO profiles_v5(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
+        history::lifecycle::ensure_profile(&tx, &profile.id)?;
+        if !profile.store_query_text {
+            history::lifecycle::redact_profile(&tx, &profile.id)?;
+        }
         if !profile.store_drafts {
             workspace::purge_drafts(&tx, &profile.id)?;
         }
@@ -98,7 +103,9 @@ impl Persistence {
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
         let existing_json: Option<String> = tx
-            .query_row("SELECT json FROM profiles WHERE id=?1", [id], |r| r.get(0))
+            .query_row("SELECT json FROM profiles_v5 WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .optional()
             .map_err(db_error)?;
         let purge_bound_queries = match existing_json {
@@ -107,8 +114,9 @@ impl Persistence {
                 .unwrap_or(true),
             None => true,
         };
-        tx.execute("DELETE FROM profiles WHERE id=?1", [id])
+        tx.execute("DELETE FROM profiles_v5 WHERE id=?1", [id])
             .map_err(db_error)?;
+        history::lifecycle::redact_profile(&tx, id)?;
         workspace::purge_connection(&tx, id)?;
         library::purge_connection(&tx, id, purge_bound_queries)?;
         tx.commit().map_err(db_error)
@@ -131,7 +139,7 @@ impl Persistence {
 
     pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
         let conn = self.connection.lock();
-        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
+        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit_v5 ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
         statement
             .query_map([], |row| {
                 Ok(AuditEntry {
@@ -163,50 +171,29 @@ impl Persistence {
         Ok(())
     }
 
+    /// Compatibility import for completed/recovered local metadata. Runtime
+    /// execution registers its ticket before dispatch and never uses this path.
     pub fn record_history(&self, entry: &HistoryEntry) -> AppResult<()> {
-        entry.validate_lifecycle()?;
-        let mut conn = self.connection.lock();
-        let tx = conn.transaction().map_err(db_error)?;
-        let json = serde_json::to_string(entry)
-            .map_err(|_| AppError::internal("Could not encode history"))?;
-        tx.execute(
-            "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
-            params![entry.id, entry.started_at as i64, json],
-        )
-        .map_err(db_error)?;
-        let cutoff = now_ms().saturating_sub(30 * 24 * 60 * 60 * 1000);
-        tx.execute("DELETE FROM history WHERE started_at < ?1 OR id IN (SELECT id FROM history ORDER BY started_at DESC LIMIT -1 OFFSET 10000)", [cutoff as i64]).map_err(db_error)?;
-        tx.commit().map_err(db_error)
+        self.import_history(entry)
     }
-
-    /// A console outbox may retry after an uncertain local commit. An existing
-    /// identity must contain the exact original payload, never a replacement.
-    pub(crate) fn record_history_once(&self, entry: &HistoryEntry) -> AppResult<()> {
+    fn import_history(&self, entry: &HistoryEntry) -> AppResult<()> {
         entry.validate_lifecycle()?;
-        let json = serde_json::to_string(entry)
-            .map_err(|_| AppError::internal("Could not encode history"))?;
-        let mut conn = self.connection.lock();
-        let tx = conn.transaction().map_err(db_error)?;
-        tx.execute(
-            "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3) ON CONFLICT(id) DO NOTHING",
-            params![entry.id, entry.started_at as i64, json],
-        )
-        .map_err(db_error)?;
-        let stored: (i64, String) = tx
-            .query_row(
-                "SELECT started_at,json FROM history WHERE id=?1",
-                [&entry.id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(db_error)?;
-        if stored != (entry.started_at as i64, json) {
-            return Err(AppError::new(
-                ErrorCode::Conflict,
-                "History identity already contains different evidence",
-            ));
+        if entry.provenance == HistoryProvenance::Admitted {
+            return Err(AppError::invalid("Pending history requires admission"));
         }
-        let cutoff = now_ms().saturating_sub(30 * 24 * 60 * 60 * 1000);
-        tx.execute("DELETE FROM history WHERE started_at < ?1 OR id IN (SELECT id FROM history ORDER BY started_at DESC LIMIT -1 OFFSET 10000)", [cutoff as i64]).map_err(db_error)?;
+        let mut seed = entry.clone();
+        seed.provenance = HistoryProvenance::Admitted;
+        seed.status = None;
+        seed.elapsed_ms = None;
+        seed.execution_summary = None;
+        seed.snowflake_dml = None;
+        seed.snowflake_ddl = None;
+        let mut c = self.connection.lock();
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db_error)?;
+        let ticket = history::lifecycle::begin(&tx, &seed)?;
+        history::lifecycle::finish(&tx, &ticket, &HistoryCompletion::from_entry(entry))?;
         tx.commit().map_err(db_error)
     }
 
@@ -215,11 +202,12 @@ impl Persistence {
     }
 
     pub fn clear_history(&self) -> AppResult<()> {
-        self.connection
-            .lock()
-            .execute("DELETE FROM history", [])
+        let mut c = self.connection.lock();
+        let tx = c
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
-        Ok(())
+        history::lifecycle::clear(&tx)?;
+        tx.commit().map_err(db_error)
     }
 
     pub fn audit(
@@ -232,7 +220,7 @@ impl Persistence {
         self.connection
             .lock()
             .execute(
-                "INSERT INTO audit VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO audit_v5 VALUES(?1,?2,?3,?4,?5,?6)",
                 params![
                     new_id(),
                     now_ms() as i64,
@@ -252,12 +240,12 @@ impl Persistence {
         let mut conn = self.connection.lock();
         let tx = conn.transaction().map_err(db_error)?;
         tx.execute(
-            "INSERT INTO audit(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO audit_v5(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
             params![entry.id, timestamp, entry.connection_id, entry.action, entry.digest, entry.outcome],
         ).map_err(db_error)?;
         let stored: (i64, String, String, String, String) = tx
             .query_row(
-                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit WHERE id=?1",
+                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v5 WHERE id=?1",
                 [&entry.id],
                 |row| {
                     Ok((
@@ -323,7 +311,22 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+
+pub(super) fn metadata_table(connection: &Connection, base: &str) -> AppResult<&'static str> {
+    let modern = schema_version(connection)? >= 5;
+    match (base, modern) {
+        ("profiles", true) => Ok("profiles_v5"),
+        ("history", true) => Ok("history_v5"),
+        ("audit", true) => Ok("audit_v5"),
+        ("profiles", false) => Ok("profiles"),
+        ("history", false) => Ok("history"),
+        ("audit", false) => Ok("audit"),
+        ("groups", _) => Ok("groups"),
+        ("settings", _) => Ok("settings"),
+        _ => Err(AppError::invalid("Unknown metadata table")),
+    }
+}
 
 fn schema_version(connection: &Connection) -> AppResult<i64> {
     let version = connection
@@ -348,7 +351,7 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
     let version = schema_version(&transaction)?;
     // A live version-2 coordinator must finish recording before its physical
     // tables are renamed. Private backup copies need no external lease.
-    let _migration_lease = if version == 2 || version == 3 {
+    let _migration_lease = if version == 2 || version == 3 || version == 4 {
         migration_root
             .map(snowflake_console::claim_migration_lease)
             .transpose()?
@@ -393,6 +396,14 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
         snowflake_console::validate_records(&transaction)?;
         snowflake_console::migrate_v4(&transaction)?;
     }
+    if version < 5 {
+        transaction
+            .pragma_update(None, "user_version", 4)
+            .map_err(db_error)?;
+        snowflake_console::migrate_v5(&transaction)?;
+        transaction.execute_batch("ALTER TABLE profiles RENAME TO profiles_v5; ALTER TABLE history RENAME TO history_v5; ALTER TABLE audit RENAME TO audit_v5;").map_err(db_error)?;
+        history::lifecycle::migrate(&transaction)?;
+    }
     if version < SCHEMA_VERSION {
         transaction
             .pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -400,6 +411,7 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
     }
     snowflake_console::validate_schema(&transaction)?;
     snowflake_console::validate_records(&transaction)?;
+    history::validate_records(&transaction)?;
     for (id, name, environment) in [
         ("production", "Production", Environment::Production),
         ("staging", "Staging", Environment::Staging),
@@ -460,7 +472,8 @@ fn validate_schema(connection: &Connection) -> AppResult<()> {
             &[("key", "TEXT", false, true), ("value", "TEXT", true, false)],
         ),
     ];
-    for (table, expected) in TABLES {
+    for (base, expected) in TABLES {
+        let table = metadata_table(connection, base)?;
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(db_error)?;
@@ -578,7 +591,7 @@ mod tests {
         db.set_setting("marker", "preserved").unwrap();
         db.connection
             .lock()
-            .execute_batch("DROP TABLE snowflake_console_steps_v4;")
+            .execute_batch("DROP TABLE snowflake_console_steps_v5;")
             .unwrap();
         drop(db);
         let path = root.path().join("joinery.sqlite");
@@ -598,7 +611,7 @@ mod tests {
         assert_eq!(
             connection
                 .query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps_v4'",
+                    "SELECT count(*) FROM sqlite_schema WHERE name='snowflake_console_steps_v5'",
                     [],
                     |r| r.get::<_, i64>(0)
                 )
@@ -859,11 +872,13 @@ mod tests {
             "connectionName": "Local fixture", "startedAt": started_at,
             "sql": null, "statementCount": 4, "status": "completed", "elapsedMs": 5
         });
+        let imported: HistoryEntry = serde_json::from_value(legacy.clone()).unwrap();
+        db.record_history(&imported).unwrap();
         db.connection
             .lock()
             .execute(
-                "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
-                params!["legacy-script", started_at as i64, legacy.to_string()],
+                "UPDATE history_v5 SET json=?1 WHERE id='legacy-script'",
+                [legacy.to_string()],
             )
             .unwrap();
         drop(db);
@@ -908,13 +923,13 @@ mod tests {
             snowflake_ddl: None,
         };
         db.record_audit_once(&audit).unwrap();
-        db.record_history_once(&history).unwrap();
+        db.record_history(&history).unwrap();
         drop(db);
         let db = Persistence::open(root.path()).unwrap();
         // Model a lost commit return: replay the same retained payload after
         // reopening SQLite, without appending or replacing evidence.
         db.record_audit_once(&audit).unwrap();
-        db.record_history_once(&history).unwrap();
+        db.record_history(&history).unwrap();
         assert_eq!(db.audit_log().unwrap().len(), 1);
         assert_eq!(db.history("").unwrap().len(), 1);
         audit.outcome = "completed".into();
@@ -924,7 +939,7 @@ mod tests {
             ErrorCode::Conflict
         );
         assert_eq!(
-            db.record_history_once(&history).unwrap_err().code,
+            db.record_history(&history).unwrap_err().code,
             ErrorCode::Conflict
         );
         assert_eq!(db.audit_log().unwrap()[0].outcome, "started");

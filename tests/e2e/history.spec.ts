@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext, type Page } from "./fixtures";
 import type { HistoryEntry, HistoryPage } from "../../src/ipc/generated";
 
@@ -16,7 +16,12 @@ async function rpc<T>(request: APIRequestContext, command: string, args = {}): P
 
 async function seed(request: APIRequestContext) {
   await rpc(request, "clear_history");
-  expect(await rpc(request, "test_seed_history")).toMatchObject({ count: 1_011 });
+  const result = await rpc<{ count: number; olderId: string; admittedId: string }>(
+    request,
+    "test_seed_history",
+  );
+  expect(result).toMatchObject({ count: 1_011 });
+  return result;
 }
 
 async function openHistory(page: Page) {
@@ -35,11 +40,79 @@ async function activeSql(page: Page) {
   });
 }
 
+test("clearing admitted PostgreSQL history survives late completion and renderer restart", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60000);
+  await rpc(request, "clear_history");
+  await page.goto("/");
+  await page.getByRole("button", { name: "New connection", exact: true }).click();
+  const name = `History admission ${randomUUID()}`;
+  await page.getByLabel("Connection name", { exact: true }).fill(name);
+  await page.getByLabel("Database engine").selectOption("postgres");
+  await page.getByLabel("Host", { exact: true }).fill("127.0.0.1");
+  await page.getByLabel("Port", { exact: true }).fill(process.env.JOINERY_POSTGRES_PORT ?? "55432");
+  await page.getByLabel("Database", { exact: true }).fill("joinery");
+  await page.getByLabel("Username", { exact: true }).fill("joinery");
+  await page.getByLabel("Password", { exact: true }).fill("joinery-local-only");
+  await page.getByLabel("Require TLS and verify the server certificate").uncheck();
+  await page.getByLabel("Safe Mode", { exact: true }).selectOption("silent");
+  await page.getByLabel(/Save SQL text in local history/).check();
+  await page.getByRole("button", { name: "Save and connect", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "New query tab", exact: true }).click();
+  const queryTab = page.getByRole("tablist", { name: "Workspaces" }).getByRole("tab", {
+    selected: true,
+  });
+  const queryTabId = (await queryTab.getAttribute("id"))!;
+  const sql = "/* exact admission 雪 */\nSELECT pg_sleep(8); -- retained only until Clear\n";
+  await page.getByRole("textbox", { name: "SQL editor" }).fill(sql);
+  const admitted = page.waitForResponse((response) => response.url().endsWith("/rpc/execute_plan"));
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  const admission = await (await admitted).json();
+  expect(admission.error).toBeUndefined();
+  const runId = admission.result as string;
+  expect(await rpc<HistoryEntry>(request, "history_entry", { id: runId })).toMatchObject({
+    sql,
+    provenance: "admitted",
+    status: null,
+    elapsedMs: null,
+  });
+  await openHistory(page);
+  await page.getByRole("textbox", { name: "Search history", exact: true }).fill(name);
+  const rows = page.locator(".history-list .history-entry");
+  await expect(rows).toHaveCount(1);
+  await expect(rows).toContainText("Admitted; completion pending");
+  await expect(rows).toContainText("Duration unavailable");
+  await page.getByRole("button", { name: "Clear history", exact: true }).click();
+  await page.getByRole("button", { name: "Clear local history", exact: true }).click();
+  await expect(rows).toHaveCount(0);
+  expect(await rpc(request, "history_entry", { id: runId })).toBeNull();
+
+  // Finish the actual server query, then revisit both the native detail and UI.
+  await page.locator(`[id="${queryTabId}"]`).click();
+  await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible({
+    timeout: 20000,
+  });
+  await expect(page.locator(".query-error")).toHaveCount(0);
+  expect(await rpc(request, "history_entry", { id: runId })).toBeNull();
+  await openHistory(page);
+  await page.getByRole("textbox", { name: "Search history", exact: true }).fill(name);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await expect(rows).toHaveCount(0);
+  await page.reload();
+  await openHistory(page);
+  await page.getByRole("textbox", { name: "Search history", exact: true }).fill(name);
+  await expect(rows).toHaveCount(0);
+  expect(await rpc(request, "history_entry", { id: runId })).toBeNull();
+});
+
 test("history pages tied timestamps, searches beyond 1000 and opens exact SQL without execution", async ({
   page,
   request,
 }) => {
-  await seed(request);
+  const fixture = await seed(request);
   const commands: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/rpc/")) commands.push(request.url().split("/rpc/")[1]);
@@ -66,7 +139,7 @@ test("history pages tied timestamps, searches beyond 1000 and opens exact SQL wi
   await page.getByRole("textbox", { name: "Search history", exact: true }).fill("olderneedle café");
   const payload = (await (await response).json()).result as HistoryPage;
   expect(payload.entries).toHaveLength(1);
-  expect(payload.entries[0].id).toBe("history-fixture-0000");
+  expect(payload.entries[0].id).toBe(fixture.olderId);
   expect("sql" in payload.entries[0]).toBe(false);
   expect(Array.from(payload.entries[0].sqlPreview ?? "").length).toBeLessThanOrEqual(256);
   expect(payload.entries[0].sqlPreview).not.toContain("olderneedle");
@@ -75,7 +148,7 @@ test("history pages tied timestamps, searches beyond 1000 and opens exact SQL wi
   expect(commands).not.toContain("history_entry");
   await rows.first().click();
   await expect.poll(() => activeSql(page)).toBe(exactSql);
-  const detail = await rpc<HistoryEntry>(request, "history_entry", { id: "history-fixture-0000" });
+  const detail = await rpc<HistoryEntry>(request, "history_entry", { id: fixture.olderId });
   expect(createHash("sha256").update(detail.sql!).digest("hex")).toBe(
     createHash("sha256").update(exactSql).digest("hex"),
   );
@@ -132,7 +205,7 @@ test("keyboard history palette finds preview-invisible SQL and distinguishes met
 });
 
 test("clearing history invalidates a delayed exact-detail response", async ({ page, request }) => {
-  await seed(request);
+  const fixture = await seed(request);
   await page.goto("/");
   await openHistory(page);
   await page.getByRole("textbox", { name: "Search history", exact: true }).fill("olderneedle");
@@ -172,7 +245,7 @@ test("clearing history invalidates a delayed exact-detail response", async ({ pa
         ),
     );
     await expect(row).toHaveCount(0);
-    expect(await rpc(request, "history_entry", { id: "history-fixture-0000" })).toBeNull();
+    expect(await rpc(request, "history_entry", { id: fixture.olderId })).toBeNull();
     await expect.poll(() => activeSql(page)).not.toBe(exactSql);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await expect(row).toHaveCount(0);
@@ -185,7 +258,7 @@ test("history and keyboard palette preserve admitted and recovered provenance wi
   page,
   request,
 }) => {
-  await seed(request);
+  const fixture = await seed(request);
   const commands: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/rpc/")) commands.push(request.url().split("/rpc/")[1]);
@@ -215,7 +288,7 @@ test("history and keyboard palette preserve admitted and recovered provenance wi
   await expect(known).toContainText("Original recorded completion is preserved");
   await expect(duration).toContainText("Failed · Statement counts unknown");
   const stored = await rpc<HistoryEntry>(request, "history_entry", {
-    id: "history-lifecycle-admitted",
+    id: fixture.admittedId,
   });
   expect(stored).toMatchObject({ provenance: "admitted", status: null, elapsedMs: null });
   expect(stored.sql).toContain("lifecycle_admitted");

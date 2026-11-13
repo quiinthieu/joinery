@@ -184,7 +184,7 @@ async fn ddl_studio_failed_start_audit_does_not_dispatch_or_claim_terminal_outco
     let plan = ddl_review(&studio, &request).await;
     let token = ddl_approve(&studio, &plan);
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
     assert!(
         studio
             .execute_snowflake_ddl(&plan.id, Some(&token))
@@ -739,7 +739,7 @@ async fn ddl_studio_late_disconnect_or_persistence_failure_preserves_success() {
             studio.disconnect(&session.info.id);
         } else {
             let db = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-            db.execute_batch(&format!("CREATE TRIGGER reject_{scenario} BEFORE INSERT ON {scenario} BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
+            reject_receipt_write(&db, scenario);
         }
         release.notify_one();
         let result = task.await.unwrap().unwrap();
@@ -795,7 +795,11 @@ async fn ddl_studio_dropped_waiter_and_shutdown_drain_durable_ack() {
             .await
             .is_err()
     );
-    assert!(studio.history("").unwrap().is_empty());
+    let pending = studio.history("").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].provenance, HistoryProvenance::Admitted);
+    assert!(pending[0].status.is_none());
+    assert!(pending[0].snowflake_ddl.is_none());
     release.notify_one();
     shutdown.await.unwrap().unwrap();
     let history = studio.history("").unwrap();
@@ -834,7 +838,7 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         entered.notified().await;
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
         for table in failed_tables {
-            database.execute_batch(&format!("CREATE TRIGGER reject_{table} BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'synthetic local failure'); END;")).unwrap();
+            reject_receipt_write(&database, table);
         }
         waiter.abort();
         assert!(waiter.await.unwrap_err().is_cancelled());
@@ -884,7 +888,7 @@ async fn ddl_studio_dropped_waiter_storage_failure_retains_ack_and_blocks_shutdo
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].id, original.id);
         assert_eq!(history[0].snowflake_ddl, original.snowflake_ddl);
-        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
+        let terminal_audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v5 WHERE action = 'snowflake-ddl' AND outcome = 'succeeded'", [], |row| row.get(0)).unwrap();
         assert_eq!(terminal_audits, 1);
         assert_eq!(driver.ddl_calls.lock().len(), 1);
         assert_eq!(driver.state_calls.load(Ordering::Relaxed), 0);

@@ -64,6 +64,14 @@ See the [verification ledger](replacement-verification.md) and
 [usage walkthrough](snowflake-sdk-console-workflow.md) for source-scoped checks.
 The remaining sections describe the full design, including unimplemented gates.
 
+The schema-5 history/privacy increment adds durable admission tickets, conditional
+SQL-free completion and atomic console receipt/history/audit transitions. It also
+seals publisher authority and recovers terminal-but-unsettled obligations. See
+the [current integration evidence](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
+These prerequisites do not implement durable byte reservations or bound lifetime
+ticket/privacy ancestry. Generic crash-owner proof and durable failed generic/
+typed completion payloads remain open; count gates stay in force.
+
 ## Pre-increment behavior and constraints
 
 The source baseline is `b86ac44a2124d2690cf5dfeaf87dea462b62c0a7`, inspected with
@@ -168,9 +176,9 @@ recorded in `.cache/verification/reviewed-console/receipt-budget-source-inventor
 
 In [the execution owner](../src-tauri/src/execution/snowflake_console.rs),
 `flush_console_recordings` confirms journal snapshots, then the started audit,
-history and finished audit. Those side-write obligations currently live in
-`Retained` memory. A terminal receipt alone does not prove their completion after
-a crash. The existing
+history and finished audit. At that baseline, the side-write obligations lived
+in `Retained` memory. A terminal receipt alone did not prove their completion
+after a crash. The existing
 [late-Finished regression](../src-tauri/src/execution/snowflake_console_retention_tests.rs)
 also demonstrates `pending_recording == false` while publisher ownership remains:
 the `Finished` callback can still append a delivery-failure observation.
@@ -224,8 +232,9 @@ The dependent implementation must preserve opted-in query history across a crash
 after admission. Store the original permitted SQL once in a pending history row;
 keep lifecycle metadata, receipts, audits and replay/control payloads SQL-free.
 Do not omit the original text merely to simplify reservation recovery. Bind
-values and rewritten wire SQL remain excluded. This is a proposed contract,
-not current runtime behavior.
+values and rewritten wire SQL remain excluded. Schema-5 source implements the
+admission/privacy and console atomic transitions below; reservation settlement
+and full-capacity qualification remain required.
 
 Use transaction-scoped helpers in the same SQLite store:
 
@@ -233,7 +242,7 @@ Use transaction-scoped helpers in the same SQLite store:
 | --- | --- |
 | Prepare | Original positive receipt, bounded SQL-free lifecycle metadata, pending history row and deterministic started audit. Exact commit/readback precedes positive admission confirmation and dispatch |
 | Completion | Original terminal, conditional update of the existing history row, exact finished audit and applied/suppressed disposition. Do not accept another SQL copy from an old in-memory completion payload |
-| Publisher seal | After every owned late observation is recorded, seal publication authority and settle the reservation. Failed or uncertain seal remains a recording obligation |
+| Publisher seal | After every owned late observation is recorded, seal publication authority and confirm history/audit obligations. Failed or uncertain seal remains a recording obligation. Durable reservation settlement is still unimplemented |
 | Recovery | Under the normal exclusive owner lease, preserve existing permitted history SQL, recover original receipt uncertainty locally and update history with explicit recovery provenance. No SQL dispatch |
 
 History is execution metadata, not permission to resume. A pending row means
@@ -249,12 +258,14 @@ later fails. Opening saved SQL requires an explicit new-tab action.
 
 The [history lifecycle model and UI](query-history.md#completion-and-recovery-evidence)
 now implement nullable history-only status/duration, closed provenance,
-legacy defaults and shared read/write/backup invariants. This is a prerequisite,
-not the atomic persistence described above. Normal producers still write terminal
-rows; admission/recovery/restore do not yet produce pending/recovered history.
-The publication-panic fallback reports unavailable duration instead of estimating
-it from the wall clock. No schema-5 writer fencing, privacy suppression,
-durable side-write settlement or reservation is implied by the JSON model.
+legacy defaults and shared read/write/backup invariants. Runtime admission,
+console publisher recovery and compatible restore now create pending/recovered
+history through SQL-free authority. The publication-panic fallback reports
+unavailable duration instead of estimating it from the wall clock. Schema-5
+writer fencing and privacy suppression have separate persistence regressions;
+the JSON model alone would not establish those guarantees. Generic process-crash
+owner proof, durable failed generic/typed completion payloads and byte
+reservations remain incomplete.
 
 History privacy/disposition is separate from immutable original receipt evidence.
 Clear history atomically removes history rows and suppresses already-admitted
@@ -275,8 +286,8 @@ indexes, with a checked allowance for remaining growth; 16 KiB is not a history
 bound. The [history browsing workflow](query-history.md) now uses bounded summary
 pages and explicit exact-SQL detail. Search filters all retained rows before its
 page limit; the compatibility API caps matching full entries at 1,000. These
-read APIs do not implement the atomic lifecycle and privacy suppression required
-above. Current history
+read APIs alone do not establish atomic lifecycle or privacy suppression; the
+separate execution/storage regressions are recorded in the ledger. Current history
 prunes at 30 days/10,000 rows; retention-policy parity/visibility remains a
 separate required acceptance item, not evidence of complete DataGrip parity.
 

@@ -5,7 +5,7 @@ use crate::{secrets::MemorySecrets, snowflake_runtime::studio_fixture::Fixture};
 
 pub(super) static FIXTURE_LANE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn profile() -> ConnectionProfile {
+pub(super) fn profile() -> ConnectionProfile {
     ConnectionProfile {
         id: new_id(),
         name: "Synthetic retained console".into(),
@@ -142,6 +142,63 @@ async fn run(studio: &Arc<Studio>, session: &str, sql: &str) -> SnowflakeConsole
 
 pub(super) fn database(f: &Fixture) -> rusqlite::Connection {
     rusqlite::Connection::open(f.directory.path().join("workspace/joinery.sqlite")).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reviewed_console_prepare_preserves_permitted_sql_before_started_or_dispatch() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let studio = new_studio(&f);
+    let mut saved = profile();
+    saved.store_query_text = true;
+    let saved = studio.save_profile(saved, None).unwrap();
+    let info = studio
+        .connect(&saved.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let sql = "SELECT 1";
+    let start = approved(&studio, &info.id, sql);
+    let before = queries(&f);
+    let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+    let seen_tx = Mutex::new(Some(seen_tx));
+    let observed = studio.clone();
+    let run_id = start_run(
+        &studio,
+        &start,
+        Arc::new(move |event| {
+            if let QueryEvent::Started { run_id, .. } = event {
+                let history = observed.persistence.history_entry(&run_id).unwrap();
+                let receipt = observed.persistence.console_run(&run_id).unwrap();
+                seen_tx
+                    .lock()
+                    .take()
+                    .unwrap()
+                    .send((history, receipt))
+                    .unwrap();
+                // Reject publication before the first admission. Neither this
+                // check nor recovery may execute the retained statement.
+                return false;
+            }
+            true
+        }),
+    )
+    .unwrap();
+    let (history, receipt) = tokio::time::timeout(Duration::from_secs(15), seen_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    let history = history.expect("Prepare must durably preserve history before Started");
+    assert_eq!(history.id, run_id);
+    assert_eq!(history.sql.as_deref(), Some(sql));
+    assert_eq!(history.provenance, HistoryProvenance::Admitted);
+    assert_eq!(history.status, None);
+    assert_eq!(history.elapsed_ms, None);
+    let receipt = receipt.expect("positive admission must be durable before Started");
+    assert!(receipt.steps.is_empty());
+    assert!(receipt.terminal.is_none());
+    finished(&studio, &start).await;
+    assert_eq!(queries(&f), before);
+    studio.shutdown_and_wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -539,7 +596,7 @@ async fn reviewed_console_ack_recording_failure_blocks_rows_suffix_and_shutdown_
     let f = Fixture::new();
     let (studio, info) = connected(&f).await;
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps_v4 BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_ack BEFORE UPDATE OF outcome_json ON snowflake_console_steps_v5 BEGIN SELECT RAISE(FAIL,'fixture receipt failure'); END;").unwrap();
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let results = Arc::new(Mutex::new(0));
     let observed = results.clone();
@@ -596,13 +653,13 @@ async fn reviewed_console_history_and_audit_outbox_are_idempotent_across_disconn
     let f = Fixture::new();
     let (studio, info) = connected(&f).await;
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_history BEFORE INSERT ON history BEGIN SELECT RAISE(FAIL,'fixture history failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_history BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(FAIL,'fixture history failure'); END;").unwrap();
     let start = approved(&studio, &info.id, "SELECT 1");
     start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     assert!(finished(&studio, &start).await.pending_recording);
     studio.disconnect_and_wait(&info.id).await.unwrap();
     assert!(studio.shutdown_and_wait().await.is_err());
-    db.execute_batch("DROP TRIGGER deny_console_history; CREATE TRIGGER deny_console_audit BEFORE INSERT ON audit WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(FAIL,'fixture audit failure'); END;").unwrap();
+    db.execute_batch("DROP TRIGGER deny_console_history; CREATE TRIGGER deny_console_audit BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(FAIL,'fixture audit failure'); END;").unwrap();
     assert!(
         studio
             .snowflake_console_run(&start.client_request_id)
@@ -611,6 +668,11 @@ async fn reviewed_console_history_and_audit_outbox_are_idempotent_across_disconn
             .pending_recording
     );
     assert_eq!(studio.history("").unwrap().len(), 1);
+    assert_eq!(
+        studio.history("").unwrap()[0].provenance,
+        HistoryProvenance::Admitted
+    );
+    assert_eq!(studio.history("").unwrap()[0].status, None);
     db.execute_batch("DROP TRIGGER deny_console_audit;")
         .unwrap();
     for _ in 0..3 {
@@ -735,20 +797,57 @@ async fn reviewed_console_prepare_recording_failure_retains_identity_but_never_d
     let (studio, info) = connected(&f).await;
     let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs_v4 BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
-    let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
-    let view = finished(&studio, &start).await;
-    assert!(view.pending_recording);
-    assert_eq!(view.run.metadata.run_id, id);
-    assert_eq!(view.run.terminal.unwrap().accounting.not_attempted, 2);
+    db.execute_batch("CREATE TRIGGER deny_console_prepare BEFORE INSERT ON snowflake_console_runs_v5 BEGIN SELECT RAISE(FAIL,'fixture prepare failure'); END;").unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let observed = started.clone();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let done_tx = Mutex::new(Some(done_tx));
+    assert!(
+        studio
+            .start_snowflake_console(
+                &start,
+                Arc::new(move |event| {
+                    match event {
+                        QueryEvent::Started { .. } => observed.store(true, Ordering::Release),
+                        QueryEvent::Finished { run_id, .. } => {
+                            done_tx.lock().take().unwrap().send(run_id).unwrap();
+                        }
+                        _ => {}
+                    }
+                    true
+                })
+            )
+            .is_err()
+    );
+    let id = tokio::time::timeout(Duration::from_secs(15), done_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !started.load(Ordering::Acquire),
+        "unconfirmed Prepare is not positively published"
+    );
+    assert!(
+        studio
+            .snowflake_console_run(&start.client_request_id)
+            .is_err()
+    );
     assert_eq!(queries(&f).len(), 2);
     db.execute_batch("DROP TRIGGER deny_console_prepare;")
         .unwrap();
-    let recovered = studio
-        .snowflake_console_run(&start.client_request_id)
-        .unwrap()
-        .unwrap();
+    let recovered = finished(&studio, &start).await;
     assert!(!recovered.pending_recording);
+    assert_eq!(recovered.run.metadata.run_id, id);
+    assert_eq!(
+        recovered
+            .run
+            .terminal
+            .as_ref()
+            .unwrap()
+            .accounting
+            .not_attempted,
+        2
+    );
     assert_eq!(
         recovered.run.terminal.unwrap().reason,
         ConsoleStopReason::RecordingFailed
@@ -756,6 +855,178 @@ async fn reviewed_console_prepare_recording_failure_retains_identity_but_never_d
     assert_eq!(start_run(&studio, &start, Arc::new(|_| true)).unwrap(), id);
     assert_eq!(queries(&f).len(), 2, "local flush never resumes SQL");
     studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_ambiguous_prepare_commit_reconciles_exact_positive_without_sql() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    let f = Fixture::new();
+    let studio = new_studio(&f);
+    let mut saved = profile();
+    saved.store_query_text = true;
+    let saved = studio.save_profile(saved, None).unwrap();
+    let info = studio
+        .connect(&saved.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let sql = "SELECT 1; COMMIT";
+    let start = approved(&studio, &info.id, sql);
+    let before = queries(&f);
+    let started = Arc::new(AtomicBool::new(false));
+    let observed = started.clone();
+    studio.console.fail_next_prepare_confirmation();
+    // The real transaction commits, its response is lost, and the start path
+    // proves that exact positive by readback. The retained failed-admission
+    // owner must still never dispatch when that recording ambiguity resolves.
+    let id = start_run(
+        &studio,
+        &start,
+        Arc::new(move |event| {
+            if matches!(event, QueryEvent::Started { .. }) {
+                observed.store(true, Ordering::Release);
+            }
+            true
+        }),
+    )
+    .unwrap();
+    let view = finished(&studio, &start).await;
+    assert_eq!(view.run.metadata.run_id, id);
+    assert!(!view.pending_recording);
+    assert!(!started.load(Ordering::Acquire));
+    assert!(view.run.steps.is_empty());
+    let terminal = view.run.terminal.as_ref().unwrap();
+    assert_eq!(terminal.reason, ConsoleStopReason::RecordingFailed);
+    assert_eq!(terminal.accounting.not_attempted, 2);
+    let history = studio.persistence.history_entry(&id).unwrap().unwrap();
+    assert_eq!(history.sql.as_deref(), Some(sql));
+    assert_eq!(history.status, Some(RunStatus::Failed));
+    assert_eq!(
+        start_run(
+            &studio,
+            &start,
+            Arc::new(|_| panic!("dedup must not republish"))
+        )
+        .unwrap(),
+        id
+    );
+    assert_eq!(queries(&f), before);
+    studio.shutdown_and_wait().await.unwrap();
+    let restarted = new_studio(&f);
+    let restored = restarted
+        .snowflake_console_run(&start.client_request_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.run, view.run);
+    assert_eq!(
+        restarted
+            .persistence
+            .history_entry(&id)
+            .unwrap()
+            .unwrap()
+            .sql
+            .as_deref(),
+        Some(sql)
+    );
+    assert_eq!(queries(&f), before);
+    restarted.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewed_console_pending_history_privacy_races_preserve_ack_without_text_resurrection() {
+    let _fixture_lane = FIXTURE_LANE.lock().await;
+    for mutation in ["clear", "opt-out-and-in", "delete"] {
+        let f = Fixture::new();
+        std::fs::write(f.controls.join("hold-reviewed-drain"), "").unwrap();
+        let studio = new_studio(&f);
+        let mut saved = profile();
+        saved.store_query_text = true;
+        let mut saved = studio.save_profile(saved, None).unwrap();
+        let info = studio
+            .connect(&saved.id, ConnectionSecrets::default())
+            .await
+            .unwrap();
+        let start = approved(&studio, &info.id, "SELECT 1; COMMIT");
+        let id = start_run(&studio, &start, Arc::new(|_| true)).unwrap();
+        marker(&f, "reviewed-drain-entered").await;
+        let original = tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                let run = studio.persistence.console_run(&id).unwrap().unwrap();
+                if matches!(
+                    run.steps[0].outcome,
+                    Some(ConsoleStepOutcome::Acknowledged(_))
+                ) {
+                    break run.steps[0].outcome.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let pending = studio.persistence.history_entry(&id).unwrap().unwrap();
+        assert_eq!(pending.provenance, HistoryProvenance::Admitted);
+        assert_eq!(pending.sql.as_deref(), Some("SELECT 1; COMMIT"));
+        match mutation {
+            "clear" => {
+                studio.clear_history().unwrap();
+                studio.cancel(&id).await.unwrap();
+            }
+            "opt-out-and-in" => {
+                saved.store_query_text = false;
+                saved = studio.save_profile(saved, None).unwrap();
+                assert!(
+                    studio
+                        .persistence
+                        .history_entry(&id)
+                        .unwrap()
+                        .unwrap()
+                        .sql
+                        .is_none()
+                );
+                saved.store_query_text = true;
+                studio.save_profile(saved, None).unwrap();
+            }
+            "delete" => studio.delete_profile(&saved.id).unwrap(),
+            _ => unreachable!(),
+        }
+        let view = finished(&studio, &start).await;
+        assert!(
+            !view.pending_recording,
+            "privacy suppression settles local history"
+        );
+        assert_eq!(view.run.steps[0].outcome, original);
+        assert_eq!(
+            view.run.terminal.as_ref().unwrap().accounting.acknowledged,
+            1
+        );
+        assert_eq!(
+            view.run.terminal.as_ref().unwrap().accounting.not_attempted,
+            1
+        );
+        let history = studio.persistence.history_entry(&id).unwrap();
+        if mutation == "clear" {
+            assert!(
+                history.is_none(),
+                "late completion cannot undo Clear history"
+            );
+        } else {
+            assert!(
+                history.unwrap().sql.is_none(),
+                "late completion cannot restore redacted SQL"
+            );
+        }
+        assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+        studio.shutdown_and_wait().await.unwrap();
+        let restarted = new_studio(&f);
+        let restored = restarted
+            .snowflake_console_run(&start.client_request_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.run, view.run);
+        let history = restarted.persistence.history_entry(&id).unwrap();
+        assert!(history.as_ref().is_none_or(|entry| entry.sql.is_none()));
+        assert_eq!(&queries(&f)[2..], ["SELECT 1"]);
+        restarted.shutdown_and_wait().await.unwrap();
+    }
 }
 
 #[tokio::test]
@@ -913,14 +1184,14 @@ async fn reviewed_console_definite_negative_is_distinct_from_unreadable_original
     // original cannot turn an already acknowledged action into NotAdmitted.
     let observer = new_studio(&f);
     let db = database(&f);
-    db.execute_batch("ALTER TABLE snowflake_console_runs_v4 RENAME TO held_console_runs;")
+    db.execute_batch("ALTER TABLE snowflake_console_runs_v5 RENAME TO held_console_runs;")
         .unwrap();
     assert!(
         observer
             .start_snowflake_console(&start, Arc::new(|_| true))
             .is_err()
     );
-    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs_v4;")
+    db.execute_batch("ALTER TABLE held_console_runs RENAME TO snowflake_console_runs_v5;")
         .unwrap();
     assert_eq!(
         start_run(&observer, &start, Arc::new(|_| true)).unwrap(),
@@ -1120,7 +1391,7 @@ async fn reviewed_console_refusal_write_failure_remains_frozen_until_sql_free_re
     let approval = start.approval.take();
     let backup = studio.create_metadata_backup().unwrap();
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_refusal BEFORE INSERT ON snowflake_console_rejections_v4 BEGIN SELECT RAISE(FAIL,'fixture refusal failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_refusal BEFORE INSERT ON snowflake_console_rejections_v5 BEGIN SELECT RAISE(FAIL,'fixture refusal failure'); END;").unwrap();
     assert!(
         studio
             .start_snowflake_console(&start, Arc::new(|_| true))
@@ -1213,7 +1484,7 @@ async fn reviewed_console_malformed_request_identity_never_creates_a_refusal() {
     let db = database(&f);
     assert_eq!(
         db.query_row(
-            "SELECT count(*) FROM snowflake_console_rejections_v4",
+            "SELECT count(*) FROM snowflake_console_rejections_v5",
             [],
             |row| row.get::<_, i64>(0)
         )

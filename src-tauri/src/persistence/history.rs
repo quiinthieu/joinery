@@ -4,6 +4,10 @@ use super::{Persistence, db_error};
 use crate::domain::*;
 use rusqlite::{OptionalExtension, params};
 
+pub(in crate::persistence) mod lifecycle;
+pub use lifecycle::{HistoryCompletion, HistoryDisposition, HistoryTicket};
+pub(super) use lifecycle::{schema_objects, validate_records};
+
 const MAX_SEARCH_BYTES: usize = 512;
 const MAX_ID_BYTES: usize = 256;
 const PREVIEW_CHARS: usize = 256;
@@ -33,11 +37,11 @@ const PAGE_SQL: &str = "SELECT json_object(
  ELSE NULL END,
  CASE WHEN ?2 THEN json_extract(json,'$.sql') ELSE NULL END,
  json_type(json,'$.sql')
- FROM history WHERE id=?1";
+ FROM history_v5 WHERE id=?1";
 
 // Sort only keys. Including full SQL in this ORDER BY projection could cause
 // SQLite's sorter to collect every candidate's SQL before Rust receives a row.
-const KEYS_SQL: &str = "SELECT id,started_at FROM history
+const KEYS_SQL: &str = "SELECT id,started_at FROM history_v5
  WHERE (?1 IS NULL OR started_at<?1 OR (started_at=?1 AND id<?2))
  ORDER BY started_at DESC,id DESC LIMIT ?3";
 
@@ -252,7 +256,7 @@ impl Persistence {
         let connection = self.connection.lock();
         let stored: Option<(i64, String)> = connection
             .query_row(
-                "SELECT started_at,json FROM history WHERE id=?1",
+                "SELECT started_at,json FROM history_v5 WHERE id=?1",
                 [id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -339,10 +343,10 @@ pub(super) fn compatibility_history(
     let search = tokens(search)?;
     let connection = store.connection.lock();
     let mut statement = connection
-        .prepare("SELECT id,started_at FROM history ORDER BY started_at DESC,id DESC")
+        .prepare("SELECT id,started_at FROM history_v5 ORDER BY started_at DESC,id DESC")
         .map_err(db_error)?;
     let mut detail = connection
-        .prepare("SELECT json FROM history WHERE id=?1")
+        .prepare("SELECT json FROM history_v5 WHERE id=?1")
         .map_err(db_error)?;
     let mut rows = statement.query([]).map_err(db_error)?;
     let mut entries = Vec::new();
@@ -365,7 +369,7 @@ pub(super) fn compatibility_history(
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SAFE_TIMESTAMP, PREVIEW_CHARS, metadata};
+    use super::{HistoryCompletion, MAX_SAFE_TIMESTAMP, PREVIEW_CHARS, lifecycle, metadata};
     use crate::{domain::*, persistence::Persistence};
     use rusqlite::params;
 
@@ -399,7 +403,7 @@ mod tests {
                     elapsed_ms: Some(1),
                 };
                 tx.execute(
-                    "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
+                    "INSERT INTO history_v5(id,started_at,json) VALUES(?1,?2,?3)",
                     params![
                         entry.id,
                         i64::try_from(entry.started_at).unwrap(),
@@ -446,11 +450,57 @@ mod tests {
         let tx = connection.transaction().unwrap();
         for entry in entries {
             tx.execute(
-                "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
+                "INSERT INTO history_v5(id,started_at,json) VALUES(?1,?2,?3)",
                 params![
                     entry.id,
                     i64::try_from(entry.started_at).unwrap(),
                     serde_json::to_string(entry).unwrap()
+                ],
+            )
+            .unwrap();
+            lifecycle::ensure_profile(&tx, &entry.connection_id).unwrap();
+            let (lineage, era): (String, String) = tx
+                .query_row(
+                    "SELECT lineage,current_era FROM history_privacy_v5",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            let generation: String = tx
+                .query_row(
+                    "SELECT generation FROM history_profile_privacy_v5 WHERE connection_id=?1",
+                    [&entry.connection_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let mut plain = entry.clone();
+            plain.sql = None;
+            plain.provenance = HistoryProvenance::Admitted;
+            plain.status = None;
+            plain.elapsed_ms = None;
+            plain.execution_summary = None;
+            plain.snowflake_dml = None;
+            plain.snowflake_ddl = None;
+            let pending = entry.provenance == HistoryProvenance::Admitted;
+            use sha2::Digest;
+            tx.execute(
+                "INSERT INTO history_tickets_v5 VALUES(?1,?2,?3,?4,?5,?6,0,?7,?8)",
+                params![
+                    entry.id,
+                    serde_json::to_string(&plain).unwrap(),
+                    lineage,
+                    era,
+                    generation,
+                    entry
+                        .sql
+                        .as_ref()
+                        .map(|sql| hex::encode(sha2::Sha256::digest(sql.as_bytes()))),
+                    if pending { "pending" } else { "applied" },
+                    if pending {
+                        None
+                    } else {
+                        Some(serde_json::to_string(&HistoryCompletion::from_entry(entry)).unwrap())
+                    }
                 ],
             )
             .unwrap();
@@ -496,7 +546,7 @@ mod tests {
             .connection
             .lock()
             .execute(
-                "UPDATE history SET json=json_remove(json,'$.provenance') WHERE id='legacy'",
+                "UPDATE history_v5 SET json=json_remove(json,'$.provenance') WHERE id='legacy'",
                 [],
             )
             .unwrap();
@@ -581,7 +631,7 @@ mod tests {
                 .connection
                 .lock()
                 .execute(
-                    "INSERT INTO history(id,started_at,json) VALUES('original',1,?1)",
+                    "INSERT INTO history_v5(id,started_at,json) VALUES('original',1,?1)",
                     [serde_json::to_string(&raw).unwrap()],
                 )
                 .unwrap();
@@ -981,7 +1031,8 @@ mod tests {
             store
                 .connection
                 .lock()
-                .query_row("SELECT count(*) FROM history", [], |r| r.get::<_, i64>(0))
+                .query_row("SELECT count(*) FROM history_v5", [], |r| r
+                    .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -1033,7 +1084,7 @@ mod tests {
             store
                 .connection
                 .lock()
-                .execute(&format!("UPDATE history SET json={update}"), [])
+                .execute(&format!("UPDATE history_v5 SET json={update}"), [])
                 .unwrap();
             assert!(store.history_page(&request("", 100)).is_err());
             assert!(store.history_entry("original").is_err());

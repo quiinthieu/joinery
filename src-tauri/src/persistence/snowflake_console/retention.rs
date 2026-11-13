@@ -3,15 +3,15 @@ use super::*;
 use crate::console_contract::*;
 use std::collections::HashSet;
 
-const RUNS: &str = "snowflake_console_runs_v4";
-const REJECTIONS: &str = "snowflake_console_rejections_v4";
-const CONTROL: &str = "snowflake_console_retention_v4";
-const CONTROL_SQL: &str = "CREATE TABLE snowflake_console_retention_v4(id INTEGER PRIMARY KEY CHECK(id=1),inventory_epoch TEXT NOT NULL,next_sequence INTEGER NOT NULL CHECK(next_sequence>0),inventory_revision INTEGER NOT NULL CHECK(inventory_revision>=0),positive_count INTEGER NOT NULL CHECK(positive_count>=0),refusal_count INTEGER NOT NULL CHECK(refusal_count>=0),charged_bytes INTEGER NOT NULL CHECK(charged_bytes>=0))";
+const RUNS: &str = "snowflake_console_runs_v5";
+const REJECTIONS: &str = "snowflake_console_rejections_v5";
+const CONTROL: &str = "snowflake_console_retention_v5";
+const CONTROL_SQL: &str = "CREATE TABLE snowflake_console_retention_v5(id INTEGER PRIMARY KEY CHECK(id=1),inventory_epoch TEXT NOT NULL,next_sequence INTEGER NOT NULL CHECK(next_sequence>0),inventory_revision INTEGER NOT NULL CHECK(inventory_revision>=0),positive_count INTEGER NOT NULL CHECK(positive_count>=0),refusal_count INTEGER NOT NULL CHECK(refusal_count>=0),charged_bytes INTEGER NOT NULL CHECK(charged_bytes>=0))";
 
 fn objects() -> Vec<(&'static str, String, String)> {
     let mut result = Vec::new();
     for (name, sql) in DECISION_TRIGGERS {
-        result.push(("trigger", name.into(), sql.replace("_v3", "_v4")));
+        result.push(("trigger", name.into(), sql.replace("_v3", "_v5")));
     }
     for (table, tag, key, count, charge) in [
         (
@@ -33,36 +33,39 @@ fn objects() -> Vec<(&'static str, String, String)> {
             ("sequence", "receipt_sequence", "UNIQUE "),
             ("browse", "(archived_at IS NULL),receipt_sequence", ""),
         ] {
-            let name = format!("console_{tag}_{suffix}_v4");
+            let name = format!("console_{tag}_{suffix}_v5");
             result.push((
                 "index",
                 name.clone(),
                 format!("CREATE {unique}INDEX {name} ON {table}({columns})"),
             ));
         }
-        let name = format!("console_{tag}_allocate_v4");
+        let name = format!("console_{tag}_allocate_v5");
         result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER INSERT ON {table} BEGIN SELECT CASE WHEN NEW.receipt_sequence!=0 OR (SELECT next_sequence FROM {CONTROL} WHERE id=1)>=9223372036854775807 THEN RAISE(ABORT,'invalid receipt sequence') END; UPDATE {table} SET receipt_sequence=(SELECT next_sequence FROM {CONTROL} WHERE id=1) WHERE {key}=NEW.{key}; UPDATE {CONTROL} SET next_sequence=next_sequence+1,{count}={count}+1,charged_bytes=charged_bytes+({charge}) WHERE id=1; END")));
-        let name = format!("console_{tag}_sequence_guard_v4");
+        let name = format!("console_{tag}_sequence_guard_v5");
         result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} BEFORE UPDATE OF receipt_sequence ON {table} WHEN (OLD.receipt_sequence!=0 AND NEW.receipt_sequence!=OLD.receipt_sequence) OR NEW.receipt_sequence<=0 OR EXISTS(SELECT 1 FROM {} WHERE receipt_sequence=NEW.receipt_sequence) BEGIN SELECT RAISE(ABORT,'conflicting receipt sequence'); END",if table==RUNS {REJECTIONS}else{RUNS})));
-        let name = format!("console_{tag}_charge_update_v4");
+        let name = format!("console_{tag}_charge_update_v5");
         result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER UPDATE ON {table} BEGIN UPDATE {CONTROL} SET charged_bytes=charged_bytes+({charge})-({old}) WHERE id=1; END",old=charge.replace("NEW.","OLD."))));
-        let name = format!("console_{tag}_charge_delete_v4");
+        let name = format!("console_{tag}_charge_delete_v5");
         result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN UPDATE {CONTROL} SET {count}={count}-1,charged_bytes=charged_bytes-({old}) WHERE id=1; END",old=charge.replace("NEW.","OLD."))));
     }
     let charge = "256+length(CAST(coalesce(NEW.outcome_json,'')||NEW.observations_json AS BLOB))";
     for event in ["INSERT", "UPDATE", "DELETE"] {
-        let name = format!("console_step_charge_{}_v4", event.to_ascii_lowercase());
+        let name = format!("console_step_charge_{}_v5", event.to_ascii_lowercase());
         let delta = match event {
             "INSERT" => format!("+({charge})"),
             "DELETE" => format!("-({})", charge.replace("NEW.", "OLD.")),
             _ => format!("+({charge})-({})", charge.replace("NEW.", "OLD.")),
         };
-        result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER {event} ON snowflake_console_steps_v4 BEGIN UPDATE {CONTROL} SET charged_bytes=charged_bytes{delta} WHERE id=1; END")));
+        result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER {event} ON snowflake_console_steps_v5 BEGIN UPDATE {CONTROL} SET charged_bytes=charged_bytes{delta} WHERE id=1; END")));
     }
     result
 }
 
 pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
+    if version < 5 {
+        return legacy_v4::schema_objects(version);
+    }
     let tables: &[&str] = match version {
         2 => &["snowflake_console_runs", "snowflake_console_steps"],
         3 => &[
@@ -70,7 +73,7 @@ pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
             "snowflake_console_steps_v3",
             "snowflake_console_rejections_v3",
         ],
-        4 => &[RUNS, "snowflake_console_steps_v4", REJECTIONS, CONTROL],
+        5 => &[RUNS, "snowflake_console_steps_v5", REJECTIONS, CONTROL],
         _ => return Err(invalid()),
     };
     let mut names: Vec<_> = tables
@@ -84,7 +87,7 @@ pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
                 .map(|(name, _)| ("trigger".into(), (*name).into())),
         );
     }
-    if version == 4 {
+    if version == 5 {
         names.extend(
             objects()
                 .into_iter()
@@ -101,9 +104,9 @@ fn totals(connection: &Connection) -> AppResult<(i64, i64, i64)> {
     // expressions. Each cursor row contains only two SQLite integers; payloads
     // and lifetime-sized receipt collections never enter this accounting pass.
     let mut statement = connection.prepare(
-        "SELECT 0,length(CAST(run_id||client_request_id||session_id||connection_id||plan_digest||state||observations_json||coalesce(terminal_json,'') AS BLOB)) FROM snowflake_console_runs_v4
-         UNION ALL SELECT 1,length(CAST(coalesce(outcome_json,'')||observations_json AS BLOB)) FROM snowflake_console_steps_v4
-         UNION ALL SELECT 2,length(CAST(client_request_id||session_id||plan_digest||code AS BLOB)) FROM snowflake_console_rejections_v4",
+        "SELECT 0,length(CAST(run_id||client_request_id||session_id||connection_id||plan_digest||state||observations_json||coalesce(terminal_json,'') AS BLOB)) FROM snowflake_console_runs_v5
+         UNION ALL SELECT 1,length(CAST(coalesce(outcome_json,'')||observations_json AS BLOB)) FROM snowflake_console_steps_v5
+         UNION ALL SELECT 2,length(CAST(client_request_id||session_id||plan_digest||code AS BLOB)) FROM snowflake_console_rejections_v5",
     ).map_err(db_error)?;
     let mut rows = statement.query([]).map_err(db_error)?;
     let mut total = JournalTotals::default();
@@ -121,28 +124,22 @@ fn totals(connection: &Connection) -> AppResult<(i64, i64, i64)> {
 
 /// Called in the parent's IMMEDIATE migration transaction under the raw lease.
 pub(in crate::persistence) fn migrate_v4(connection: &Connection) -> AppResult<()> {
-    for (name, _) in DECISION_TRIGGERS {
+    legacy_v4::migrate_v4(connection)
+}
+
+pub(in crate::persistence) fn migrate_v5(connection: &Connection) -> AppResult<()> {
+    for (kind, name, _) in legacy_v4::objects() {
         connection
-            .execute_batch(&format!("DROP TRIGGER {name}"))
+            .execute_batch(&format!("DROP {kind} {name}"))
             .map_err(db_error)?;
     }
-    connection.execute_batch("ALTER TABLE snowflake_console_runs_v3 RENAME TO snowflake_console_runs_v4; ALTER TABLE snowflake_console_steps_v3 RENAME TO snowflake_console_steps_v4; ALTER TABLE snowflake_console_rejections_v3 RENAME TO snowflake_console_rejections_v4;").map_err(db_error)?;
-    for table in [RUNS, REJECTIONS] {
-        connection.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN receipt_sequence INTEGER NOT NULL DEFAULT 0 CHECK(receipt_sequence>=0); ALTER TABLE {table} ADD COLUMN archived_at INTEGER CHECK(archived_at>=0); ALTER TABLE {table} ADD COLUMN browsing_revision INTEGER NOT NULL DEFAULT 0 CHECK(browsing_revision>=0)")).map_err(db_error)?;
-    }
+    connection.execute_batch("ALTER TABLE snowflake_console_runs_v4 RENAME TO snowflake_console_runs_v5; ALTER TABLE snowflake_console_steps_v4 RENAME TO snowflake_console_steps_v5; ALTER TABLE snowflake_console_rejections_v4 RENAME TO snowflake_console_rejections_v5; ").map_err(db_error)?;
     connection.execute_batch(CONTROL_SQL).map_err(db_error)?;
-    connection
-        .execute(
-            &format!("INSERT INTO {CONTROL} VALUES(1,?1,1,0,0,0,0)"),
-            [crate::domain::new_id()],
-        )
-        .map_err(db_error)?;
-    resequence(connection)?;
-    let (positive, refusal, charged) = totals(connection)?;
-    connection.execute(&format!("UPDATE {CONTROL} SET positive_count=?1,refusal_count=?2,charged_bytes=?3 WHERE id=1"),params![positive,refusal,charged]).map_err(db_error)?;
+    connection.execute_batch("INSERT INTO snowflake_console_retention_v5 SELECT * FROM snowflake_console_retention_v4; DROP TABLE snowflake_console_retention_v4;").map_err(db_error)?;
     for (_, _, sql) in objects() {
         connection.execute_batch(&sql).map_err(db_error)?;
     }
+    restore_epoch(connection)?;
     Ok(())
 }
 
@@ -151,7 +148,7 @@ pub(super) fn resequence(connection: &Connection) -> AppResult<()> {
     // The ordered cursor selects only stable original time/identity fields;
     // updates touch browsing fields. Keep one bounded row in Rust at a time.
     let mut sequence = 1i64;
-    let mut statement=connection.prepare("SELECT client_request_id,positive FROM (SELECT created_at recorded_at,client_request_id,1 positive FROM snowflake_console_runs_v4 UNION ALL SELECT recorded_at,client_request_id,0 positive FROM snowflake_console_rejections_v4) ORDER BY recorded_at,client_request_id").map_err(db_error)?;
+    let mut statement=connection.prepare("SELECT client_request_id,positive FROM (SELECT created_at recorded_at,client_request_id,1 positive FROM snowflake_console_runs_v5 UNION ALL SELECT recorded_at,client_request_id,0 positive FROM snowflake_console_rejections_v5) ORDER BY recorded_at,client_request_id").map_err(db_error)?;
     let mut rows = statement.query([]).map_err(db_error)?;
     while let Some(row) = rows.next().map_err(db_error)? {
         let client: String = row.get(0).map_err(db_error)?;
@@ -177,6 +174,9 @@ pub(super) fn resequence(connection: &Connection) -> AppResult<()> {
 }
 
 pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
+    if super::super::schema_version(connection)? == 4 {
+        return legacy_v4::validate_schema(connection);
+    }
     let stored: String = connection
         .query_row(
             "SELECT sql FROM sqlite_schema WHERE name=?1 AND type='table'",
@@ -200,8 +200,11 @@ pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
             return Err(conflict());
         }
     }
-    let known: HashSet<_> = schema_objects(4)?.into_iter().collect();
-    let mut statement = connection.prepare("SELECT type,name FROM sqlite_schema WHERE (tbl_name IN ('snowflake_console_runs_v4','snowflake_console_steps_v4','snowflake_console_rejections_v4','snowflake_console_retention_v4') OR name LIKE 'snowflake_console_%') AND name NOT LIKE 'sqlite_autoindex_%'").map_err(db_error)?;
+    let known: HashSet<_> = schema_objects(5)?
+        .into_iter()
+        .chain(super::super::history::schema_objects(5)?)
+        .collect();
+    let mut statement = connection.prepare("SELECT type,name FROM sqlite_schema WHERE (tbl_name IN ('snowflake_console_runs_v5','snowflake_console_steps_v5','snowflake_console_rejections_v5','snowflake_console_retention_v5') OR name LIKE 'snowflake_console_%') AND name NOT LIKE 'sqlite_autoindex_%'").map_err(db_error)?;
     let mut rows = statement.query([]).map_err(db_error)?;
     while let Some(row) = rows.next().map_err(db_error)? {
         if !known.contains(&(
@@ -223,8 +226,11 @@ fn control(connection: &Connection) -> AppResult<(String, i64, i64, i64, i64, i6
 }
 
 pub(super) fn validate_records(connection: &Connection) -> AppResult<()> {
+    if super::super::schema_version(connection)? == 4 {
+        return legacy_v4::validate_records(connection);
+    }
     let (_, next, _, positive, refusal, charged) = control(connection)?;
-    let bad:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM (SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_runs_v4 UNION ALL SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_rejections_v4) WHERE typeof(receipt_sequence)!='integer' OR receipt_sequence<=0 OR receipt_sequence>=?1 OR typeof(browsing_revision)!='integer' OR browsing_revision<0 OR (archived_at IS NOT NULL AND (typeof(archived_at)!='integer' OR archived_at<0))) OR EXISTS(SELECT receipt_sequence FROM (SELECT receipt_sequence FROM snowflake_console_runs_v4 UNION ALL SELECT receipt_sequence FROM snowflake_console_rejections_v4) GROUP BY receipt_sequence HAVING count(*)!=1) OR (SELECT count(*) FROM snowflake_console_retention_v4)!=1",[next],|r|r.get(0)).map_err(db_error)?;
+    let bad:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM (SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_runs_v5 UNION ALL SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_rejections_v5) WHERE typeof(receipt_sequence)!='integer' OR receipt_sequence<=0 OR receipt_sequence>=?1 OR typeof(browsing_revision)!='integer' OR browsing_revision<0 OR (archived_at IS NOT NULL AND (typeof(archived_at)!='integer' OR archived_at<0))) OR EXISTS(SELECT receipt_sequence FROM (SELECT receipt_sequence FROM snowflake_console_runs_v5 UNION ALL SELECT receipt_sequence FROM snowflake_console_rejections_v5) GROUP BY receipt_sequence HAVING count(*)!=1) OR (SELECT count(*) FROM snowflake_console_retention_v5)!=1",[next],|r|r.get(0)).map_err(db_error)?;
     if bad || totals(connection)? != (positive, refusal, charged) {
         return Err(invalid());
     }
@@ -286,15 +292,15 @@ fn summary(
         return Err(invalid());
     }
     ensure_single_decision(connection, client)?;
-    let run_id:Option<String>=connection.query_row("SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v4 WHERE client_request_id=?1",[client],|r|r.get(0)).optional().map_err(db_error)?;
+    let run_id:Option<String>=connection.query_row("SELECT CASE WHEN length(CAST(run_id AS BLOB))=36 THEN run_id ELSE '' END FROM snowflake_console_runs_v5 WHERE client_request_id=?1",[client],|r|r.get(0)).optional().map_err(db_error)?;
     let (table, mut result) = if let Some(id) = run_id {
         // Inventory loads a bounded header, never full original step JSON.
         // Startup/detail/archive validate the complete original independently.
-        let oversized:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v4 WHERE run_id=?1 AND (length(CAST(session_id AS BLOB))!=36 OR length(CAST(connection_id AS BLOB))!=36 OR length(CAST(plan_digest AS BLOB))!=64 OR length(CAST(state AS BLOB))>8 OR length(CAST(observations_json AS BLOB))>16384 OR length(CAST(terminal_json AS BLOB))>16384))",[&id],|r|r.get(0)).map_err(db_error)?;
+        let oversized:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM snowflake_console_runs_v5 WHERE run_id=?1 AND (length(CAST(session_id AS BLOB))!=36 OR length(CAST(connection_id AS BLOB))!=36 OR length(CAST(plan_digest AS BLOB))!=64 OR length(CAST(state AS BLOB))>8 OR length(CAST(observations_json AS BLOB))>16384 OR length(CAST(terminal_json AS BLOB))>16384))",[&id],|r|r.get(0)).map_err(db_error)?;
         if oversized {
             return Err(invalid());
         }
-        let (metadata,revision,state,observations,terminal)=connection.query_row("SELECT session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json FROM snowflake_console_runs_v4 WHERE run_id=?1",[&id],|r|Ok((ConsoleRunMetadata{run_id:id.clone(),client_request_id:client.into(),session_id:r.get(0)?,connection_id:r.get(1)?,plan_digest:r.get(2)?,step_count:r.get(3)?,created_at:sqlite_nonnegative(r,4)?},sqlite_nonnegative(r,5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,Option<String>>(8)?))).map_err(db_error)?;
+        let (metadata,revision,state,observations,terminal)=connection.query_row("SELECT session_id,connection_id,plan_digest,step_count,created_at,revision,state,observations_json,terminal_json FROM snowflake_console_runs_v5 WHERE run_id=?1",[&id],|r|Ok((ConsoleRunMetadata{run_id:id.clone(),client_request_id:client.into(),session_id:r.get(0)?,connection_id:r.get(1)?,plan_digest:r.get(2)?,step_count:r.get(3)?,created_at:sqlite_nonnegative(r,4)?},sqlite_nonnegative(r,5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?,r.get::<_,Option<String>>(8)?))).map_err(db_error)?;
         validate_metadata(&metadata)?;
         if revision > MAX_REVISION {
             return Err(invalid());
@@ -328,11 +334,18 @@ fn summary(
                 return Err(invalid());
             }
         }
-        let (invalid_step,unknown):(bool,bool)=connection.query_row("SELECT EXISTS(SELECT 1 FROM snowflake_console_steps_v4 WHERE run_id=?1 AND (length(CAST(outcome_json AS BLOB))>16384 OR (outcome_json IS NOT NULL AND CASE WHEN json_valid(outcome_json) THEN coalesce(json_extract(outcome_json,'$.kind'),'') NOT IN ('acknowledged','rejected','unknown','notDispatched') ELSE 1 END))),EXISTS(SELECT 1 FROM snowflake_console_steps_v4 WHERE run_id=?1 AND (outcome_json IS NULL OR CASE WHEN json_valid(outcome_json) THEN json_extract(outcome_json,'$.kind')='unknown' ELSE 0 END))",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
+        let (invalid_step,unknown):(bool,bool)=connection.query_row("SELECT EXISTS(SELECT 1 FROM snowflake_console_steps_v5 WHERE run_id=?1 AND (length(CAST(outcome_json AS BLOB))>16384 OR (outcome_json IS NOT NULL AND CASE WHEN json_valid(outcome_json) THEN coalesce(json_extract(outcome_json,'$.kind'),'') NOT IN ('acknowledged','rejected','unknown','notDispatched') ELSE 1 END))),EXISTS(SELECT 1 FROM snowflake_console_steps_v5 WHERE run_id=?1 AND (outcome_json IS NULL OR CASE WHEN json_valid(outcome_json) THEN json_extract(outcome_json,'$.kind')='unknown' ELSE 0 END))",[&id],|r|Ok((r.get(0)?,r.get(1)?))).map_err(db_error)?;
         if invalid_step {
             return Err(invalid());
         }
-        let eligible = terminal.is_some();
+        let publisher_sealed: bool = connection
+            .query_row(
+                "SELECT publisher_sealed FROM console_lifecycle_v5 WHERE run_id=?1",
+                [&id],
+                |r| r.get(0),
+            )
+            .map_err(db_error)?;
+        let eligible = terminal.is_some() && publisher_sealed;
         (
             RUNS,
             SnowflakeConsoleReceiptSummary {
@@ -353,8 +366,13 @@ fn summary(
                 refusal_code: None,
                 archived: false,
                 archive_eligible: eligible,
-                archive_block_reason: (!eligible)
-                    .then(|| "The original run is not terminal".into()),
+                archive_block_reason: (!eligible).then(|| {
+                    if terminal.is_some() {
+                        "Recording or publisher settlement is pending".into()
+                    } else {
+                        "The original run is not terminal".into()
+                    }
+                }),
             },
         )
     } else if let Some(refusal) = read_rejection(connection, client)? {
@@ -466,7 +484,7 @@ impl Persistence {
             Some(SnowflakeConsoleReceiptKind::Positive) => 1,
             Some(SnowflakeConsoleReceiptKind::Refusal) => 2,
         };
-        let mut statement=tx.prepare("SELECT CASE WHEN length(CAST(client_request_id AS BLOB))=36 THEN client_request_id ELSE '' END FROM (SELECT client_request_id,receipt_sequence,archived_at,connection_id,1 kind FROM snowflake_console_runs_v4 UNION ALL SELECT client_request_id,receipt_sequence,archived_at,NULL connection_id,2 kind FROM snowflake_console_rejections_v4) WHERE receipt_sequence<=?1 AND receipt_sequence<?2 AND (?3=0 OR (?3=1 AND archived_at IS NULL) OR (?3=2 AND archived_at IS NOT NULL)) AND (?4=0 OR kind=?4) AND (?5 IS NULL OR connection_id=?5) ORDER BY receipt_sequence DESC LIMIT ?6").map_err(db_error)?;
+        let mut statement=tx.prepare("SELECT CASE WHEN length(CAST(client_request_id AS BLOB))=36 THEN client_request_id ELSE '' END FROM (SELECT client_request_id,receipt_sequence,archived_at,connection_id,1 kind FROM snowflake_console_runs_v5 UNION ALL SELECT client_request_id,receipt_sequence,archived_at,NULL connection_id,2 kind FROM snowflake_console_rejections_v5) WHERE receipt_sequence<=?1 AND receipt_sequence<?2 AND (?3=0 OR (?3=1 AND archived_at IS NULL) OR (?3=2 AND archived_at IS NOT NULL)) AND (?4=0 OR kind=?4) AND (?5 IS NULL OR connection_id=?5) ORDER BY receipt_sequence DESC LIMIT ?6").map_err(db_error)?;
         let clients = statement
             .query_map(
                 params![
@@ -603,5 +621,245 @@ impl Persistence {
             free_bytes: None,
             retention_enabled: false,
         })
+    }
+}
+
+#[allow(
+    dead_code,
+    reason = "Pinned schema4 migration and backup compatibility"
+)]
+mod legacy_v4 {
+    //! Browsing-only indexes. Originals remain in the journal; archive is not erasure.
+    use super::*;
+    use std::collections::HashSet;
+
+    const RUNS: &str = "snowflake_console_runs_v4";
+    const REJECTIONS: &str = "snowflake_console_rejections_v4";
+    const CONTROL: &str = "snowflake_console_retention_v4";
+    const CONTROL_SQL: &str = "CREATE TABLE snowflake_console_retention_v4(id INTEGER PRIMARY KEY CHECK(id=1),inventory_epoch TEXT NOT NULL,next_sequence INTEGER NOT NULL CHECK(next_sequence>0),inventory_revision INTEGER NOT NULL CHECK(inventory_revision>=0),positive_count INTEGER NOT NULL CHECK(positive_count>=0),refusal_count INTEGER NOT NULL CHECK(refusal_count>=0),charged_bytes INTEGER NOT NULL CHECK(charged_bytes>=0))";
+
+    pub(super) fn objects() -> Vec<(&'static str, String, String)> {
+        let mut result = Vec::new();
+        for (name, sql) in DECISION_TRIGGERS {
+            result.push(("trigger", name.into(), sql.replace("_v3", "_v4")));
+        }
+        for (table, tag, key, count, charge) in [
+            (
+                RUNS,
+                "run",
+                "run_id",
+                "positive_count",
+                "512+length(CAST(NEW.run_id||NEW.client_request_id||NEW.session_id||NEW.connection_id||NEW.plan_digest||NEW.state||NEW.observations_json||coalesce(NEW.terminal_json,'') AS BLOB))",
+            ),
+            (
+                REJECTIONS,
+                "refusal",
+                "client_request_id",
+                "refusal_count",
+                "256+length(CAST(NEW.client_request_id||NEW.session_id||NEW.plan_digest||NEW.code AS BLOB))",
+            ),
+        ] {
+            for (suffix, columns, unique) in [
+                ("sequence", "receipt_sequence", "UNIQUE "),
+                ("browse", "(archived_at IS NULL),receipt_sequence", ""),
+            ] {
+                let name = format!("console_{tag}_{suffix}_v4");
+                result.push((
+                    "index",
+                    name.clone(),
+                    format!("CREATE {unique}INDEX {name} ON {table}({columns})"),
+                ));
+            }
+            let name = format!("console_{tag}_allocate_v4");
+            result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER INSERT ON {table} BEGIN SELECT CASE WHEN NEW.receipt_sequence!=0 OR (SELECT next_sequence FROM {CONTROL} WHERE id=1)>=9223372036854775807 THEN RAISE(ABORT,'invalid receipt sequence') END; UPDATE {table} SET receipt_sequence=(SELECT next_sequence FROM {CONTROL} WHERE id=1) WHERE {key}=NEW.{key}; UPDATE {CONTROL} SET next_sequence=next_sequence+1,{count}={count}+1,charged_bytes=charged_bytes+({charge}) WHERE id=1; END")));
+            let name = format!("console_{tag}_sequence_guard_v4");
+            result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} BEFORE UPDATE OF receipt_sequence ON {table} WHEN (OLD.receipt_sequence!=0 AND NEW.receipt_sequence!=OLD.receipt_sequence) OR NEW.receipt_sequence<=0 OR EXISTS(SELECT 1 FROM {} WHERE receipt_sequence=NEW.receipt_sequence) BEGIN SELECT RAISE(ABORT,'conflicting receipt sequence'); END",if table==RUNS {REJECTIONS}else{RUNS})));
+            let name = format!("console_{tag}_charge_update_v4");
+            result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER UPDATE ON {table} BEGIN UPDATE {CONTROL} SET charged_bytes=charged_bytes+({charge})-({old}) WHERE id=1; END",old=charge.replace("NEW.","OLD."))));
+            let name = format!("console_{tag}_charge_delete_v4");
+            result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER DELETE ON {table} BEGIN UPDATE {CONTROL} SET {count}={count}-1,charged_bytes=charged_bytes-({old}) WHERE id=1; END",old=charge.replace("NEW.","OLD."))));
+        }
+        let charge =
+            "256+length(CAST(coalesce(NEW.outcome_json,'')||NEW.observations_json AS BLOB))";
+        for event in ["INSERT", "UPDATE", "DELETE"] {
+            let name = format!("console_step_charge_{}_v4", event.to_ascii_lowercase());
+            let delta = match event {
+                "INSERT" => format!("+({charge})"),
+                "DELETE" => format!("-({})", charge.replace("NEW.", "OLD.")),
+                _ => format!("+({charge})-({})", charge.replace("NEW.", "OLD.")),
+            };
+            result.push(("trigger",name.clone(),format!("CREATE TRIGGER {name} AFTER {event} ON snowflake_console_steps_v4 BEGIN UPDATE {CONTROL} SET charged_bytes=charged_bytes{delta} WHERE id=1; END")));
+        }
+        result
+    }
+
+    pub(crate) fn schema_objects(version: i64) -> AppResult<Vec<(String, String)>> {
+        let tables: &[&str] = match version {
+            2 => &["snowflake_console_runs", "snowflake_console_steps"],
+            3 => &[
+                "snowflake_console_runs_v3",
+                "snowflake_console_steps_v3",
+                "snowflake_console_rejections_v3",
+            ],
+            4 => &[RUNS, "snowflake_console_steps_v4", REJECTIONS, CONTROL],
+            _ => return Err(invalid()),
+        };
+        let mut names: Vec<_> = tables
+            .iter()
+            .map(|name| ("table".into(), (*name).into()))
+            .collect();
+        if version == 3 {
+            names.extend(
+                DECISION_TRIGGERS
+                    .iter()
+                    .map(|(name, _)| ("trigger".into(), (*name).into())),
+            );
+        }
+        if version == 4 {
+            names.extend(
+                objects()
+                    .into_iter()
+                    .map(|(kind, name, _)| (kind.into(), name)),
+            );
+        }
+        Ok(names)
+    }
+
+    fn totals(connection: &Connection) -> AppResult<(i64, i64, i64)> {
+        use super::accounting::{JournalTotals, RecordKind};
+
+        // Recompute independently of the maintained control row and trigger charge
+        // expressions. Each cursor row contains only two SQLite integers; payloads
+        // and lifetime-sized receipt collections never enter this accounting pass.
+        let mut statement = connection.prepare(
+        "SELECT 0,length(CAST(run_id||client_request_id||session_id||connection_id||plan_digest||state||observations_json||coalesce(terminal_json,'') AS BLOB)) FROM snowflake_console_runs_v4
+         UNION ALL SELECT 1,length(CAST(coalesce(outcome_json,'')||observations_json AS BLOB)) FROM snowflake_console_steps_v4
+         UNION ALL SELECT 2,length(CAST(client_request_id||session_id||plan_digest||code AS BLOB)) FROM snowflake_console_rejections_v4",
+    ).map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        let mut total = JournalTotals::default();
+        while let Some(row) = rows.next().map_err(db_error)? {
+            let kind = match row.get::<_, i64>(0).map_err(db_error)? {
+                0 => RecordKind::Run,
+                1 => RecordKind::Step,
+                2 => RecordKind::Refusal,
+                _ => return Err(invalid()),
+            };
+            total.add(kind, sqlite_nonnegative(row, 1).map_err(db_error)?)?;
+        }
+        total.finish()
+    }
+
+    /// Called in the parent's IMMEDIATE migration transaction under the raw lease.
+    pub(in crate::persistence) fn migrate_v4(connection: &Connection) -> AppResult<()> {
+        for (name, _) in DECISION_TRIGGERS {
+            connection
+                .execute_batch(&format!("DROP TRIGGER {name}"))
+                .map_err(db_error)?;
+        }
+        connection.execute_batch("ALTER TABLE snowflake_console_runs_v3 RENAME TO snowflake_console_runs_v4; ALTER TABLE snowflake_console_steps_v3 RENAME TO snowflake_console_steps_v4; ALTER TABLE snowflake_console_rejections_v3 RENAME TO snowflake_console_rejections_v4;").map_err(db_error)?;
+        for table in [RUNS, REJECTIONS] {
+            connection.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN receipt_sequence INTEGER NOT NULL DEFAULT 0 CHECK(receipt_sequence>=0); ALTER TABLE {table} ADD COLUMN archived_at INTEGER CHECK(archived_at>=0); ALTER TABLE {table} ADD COLUMN browsing_revision INTEGER NOT NULL DEFAULT 0 CHECK(browsing_revision>=0)")).map_err(db_error)?;
+        }
+        connection.execute_batch(CONTROL_SQL).map_err(db_error)?;
+        connection
+            .execute(
+                &format!("INSERT INTO {CONTROL} VALUES(1,?1,1,0,0,0,0)"),
+                [crate::domain::new_id()],
+            )
+            .map_err(db_error)?;
+        resequence(connection)?;
+        let (positive, refusal, charged) = totals(connection)?;
+        connection.execute(&format!("UPDATE {CONTROL} SET positive_count=?1,refusal_count=?2,charged_bytes=?3 WHERE id=1"),params![positive,refusal,charged]).map_err(db_error)?;
+        for (_, _, sql) in objects() {
+            connection.execute_batch(&sql).map_err(db_error)?;
+        }
+        Ok(())
+    }
+
+    /// A restore creates a new ordering epoch, never transfers branch sequence identity.
+    pub(super) fn resequence(connection: &Connection) -> AppResult<()> {
+        // The ordered cursor selects only stable original time/identity fields;
+        // updates touch browsing fields. Keep one bounded row in Rust at a time.
+        let mut sequence = 1i64;
+        let mut statement=connection.prepare("SELECT client_request_id,positive FROM (SELECT created_at recorded_at,client_request_id,1 positive FROM snowflake_console_runs_v4 UNION ALL SELECT recorded_at,client_request_id,0 positive FROM snowflake_console_rejections_v4) ORDER BY recorded_at,client_request_id").map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        while let Some(row) = rows.next().map_err(db_error)? {
+            let client: String = row.get(0).map_err(db_error)?;
+            let positive: bool = row.get(1).map_err(db_error)?;
+            if !valid_app_uuid(&client) || sequence > i64::from(MAX_RUNS + MAX_REJECTIONS) {
+                return Err(invalid());
+            }
+            connection
+                .execute(
+                    &format!(
+                        "UPDATE {} SET receipt_sequence=?1 WHERE client_request_id=?2",
+                        if positive { RUNS } else { REJECTIONS }
+                    ),
+                    params![sequence, client],
+                )
+                .map_err(db_error)?;
+            sequence = sequence.checked_add(1).ok_or_else(invalid)?;
+        }
+        drop(rows);
+        drop(statement);
+        connection.execute(&format!("UPDATE {CONTROL} SET inventory_epoch=?1,next_sequence=?2,inventory_revision=0 WHERE id=1"),params![crate::domain::new_id(),sequence]).map_err(db_error)?;
+        Ok(())
+    }
+
+    pub(super) fn validate_schema(connection: &Connection) -> AppResult<()> {
+        let stored: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE name=?1 AND type='table'",
+                [CONTROL],
+                |r| r.get(0),
+            )
+            .map_err(db_error)?;
+        if stored != CONTROL_SQL {
+            return Err(conflict());
+        }
+        for (kind, name, expected) in objects() {
+            let stored: Option<String> = connection
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE name=?1 AND type=?2",
+                    params![name, kind],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db_error)?;
+            if stored.as_deref() != Some(expected.as_str()) {
+                return Err(conflict());
+            }
+        }
+        let known: HashSet<_> = schema_objects(4)?.into_iter().collect();
+        let mut statement = connection.prepare("SELECT type,name FROM sqlite_schema WHERE (tbl_name IN ('snowflake_console_runs_v4','snowflake_console_steps_v4','snowflake_console_rejections_v4','snowflake_console_retention_v4') OR name LIKE 'snowflake_console_%') AND name NOT LIKE 'sqlite_autoindex_%'").map_err(db_error)?;
+        let mut rows = statement.query([]).map_err(db_error)?;
+        while let Some(row) = rows.next().map_err(db_error)? {
+            if !known.contains(&(
+                row.get::<_, String>(0).map_err(db_error)?,
+                row.get::<_, String>(1).map_err(db_error)?,
+            )) {
+                return Err(conflict());
+            }
+        }
+        Ok(())
+    }
+
+    fn control(connection: &Connection) -> AppResult<(String, i64, i64, i64, i64, i64)> {
+        let row=connection.query_row(&format!("SELECT CASE WHEN length(CAST(inventory_epoch AS BLOB))=36 THEN inventory_epoch ELSE '' END,next_sequence,inventory_revision,positive_count,refusal_count,charged_bytes FROM {CONTROL} WHERE id=1"),[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?))).map_err(db_error)?;
+        if !valid_app_uuid(&row.0) || row.1 <= 0 || row.2 < 0 || row.3 < 0 || row.4 < 0 || row.5 < 0
+        {
+            return Err(invalid());
+        }
+        Ok(row)
+    }
+
+    pub(super) fn validate_records(connection: &Connection) -> AppResult<()> {
+        let (_, next, _, positive, refusal, charged) = control(connection)?;
+        let bad:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM (SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_runs_v4 UNION ALL SELECT receipt_sequence,archived_at,browsing_revision FROM snowflake_console_rejections_v4) WHERE typeof(receipt_sequence)!='integer' OR receipt_sequence<=0 OR receipt_sequence>=?1 OR typeof(browsing_revision)!='integer' OR browsing_revision<0 OR (archived_at IS NOT NULL AND (typeof(archived_at)!='integer' OR archived_at<0))) OR EXISTS(SELECT receipt_sequence FROM (SELECT receipt_sequence FROM snowflake_console_runs_v4 UNION ALL SELECT receipt_sequence FROM snowflake_console_rejections_v4) GROUP BY receipt_sequence HAVING count(*)!=1) OR (SELECT count(*) FROM snowflake_console_retention_v4)!=1",[next],|r|r.get(0)).map_err(db_error)?;
+        if bad || totals(connection)? != (positive, refusal, charged) {
+            return Err(invalid());
+        }
+        Ok(())
     }
 }

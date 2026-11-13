@@ -14,7 +14,7 @@ use crate::{
     },
     export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
     file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
-    persistence::Persistence,
+    persistence::{HistoryCompletion, HistoryTicket, Persistence},
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
     safety,
     secrets::{OsSecrets, SecretStore},
@@ -54,6 +54,7 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+mod history_receipts;
 mod recovery_activity;
 mod recovery_files;
 mod recovery_jobs;
@@ -127,6 +128,7 @@ enum Action {
     Sql {
         bound: Vec<Option<crate::params::BoundStatement>>,
         error_source: Option<ExplainSource>,
+        original_sql: Option<String>,
     },
     Browse {
         table: TableRef,
@@ -214,6 +216,12 @@ struct Job {
     cancellation_sent: Arc<AtomicBool>,
 }
 
+struct RunRecording {
+    ticket: HistoryTicket,
+    events: EventHandler,
+    completion: Arc<Mutex<Option<HistoryCompletion>>>,
+}
+
 struct ExportJob {
     session_id: Option<String>,
     token: CancellationToken,
@@ -267,6 +275,7 @@ pub struct Studio {
     plans: Mutex<HashMap<String, StoredPlan>>,
     ddl_preflights: Mutex<HashMap<String, snowflake_ddl::Preflight>>,
     pending_snowflake_receipts: Mutex<HashMap<String, snowflake_receipts::PendingReceipt>>,
+    pending_history: Mutex<HashMap<String, history_receipts::PendingHistory>>,
     console: snowflake_console::State,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
@@ -377,6 +386,7 @@ impl Studio {
             dml_tasks: tokio_util::task::TaskTracker::new(),
             ddl_preflights: Mutex::new(HashMap::new()),
             pending_snowflake_receipts: Mutex::new(HashMap::new()),
+            pending_history: Mutex::new(HashMap::new()),
             configuration_gate: Mutex::new(()),
             recovery_active: AtomicBool::new(false),
             recovery_activity: AtomicUsize::new(0),
@@ -517,6 +527,7 @@ impl Studio {
         {
             self.verify_passphrase(passphrase)?;
         }
+        self.flush_pending_history()?;
         self.flush_pending_snowflake_receipts()?;
         self.flush_console_recordings()?;
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
@@ -1384,6 +1395,7 @@ impl Studio {
                 Action::Sql {
                     bound: Vec::new(),
                     error_source,
+                    original_sql: Some(sql.to_owned()),
                 },
                 sql.len() + source_bytes,
             );
@@ -1422,6 +1434,7 @@ impl Studio {
             Action::Sql {
                 bound,
                 error_source,
+                original_sql: Some(sql.to_owned()),
             },
             (crate::params::MAX_BOUND_PLAN_BYTES - remaining_bytes).saturating_add(param_bytes),
         )
@@ -1494,9 +1507,19 @@ impl Studio {
     fn store_plan(
         &self,
         plan: PreparedPlan,
-        action: Action,
-        bytes: usize,
+        mut action: Action,
+        mut bytes: usize,
     ) -> AppResult<PreparedPlan> {
+        if let Action::Sql { original_sql, .. } = &mut action {
+            let text = original_sql.get_or_insert_with(|| {
+                plan.statements
+                    .iter()
+                    .map(|s| s.sql.as_str())
+                    .collect::<Vec<_>>()
+                    .join(";\n")
+            });
+            bytes = bytes.saturating_add(text.len());
+        }
         self.console.replace_preview(&plan.session_id);
         let mut plans = self.plans.lock();
         plans.retain(|_, p| p.deadline > Instant::now());
@@ -1557,8 +1580,12 @@ impl Studio {
                 serde_json::to_vec(&(id, identity))
                     .map_err(|_| AppError::internal("Could not fingerprint process target"))?,
             ),
-            Action::Sql { bound, .. } => fingerprint.update(
-                serde_json::to_vec(bound)
+            Action::Sql {
+                bound,
+                original_sql,
+                ..
+            } => fingerprint.update(
+                serde_json::to_vec(&(bound, original_sql))
                     .map_err(|_| AppError::internal("Could not fingerprint bound parameters"))?,
             ),
             Action::SnowflakeDml {
@@ -1664,7 +1691,14 @@ impl Studio {
         events: EventHandler,
     ) -> AppResult<String> {
         let _recovery_activity = self.begin_recovery_activity()?;
+        let _configuration = self.configuration_mutation_guard()?;
         let recovery_activity = self.retain_recovery_activity()?;
+        if self.dml_tasks.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "Joinery is closing; no query was started",
+            ));
+        }
         let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
         if stored.deadline <= Instant::now() {
             return Err(expired());
@@ -1692,14 +1726,46 @@ impl Studio {
         let session = self.session(&stored.plan.session_id)?;
         let run_id = new_id();
         let token = CancellationToken::new();
+        let delivery_token = token.clone();
+        let events: EventHandler = Arc::new(move |event| {
+            let delivered =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| events(event)))
+                    .unwrap_or(false);
+            if !delivered {
+                delivery_token.cancel();
+            }
+            delivered
+        });
         if self.jobs.lock().len() >= 32 {
             return Err(AppError::new(
                 ErrorCode::ResultLimitReached,
                 "Too many query jobs are already running",
             ));
         }
+        self.flush_pending_history()?;
         self.persistence
             .audit(&session.profile.id, "execute", &stored.digest, "started")?;
+        let profile = self.persistence.profile(&session.profile.id)?;
+        let seed = HistoryEntry {
+            provenance: HistoryProvenance::Admitted,
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+            id: run_id.clone(),
+            connection_id: profile.id.clone(),
+            connection_name: profile.name.clone(),
+            started_at: now_ms(),
+            sql: match &stored.action {
+                Action::Sql { original_sql, .. } if profile.store_query_text => {
+                    original_sql.clone()
+                }
+                _ => None,
+            },
+            statement_count: stored.plan.statements.len(),
+            status: None,
+            elapsed_ms: None,
+        };
+        let history_ticket = self.persistence.begin_history(&seed)?;
         let cancellation_sent = Arc::new(AtomicBool::new(false));
         self.jobs.lock().insert(
             run_id.clone(),
@@ -1711,11 +1777,32 @@ impl Studio {
         );
         let studio = self.clone();
         let run = run_id.clone();
-        tokio::spawn(async move {
+        self.dml_tasks.spawn(async move {
             let _recovery_activity = recovery_activity;
+            let completion = Arc::new(Mutex::new(None));
+            let mut owner = history_receipts::RunOwner::new(
+                studio.clone(),
+                session.clone(),
+                history_ticket.clone(),
+                stored.digest.clone(),
+                events.clone(),
+                completion.clone(),
+            );
             studio
-                .run_plan(run, session, stored, token, cancellation_sent, events)
+                .run_plan(
+                    run,
+                    session,
+                    stored,
+                    token,
+                    cancellation_sent,
+                    RunRecording {
+                        events,
+                        ticket: history_ticket,
+                        completion,
+                    },
+                )
                 .await;
+            owner.disarm();
         });
         Ok(run_id)
     }
@@ -1727,8 +1814,13 @@ impl Studio {
         stored: StoredPlan,
         token: CancellationToken,
         cancellation_sent: Arc<AtomicBool>,
-        events: EventHandler,
+        recording: RunRecording,
     ) {
+        let RunRecording {
+            events,
+            ticket: history_ticket,
+            completion: observed_completion,
+        } = recording;
         let started = Instant::now();
         let mut status = RunStatus::Completed;
         let mut execution_summary =
@@ -1791,6 +1883,7 @@ impl Studio {
             Action::Sql {
                 bound,
                 error_source,
+                ..
             } => {
                 for (index, statement) in stored.plan.statements.iter().enumerate() {
                     if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
@@ -2032,6 +2125,32 @@ impl Studio {
                 };
             }
         }
+        let ended = Instant::now();
+        let elapsed_ms = ended
+            .duration_since(started)
+            .as_millis()
+            .min(u32::MAX as u128) as u32;
+        let completion = HistoryCompletion {
+            provenance: HistoryProvenance::Recorded,
+            execution_summary: execution_summary.clone(),
+            snowflake_dml: None,
+            snowflake_ddl: None,
+            status: Some(status),
+            elapsed_ms: Some(elapsed_ms),
+        };
+        let recording_result = self.retain_history_completion(
+            history_ticket,
+            completion.clone(),
+            &session.profile.id,
+            &stored.digest,
+        );
+        *observed_completion.lock() = Some(completion);
+        if recording_result.is_err() {
+            events(QueryEvent::Notice {
+                message: "The execution finished, but its local history could not be recorded."
+                    .into(),
+            });
+        }
         if serialized {
             let observed_state = if matches!(stored.action, Action::Sql { .. })
                 && !token.is_cancelled()
@@ -2077,11 +2196,6 @@ impl Studio {
             }
             *session.active_run.lock() = None;
         }
-        let ended = Instant::now();
-        let elapsed_ms = ended
-            .duration_since(started)
-            .as_millis()
-            .min(u32::MAX as u128) as u32;
         events(QueryEvent::RunMetrics {
             run_id: run_id.clone(),
             queue_ms,
@@ -2092,50 +2206,6 @@ impl Studio {
             first_row_ms,
             total_ms: elapsed_ms,
         });
-        let sql = if session.profile.store_query_text && matches!(stored.action, Action::Sql { .. })
-        {
-            Some(
-                stored
-                    .plan
-                    .statements
-                    .iter()
-                    .map(|s| s.sql.as_str())
-                    .collect::<Vec<_>>()
-                    .join(";\n"),
-            )
-        } else {
-            None
-        };
-        let history = HistoryEntry {
-            provenance: HistoryProvenance::Recorded,
-            execution_summary: execution_summary.clone(),
-            snowflake_dml: None,
-            snowflake_ddl: None,
-            id: run_id.clone(),
-            connection_id: session.profile.id.clone(),
-            connection_name: session.profile.name.clone(),
-            started_at: now_ms().saturating_sub(elapsed_ms as u64),
-            sql,
-            statement_count: stored.plan.statements.len(),
-            status: Some(status),
-            elapsed_ms: Some(elapsed_ms),
-        };
-        if self.persistence.record_history(&history).is_err()
-            || self
-                .persistence
-                .audit(
-                    &session.profile.id,
-                    "execute",
-                    &stored.digest,
-                    &format!("{status:?}"),
-                )
-                .is_err()
-        {
-            events(QueryEvent::Notice {
-                message: "The execution finished, but its local history could not be recorded."
-                    .into(),
-            });
-        }
         self.jobs.lock().remove(&run_id);
         events(QueryEvent::Finished {
             execution_summary,
@@ -3126,6 +3196,7 @@ impl Studio {
             Action::Sql {
                 bound: Vec::new(),
                 error_source: None,
+                original_sql: None,
             },
             bytes,
         )
@@ -3178,6 +3249,7 @@ impl Studio {
             Action::Sql {
                 bound: Vec::new(),
                 error_source: None,
+                original_sql: None,
             },
             bytes,
         )
@@ -3217,6 +3289,7 @@ impl Studio {
             Action::Sql {
                 bound: Vec::new(),
                 error_source: None,
+                original_sql: None,
             },
             bytes,
         )
@@ -3336,6 +3409,7 @@ impl Studio {
             Action::Sql {
                 bound: Vec::new(),
                 error_source: None,
+                original_sql: None,
             },
             bytes,
         )
@@ -5192,6 +5266,7 @@ impl Studio {
                 )
             })?;
         self.flush_pending_snowflake_receipts()?;
+        self.flush_pending_history()?;
         self.flush_console_recordings()?;
         #[cfg(unix)]
         self.snowflake_cleanup
@@ -6353,7 +6428,7 @@ mod browse_classification_tests {
                 .prepare_transaction_control(&session.info.id, &request)
                 .unwrap();
             let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
             let result = studio.execute_transaction_control(&plan.id, None).await;
             assert_eq!(
                 driver.boundary_calls.lock().len(),

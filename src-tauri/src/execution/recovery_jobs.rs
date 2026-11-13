@@ -313,6 +313,7 @@ impl Studio {
                 || !self.exports.lock().is_empty()
                 || self.results.usage().1 != 0
                 || !self.dml_tasks.is_empty()
+                || !self.pending_history.lock().is_empty()
                 || !self.pending_snowflake_receipts.lock().is_empty()
             {
                 return Err(AppError::new(
@@ -708,6 +709,72 @@ mod tests {
             ErrorCode::NotFound
         );
         assert!(studio.recovery_backups().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_generic_completion_blocks_recovery_until_local_recording_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+        let seed = HistoryEntry {
+            id: new_id(),
+            connection_id: new_id(),
+            connection_name: "Recovery completion fixture".into(),
+            started_at: now_ms(),
+            sql: None,
+            statement_count: 1,
+            provenance: HistoryProvenance::Admitted,
+            status: None,
+            elapsed_ms: None,
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+        };
+        let ticket = studio.persistence.begin_history(&seed).unwrap();
+        let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
+        let completion = HistoryCompletion {
+            provenance: HistoryProvenance::Recorded,
+            status: Some(RunStatus::Completed),
+            elapsed_ms: Some(17),
+            execution_summary: None,
+            snowflake_dml: None,
+            snowflake_ddl: None,
+        };
+        assert!(
+            studio
+                .retain_history_completion(ticket, completion, &seed.connection_id, &"a".repeat(64))
+                .is_err()
+        );
+        assert_eq!(studio.pending_history.lock().len(), 1);
+        assert_eq!(
+            studio.history_entry(&seed.id).unwrap().unwrap().provenance,
+            HistoryProvenance::Admitted
+        );
+        let id = new_id();
+        let admitted = start(&studio, &id, create_request(), "separate recovery test key");
+        if admitted.is_ok() {
+            // A failing reproduction still retires the accidentally admitted job.
+            settled(&studio, &id).await;
+        }
+        assert_eq!(admitted.unwrap_err().code, ErrorCode::Conflict);
+        assert!(!studio.recovery_active.load(Ordering::Acquire));
+        assert!(studio.recovery_backups().unwrap().is_empty());
+        database
+            .execute_batch("DROP TRIGGER reject_completion")
+            .unwrap();
+        studio.flush_pending_history().unwrap();
+        assert!(studio.pending_history.lock().is_empty());
+        let recorded = studio.history_entry(&seed.id).unwrap().unwrap();
+        assert_eq!(recorded.provenance, HistoryProvenance::Recorded);
+        assert_eq!(recorded.status, Some(RunStatus::Completed));
+        assert_eq!(recorded.elapsed_ms, Some(17));
+        start(&studio, &id, create_request(), "separate recovery test key").unwrap();
+        assert_eq!(
+            settled(&studio, &id).await.state,
+            RecoveryOperationState::Succeeded
+        );
+        assert_eq!(studio.recovery_backups().unwrap().len(), 1);
+        studio.shutdown_and_wait().await.unwrap();
     }
 
     #[tokio::test]

@@ -20,7 +20,7 @@ new source or actual Snowflake behavior.
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
-| History, scripts and persistence             | Saved SQL, library/history policies, [paged retained-history search and exact reopening](query-history.md), local restart/recovery checks                                         | Atomic admitted/completed history, retention policy, full-capacity behavior and normal packaged Snowflake/owner recovery remain open                                    |
+| History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority and atomic console receipt/history/audit transitions; [workflow and evidence](query-history.md) | Generic crash-owner proof, durable failed generic/typed completion payloads, retention policy, full-capacity behavior and normal packaged Snowflake/owner recovery remain open |
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
@@ -44,6 +44,19 @@ metadata inventory. Offline review supplies no execution authority. No existing
 application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
+
+## Atomic history/privacy integration checkpoint (13 November 2026)
+
+| Capability | Current status | Evidence / remaining gate |
+| --- | --- | --- |
+| Durable history before dispatch | Implemented in schema 5; console regression, actual PostgreSQL and browser verified | Exact console case reproduces then fixes missing SQL at Started. Full validation, ten actual PostgreSQL cases, six browser cases, 73 synthetic Snowflake execution cases and 27 offline runner cases pass. New package pending. [Ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026) |
+| Clear/opt-out/restore authority and SQL-free completion | Implemented; real SQLite/encrypted restore/PostgreSQL/browser coverage passes | Physical writer fence, immutable row validation, legacy migration/clear/restore, known completion retry and clear during an active browser query pass. Independent integration review is clean, including the corrected event-order regression; package qualification remains pending |
+| Lifetime resource bounds and generic crash ownership | Incomplete | SQL-free tickets and privacy ancestry grow independently of existing console count gates; durable reservations, reclamation, full-capacity measurements and process-owner recovery remain required. `retentionEnabled=false` |
+
+This checkpoint does not qualify a new normal app. The runnable `adabd44` bundle
+above remains the preceding schema-4 package. Keep its local metadata separate
+from schema-5 evaluation roots. Actual Snowflake/macOS daily acceptance and the
+complete applicable DataGrip baseline remain open.
 
 ## Checked receipt accounting (13 November 2026)
 

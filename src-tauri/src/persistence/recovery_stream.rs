@@ -1356,6 +1356,10 @@ impl Persistence {
             candidate
                 .progress_handler(10_000, Some(move || token.is_cancelled()))
                 .map_err(db_error)?;
+            // History privacy and SQL-free console evidence settle together in
+            // the private candidate. Conflicts precede undo publication and
+            // live replacement; neither original receipts nor backups grant
+            // permission to restore previously cleared or opted-out SQL.
             let result = snowflake_console::merge_for_restore(&current, &mut candidate);
             let reset = candidate
                 .progress_handler(0, None::<fn() -> bool>)
@@ -1606,6 +1610,8 @@ mod tests {
             Err(error) => panic!("{error}"),
         }
     }
+
+    include!("recovery_history_tests.rs");
 
     #[test]
     fn encrypted_recovery_inventory_reads_complete_format_headers() {

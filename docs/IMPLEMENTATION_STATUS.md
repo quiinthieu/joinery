@@ -1,5 +1,33 @@
 # Implementation and release status
 
+## Atomic history/privacy integration (13 November 2026, locally verified)
+
+Current schema-5 source admits history before dispatch with exact SQL only when
+the persisted profile permits it. Completion uses SQL-free authority; clear,
+pruning, opt-out and profile deletion prevent late recreation. Console Prepare/
+Complete atomically record receipt/history/audit obligations and require publisher
+settlement. Compatible encrypted restores preserve privacy authority; old cached
+writers are physically fenced. Generic/typed completion retries preserve known
+original evidence, with tracked generic owners and recovery admission guards.
+
+Full validation passes 1,038 frontend / 676 standard Rust cases, with 142 default
+fixture ignores, plus formatting, compilation and strict Clippy. All eight
+history integration, nine encrypted history, ten actual isolated PostgreSQL,
+73 feature-specific Snowflake execution, 27 offline qualification-runner and six
+actual browser cases pass within their recorded scopes. Initial failures,
+legacy fixture corrections, the reproduced event-order regression and independent
+review are retained in the
+[ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
+The new normal package remains pending. The normal app below is still the
+previous `adabd44` schema-4 package, now separately preserved with its complete
+inventory and signature verified; keep evaluation roots separate from schema-5
+metadata.
+
+Generic process-crash owner proof, durable failed generic/typed completion
+payloads, lifetime ticket/privacy resource budgets and reservations remain open.
+Keep both count gates and `retentionEnabled=false`. No account activity,
+installation, publication or replacement acceptance is established.
+
 ## History completion evidence (13 November 2026, locally verified)
 
 History and its keyboard palette now distinguish recorded outcomes, admission
@@ -14,9 +42,10 @@ browser cases pass. Source scopes, initial failures, corrections and independent
 review are in the
 [ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
 
-This is the model/presentation prerequisite. Production admission, restart and
-restore do not yet create pending/recovered history; atomic history/privacy,
-publisher settlement and durable reservations remain required. Keep both count
+This was the model/presentation prerequisite. At that checkpoint, production
+admission, restart and restore did not create pending/recovered history. The
+schema-5 increment above implements the atomic history/privacy and console
+publisher prerequisites; durable reservations remain required. Keep both count
 gates and `retentionEnabled=false`.
 
 The normal SDK-bearing ARM64 app packages from clean `adabd44`; resources,

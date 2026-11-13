@@ -1,8 +1,8 @@
 //! App-owned metadata snapshots. Paths never cross IPC; result buffers and OS secrets
 //! are not part of this SQLite store. An incomplete SQLite backup rolls back on drop.
 use super::{
-    Persistence, SCHEMA_VERSION, db_error, initialize_schema, schema_version, snowflake_console,
-    validate_schema,
+    Persistence, SCHEMA_VERSION, db_error, initialize_schema, metadata_table, schema_version,
+    snowflake_console, validate_schema,
 };
 use crate::domain::*;
 use rusqlite::{
@@ -85,14 +85,22 @@ pub(super) fn validate(connection: &Connection) -> AppResult<()> {
     }
     let mut allowed_objects = ["profiles", "groups", "history", "audit", "settings"]
         .into_iter()
-        .map(|name| ("table".to_owned(), name.to_owned()))
-        .collect::<Vec<_>>();
+        .map(|name| {
+            let table = if matches!(name, "profiles" | "history" | "audit") {
+                metadata_table(connection, name)?
+            } else {
+                name
+            };
+            Ok(("table".to_owned(), table.to_owned()))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
     // Journal validation above verifies exact version-specific definitions.
-    // Admit only that same version's known objects, including v4 browsing
-    // indexes; a name from another schema version conveys no compatibility.
+    // Admit only that same version's known objects. Legacy names or a schema
+    // object's name alone cannot establish schema compatibility.
     if version >= 2 {
         allowed_objects.extend(snowflake_console::schema_objects(version)?);
     }
+    allowed_objects.extend(super::history::schema_objects(version)?);
     let mut objects = connection
         .prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")
         .map_err(db_error)?;
@@ -109,6 +117,11 @@ pub(super) fn validate(connection: &Connection) -> AppResult<()> {
         }
     }
     for (table, kind) in [("profiles", 0), ("groups", 1), ("history", 2)] {
+        let table = if table == "groups" {
+            table
+        } else {
+            metadata_table(connection, table)?
+        };
         let mut statement = connection
             .prepare(&format!("SELECT json FROM {table}"))
             .map_err(db_error)?;
@@ -129,6 +142,9 @@ pub(super) fn validate(connection: &Connection) -> AppResult<()> {
                 ));
             }
         }
+    }
+    if version >= 5 {
+        super::history::validate_records(connection)?;
     }
     Ok(())
 }
@@ -366,6 +382,10 @@ mod tests {
         use serde_json::json;
         let root = tempfile::tempdir().unwrap();
         let db = Persistence::open(root.path()).unwrap();
+        let backup = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&backup.id).unwrap();
+        legacy_empty_backup(&path, 4);
+        let connection = Connection::open(path).unwrap();
         let legacy = json!({
             "id": "history-fixture", "connectionId": "fixture", "connectionName": "Fixture",
             "startedAt": 1, "sql": "SELECT 'exact original'", "statementCount": 1,
@@ -425,7 +445,6 @@ mod tests {
         ];
         for (raw, expected) in cases {
             let encoded = serde_json::to_string(&raw).unwrap();
-            let connection = db.connection.lock();
             connection.execute(
                 "INSERT INTO history(id,started_at,json) VALUES('history-fixture',1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
                 [&encoded],
@@ -448,12 +467,12 @@ mod tests {
     // These fixtures start with an empty current journal. Rebuild an actual
     // legacy schema, rather than changing only user_version on newer tables.
     fn legacy_empty_backup(path: &Path, version: i64) {
-        assert!((1..=3).contains(&version));
+        assert!((1..=4).contains(&version));
         let old = Connection::open(path).unwrap();
         old.pragma_update(None, "foreign_keys", false).unwrap();
-        let objects = snowflake_console::schema_objects(SCHEMA_VERSION).unwrap();
+        let mut objects = snowflake_console::schema_objects(SCHEMA_VERSION).unwrap();
         for (kind, name) in &objects {
-            if kind == "table" && name != "snowflake_console_retention_v4" {
+            if kind == "table" && name != "snowflake_console_retention_v5" {
                 let count: i64 = old
                     .query_row(&format!("SELECT count(*) FROM \"{name}\""), [], |row| {
                         row.get(0)
@@ -462,6 +481,10 @@ mod tests {
                 assert_eq!(count, 0, "legacy fixture must not discard journal evidence");
             }
         }
+        // Publisher guards belong to history's schema but attach to console
+        // tables. Drop every known trigger before any table, since SQLite
+        // implicitly removes attached triggers when a table is dropped.
+        objects.extend(super::super::history::schema_objects(SCHEMA_VERSION).unwrap());
         for kind in ["trigger", "index", "table"] {
             for (object_kind, name) in &objects {
                 if object_kind == kind {
@@ -470,10 +493,14 @@ mod tests {
                 }
             }
         }
+        for base in ["profiles", "history", "audit"] {
+            old.execute_batch(&format!("ALTER TABLE {base}_v5 RENAME TO {base};"))
+                .unwrap();
+        }
         if version >= 2 {
             old.execute_batch(snowflake_console::SCHEMA_SQL).unwrap();
         }
-        if version == 3 {
+        if version >= 3 {
             old.execute_batch(
                 "ALTER TABLE snowflake_console_runs RENAME TO snowflake_console_runs_v3;
                  ALTER TABLE snowflake_console_steps RENAME TO snowflake_console_steps_v3;",
@@ -484,6 +511,9 @@ mod tests {
             for (_, sql) in snowflake_console::DECISION_TRIGGERS {
                 old.execute_batch(sql).unwrap();
             }
+        }
+        if version == 4 {
+            snowflake_console::migrate_v4(&old).unwrap();
         }
         old.pragma_update(None, "user_version", version).unwrap();
         validate(&old).unwrap();
@@ -651,10 +681,15 @@ mod tests {
     fn version_four_backup_accepts_exact_indexes_and_rejects_schema_substitutions() {
         let root = tempfile::tempdir().unwrap();
         let db = Persistence::open(root.path()).unwrap();
-        assert_eq!(schema_version(&db.connection.lock()).unwrap(), 4);
+        assert_eq!(
+            schema_version(&db.connection.lock()).unwrap(),
+            SCHEMA_VERSION
+        );
         db.set_setting("v4-recovery", "snapshot").unwrap();
         let snapshot = db.create_metadata_backup().unwrap();
         let path = db.backup_path(&snapshot.id).unwrap();
+        legacy_empty_backup(&path, 4);
+        let snapshot = info(&path, &snapshot.id).unwrap();
         let bytes = fs::read(&path).unwrap();
         let index = snowflake_console::schema_objects(4)
             .unwrap()
@@ -799,9 +834,9 @@ mod tests {
     }
 
     #[test]
-    fn console_negative_versions_one_through_four_restore_preserve_live_refusals() {
+    fn console_negative_versions_one_through_five_restore_preserve_live_refusals() {
         use snowflake_console::{ConsoleAdmissionRejection, ConsoleRunMetadata};
-        for version in [1, 2, 3, 4] {
+        for version in 1..=SCHEMA_VERSION {
             let root = tempfile::tempdir().unwrap();
             let db = Persistence::open(root.path()).unwrap();
             db.set_setting("refusal-restore", "before").unwrap();
@@ -880,7 +915,7 @@ mod tests {
         let path = db.backup_path(&backup.id).unwrap();
         db.set_setting("live-refusal", "preserved").unwrap();
         let copy = Connection::open(&path).unwrap();
-        copy.execute("UPDATE snowflake_console_rejections_v4 SET recorded_at=2000 WHERE client_request_id=?1", [&refused.client_request_id]).unwrap();
+        copy.execute("UPDATE snowflake_console_rejections_v5 SET recorded_at=2000 WHERE client_request_id=?1", [&refused.client_request_id]).unwrap();
         drop(copy);
         let changed = info(&path, &backup.id).unwrap();
         assert_eq!(
@@ -901,7 +936,7 @@ mod tests {
             .find(|(kind, _)| kind == "trigger")
             .unwrap()
             .1;
-        copy.execute_batch(&format!("DROP TRIGGER \"{guard}\"; CREATE TRIGGER \"{guard}\" BEFORE INSERT ON snowflake_console_runs_v4 BEGIN SELECT 1; END;")).unwrap();
+        copy.execute_batch(&format!("DROP TRIGGER \"{guard}\"; CREATE TRIGGER \"{guard}\" BEFORE INSERT ON snowflake_console_runs_v5 BEGIN SELECT 1; END;")).unwrap();
         drop(copy);
         let tampered = info(&path, &backup.id).unwrap();
         assert!(
@@ -959,14 +994,14 @@ mod tests {
         let path = db.backup_path(&snapshot.id).unwrap();
         let edited = Connection::open(&path).unwrap();
         edited
-            .execute("INSERT INTO profiles VALUES('bad','{}')", [])
+            .execute("INSERT INTO profiles_v5 VALUES('bad','{}')", [])
             .unwrap();
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(
             db.restore_metadata_backup(&snapshot.id, &changed.digest)
                 .is_err()
         );
-        edited.execute_batch("DELETE FROM profiles; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles; END;").unwrap();
+        edited.execute_batch("DELETE FROM profiles_v5; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v5; END;").unwrap();
         drop(edited);
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(

@@ -16,6 +16,8 @@ enum Behavior {
     HeldCancellation,
     AcknowledgedCancellation,
     HeldCancellationOnSuffix,
+    HeldObservation,
+    PanicBeforeAck,
 }
 
 struct ScriptDriver {
@@ -37,6 +39,10 @@ impl Driver for ScriptDriver {
     ) -> AppResult<u64> {
         assert_eq!(kind, StatementKind::Read);
         self.calls.lock().push(sql.into());
+        assert!(
+            !matches!(self.behavior, Behavior::PanicBeforeAck),
+            "synthetic driver panic before ACK"
+        );
         if sql.contains("distinctive suffix") {
             if let Behavior::ErrorOnSuffix(code) = self.behavior {
                 return Err(AppError::new(code, "Synthetic suffix failure"));
@@ -120,6 +126,10 @@ impl Driver for ScriptDriver {
         Ok(())
     }
     async fn session_state(&self, id: &str) -> AppResult<SessionRuntimeState> {
+        if matches!(self.behavior, Behavior::HeldObservation) {
+            self.entered.notify_one();
+            self.cancelled.cancelled().await;
+        }
         self.inner.session_state(id).await
     }
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
@@ -575,4 +585,136 @@ async fn script_accounting_declined_started_event_does_not_count_a_driver_attemp
     assert!(evidence.calls.is_empty());
     evidence.assert_status("cancelled");
     evidence.assert_summary(0, 0, json!("cancelled"));
+}
+
+#[tokio::test]
+async fn script_history_observed_completion_is_durable_before_secondary_observation() {
+    let fixture = Fixture::new(Behavior::HeldObservation);
+    let (id, rx) = fixture.start_sql("SELECT 'first'", None);
+    tokio::time::timeout(Duration::from_secs(3), fixture.driver.entered.notified())
+        .await
+        .unwrap();
+    let entry = fixture.studio.history_entry(&id).unwrap().unwrap();
+    assert_eq!(entry.status, Some(RunStatus::Completed));
+    assert_eq!(entry.provenance, HistoryProvenance::Recorded);
+    assert!(entry.elapsed_ms.is_some());
+    assert!(fixture.studio.jobs.lock().contains_key(&id));
+    fixture.driver.cancelled.cancel();
+    let evidence = fixture.finish(&id, rx).await;
+    evidence.assert_status("completed");
+    let terminal_events: Vec<_> = evidence.events[evidence.events.len() - 3..]
+        .iter()
+        .map(|event| event["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(terminal_events, ["sessionState", "runMetrics", "finished"]);
+}
+
+#[tokio::test]
+async fn script_history_panic_preserves_unknown_timing_without_leaking_job_ownership() {
+    let fixture = Fixture::new(Behavior::PanicBeforeAck);
+    let (id, rx) = fixture.start_sql("SELECT 'first'", None);
+    let evidence = fixture.finish(&id, rx).await;
+    assert_eq!(evidence.history["provenance"], "interrupted");
+    assert_eq!(evidence.history["status"], Value::Null);
+    assert_eq!(evidence.history["elapsedMs"], Value::Null);
+    assert!(!fixture.studio.jobs.lock().contains_key(&id));
+    assert_eq!(fixture.driver.calls.lock().len(), 1);
+    fixture.studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn script_history_callback_panic_after_completion_preserves_original_known_status() {
+    let fixture = Fixture::new(Behavior::Complete);
+    let plan = fixture
+        .studio
+        .prepare_execution(&fixture.session.info.id, "SELECT 'first'")
+        .unwrap();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let id = fixture
+        .studio
+        .execute(
+            &plan.id,
+            None,
+            Arc::new(move |event| {
+                assert!(
+                    !matches!(event, QueryEvent::RunMetrics { .. }),
+                    "synthetic publication panic after completion"
+                );
+                tx.send(event).is_ok()
+            }),
+        )
+        .unwrap();
+    let evidence = fixture.finish(&id, rx).await;
+    evidence.assert_status("completed");
+    assert!(evidence.history["elapsedMs"].is_number());
+    assert_eq!(evidence.history["provenance"], "recorded");
+    assert!(!fixture.studio.jobs.lock().contains_key(&id));
+    assert!(fixture.studio.pending_history.lock().is_empty());
+    fixture.studio.shutdown_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn script_history_statement_callback_panic_preserves_ack_and_stops_only_the_suffix() {
+    for sql in ["SELECT 'first'", SCRIPT] {
+        let fixture = Fixture::new(Behavior::Complete);
+        let plan = fixture
+            .studio
+            .prepare_execution(&fixture.session.info.id, sql)
+            .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let id = fixture
+            .studio
+            .execute(
+                &plan.id,
+                None,
+                Arc::new(move |event| {
+                    assert!(
+                        !matches!(event, QueryEvent::StatementCompleted { .. }),
+                        "synthetic callback panic after ACK"
+                    );
+                    tx.send(event).is_ok()
+                }),
+            )
+            .unwrap();
+        let evidence = fixture.finish(&id, rx).await;
+        assert_eq!(evidence.calls.len(), 1);
+        assert_eq!(evidence.history["executionSummary"]["completed"], 1);
+        assert_eq!(evidence.history["executionSummary"]["attempted"], 1);
+        assert!(evidence.history["elapsedMs"].is_number());
+        evidence.assert_status(if sql == SCRIPT {
+            "cancelled"
+        } else {
+            "completed"
+        });
+        fixture.studio.shutdown_and_wait().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn script_history_shutdown_waits_for_the_running_owner_before_final_flush() {
+    let fixture = Fixture::new(Behavior::HeldCancellation);
+    let (id, rx) = fixture.start_sql("SELECT 'first'", None);
+    tokio::time::timeout(Duration::from_secs(3), fixture.driver.entered.notified())
+        .await
+        .unwrap();
+    let owner = fixture.studio.clone();
+    let mut shutdown = tokio::spawn(async move { owner.shutdown_and_wait().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .studio
+            .history_entry(&id)
+            .unwrap()
+            .unwrap()
+            .provenance,
+        HistoryProvenance::Admitted
+    );
+    fixture.driver.cancelled.cancel();
+    shutdown.await.unwrap().unwrap();
+    fixture.finish(&id, rx).await.assert_status("cancelled");
+    assert!(fixture.studio.pending_history.lock().is_empty());
 }

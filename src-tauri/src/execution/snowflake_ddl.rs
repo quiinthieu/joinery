@@ -317,8 +317,9 @@ impl Studio {
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
             .await
             .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
-        let (request, preflight, digest) = {
+        let (request, preflight, digest, history_ticket, history_started_at) = {
             let _configuration = self.configuration_mutation_guard()?;
+            self.flush_pending_history()?;
             self.flush_pending_snowflake_receipts()?;
             let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
             if stored.deadline <= Instant::now() || stored.plan.session_id != session_id {
@@ -371,6 +372,21 @@ impl Studio {
                 &stored.digest,
                 "started",
             )?;
+            let seed = HistoryEntry {
+                provenance: HistoryProvenance::Admitted,
+                execution_summary: None,
+                snowflake_dml: None,
+                snowflake_ddl: None,
+                id: new_id(),
+                connection_id: profile.id.clone(),
+                connection_name: profile.name.clone(),
+                started_at: now_ms(),
+                sql: profile.store_query_text.then(|| request.sql.clone()),
+                statement_count: 1,
+                status: None,
+                elapsed_ms: None,
+            };
+            let history_ticket = self.persistence.begin_history(&seed)?;
             session.metadata_gate.lock().hold_catalog();
             *session.observed_runtime.lock() = None;
             *session.completion.lock() = None;
@@ -380,8 +396,21 @@ impl Studio {
                 .retain(|_, plan| plan.plan.session_id != session_id);
             // The adapter consumes its composite grant before invalidating its
             // catalog. Calling invalidate_relation_catalog here would revoke it.
-            (request, preflight, stored.digest)
+            (
+                request,
+                preflight,
+                stored.digest,
+                history_ticket,
+                seed.started_at,
+            )
         };
+        let mut history_owner = history_receipts::AdmissionOwner::new(
+            self,
+            history_ticket.clone(),
+            &session.profile.id,
+            &digest,
+            "snowflake-ddl",
+        );
         let started = Instant::now();
         let mut result = session.driver.snowflake_ddl(&session_id, &request).await?;
         if result.kind != preflight.kind
@@ -413,12 +442,11 @@ impl Studio {
                 retired: result.retired,
             }),
             snowflake_dml: None,
-            id: new_id(),
+            id: history_ticket.id().into(),
             connection_id: session.profile.id.clone(),
             connection_name: session.profile.name.clone(),
-            started_at: now_ms()
-                .saturating_sub(started.elapsed().as_millis().min(u64::MAX as u128) as u64),
-            sql: session.profile.store_query_text.then_some(request.sql),
+            started_at: history_started_at,
+            sql: None,
             statement_count: 1,
             status: Some(match result.statement_outcome {
                 SnowflakeDdlOutcome::Succeeded => RunStatus::Completed,
@@ -427,14 +455,15 @@ impl Studio {
             }),
             elapsed_ms: Some(started.elapsed().as_millis().min(u32::MAX as u128) as u32),
         };
-        if self
-            .retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(
+        let recording =
+            self.retain_snowflake_receipt(snowflake_receipts::PendingReceipt::statement(
+                history_ticket,
                 entry,
                 digest,
                 snowflake_receipts::OriginalResult::Ddl(result.clone()),
-            ))
-            .is_err()
-        {
+            ));
+        history_owner.disarm();
+        if recording.is_err() {
             snowflake_receipts::recording_notice(&mut result.error);
         }
         if !result.retired {

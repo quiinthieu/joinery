@@ -3,6 +3,14 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
 async fn setup(budget: usize, row_limit: usize) -> (tempfile::TempDir, Arc<Studio>, SessionInfo) {
+    setup_with_text(budget, row_limit, false).await
+}
+
+async fn setup_with_text(
+    budget: usize,
+    row_limit: usize,
+    store_query_text: bool,
+) -> (tempfile::TempDir, Arc<Studio>, SessionInfo) {
     let root = tempfile::tempdir().unwrap();
     let mut studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
     // Rust-only injection into this disposable Studio; production limits and
@@ -28,7 +36,7 @@ async fn setup(budget: usize, row_limit: usize) -> (tempfile::TempDir, Arc<Studi
                 ca_cert_path: None,
                 ssh: None,
                 remember_password: false,
-                store_query_text: false,
+                store_query_text,
                 store_drafts: false,
                 snowflake: None,
             },
@@ -485,4 +493,150 @@ async fn postgres_interrupted_connection_preserves_prefix_without_replaying_suff
     assert!(studio.health(&session.id).await.is_err());
     drop(observer);
     pump.await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires isolated disposable PostgreSQL; only fixed synthetic scalar reads"]
+async fn postgres_history_admission_preserves_exact_original_before_dispatch_and_restart() {
+    let (root, studio, session) = setup_with_text(32 * 1024, 100, true).await;
+    let sql = " /* keep original 雪 */\nSELECT 42 AS answer;  -- trailing comment\n";
+    let plan = studio.prepare_execution(&session.id, sql).unwrap();
+    let reader = studio.clone();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let id = studio
+        .execute(
+            &plan.id,
+            None,
+            Arc::new(move |event| {
+                if let QueryEvent::Started { run_id } = &event {
+                    let entry = reader.history_entry(run_id).unwrap().unwrap();
+                    assert_eq!(entry.sql.as_deref(), Some(sql));
+                    assert_eq!(entry.provenance, HistoryProvenance::Admitted);
+                    assert_eq!(entry.status, None);
+                    assert_eq!(entry.elapsed_ms, None);
+                }
+                tx.send(event).is_ok()
+            }),
+        )
+        .unwrap();
+    let events = finish(rx).await;
+    assert_eq!(terminal(&events)["status"], "completed");
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            QueryEvent::Result { result } => Some(result),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        studio.results.row(&result.id, 0).unwrap()[0].as_deref(),
+        Some("42")
+    );
+    release(&studio, &events);
+    studio.shutdown_and_wait().await.unwrap();
+    drop(studio);
+    let restarted = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let entry = restarted.history_entry(&id).unwrap().unwrap();
+    assert_eq!(entry.sql.as_deref(), Some(sql));
+    assert_eq!(entry.status, Some(RunStatus::Completed));
+    assert_eq!(entry.provenance, HistoryProvenance::Recorded);
+}
+
+#[tokio::test]
+#[ignore = "requires isolated disposable PostgreSQL; only synthetic scalar reads and own-session sleep"]
+async fn postgres_history_privacy_actions_cannot_be_undone_by_late_completion() {
+    for action in ["clear", "optout-reenable", "delete-recreate"] {
+        let (root, studio, session) = setup_with_text(32 * 1024, 100, true).await;
+        let (observer, pump) = observer().await;
+        let sql = "SELECT pg_sleep(1)";
+        let (id, rx) = start(&studio, &session, sql);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count: i64 = observer.query_one("SELECT count(*) FROM pg_stat_activity WHERE application_name=$1 AND state='active' AND query=$2", &[&format!("Joinery {}",session.id), &sql]).await.unwrap().get(0);
+                if count == 1 { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.unwrap();
+        assert_eq!(
+            studio.history_entry(&id).unwrap().unwrap().sql.as_deref(),
+            Some(sql)
+        );
+        let mut profile = studio
+            .bootstrap()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|p| p.id == session.connection_id)
+            .unwrap();
+        match action {
+            "clear" => studio.clear_history().unwrap(),
+            "optout-reenable" => {
+                profile.store_query_text = false;
+                studio.save_profile(profile.clone(), None).unwrap();
+                assert!(studio.history_entry(&id).unwrap().unwrap().sql.is_none());
+                profile.store_query_text = true;
+                studio.save_profile(profile, None).unwrap();
+            }
+            "delete-recreate" => {
+                studio.delete_profile(&profile.id).unwrap();
+                studio.save_profile(profile, None).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let events = finish(rx).await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, QueryEvent::Finished { .. }))
+        );
+        let entry = studio.history_entry(&id).unwrap();
+        if action == "clear" {
+            assert!(entry.is_none());
+        } else {
+            assert!(entry.unwrap().sql.is_none());
+        }
+        studio.shutdown_and_wait().await.unwrap();
+        drop(studio);
+        let restarted =
+            Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+        assert!(
+            restarted
+                .history_entry(&id)
+                .unwrap()
+                .is_none_or(|e| e.sql.is_none()),
+            "{action} resurrected SQL on restart"
+        );
+        drop(observer);
+        pump.await.unwrap();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires isolated disposable PostgreSQL; only fixed synthetic scalar reads"]
+async fn postgres_history_clear_during_failed_completion_retry_never_reinserts_sql() {
+    let (root, studio, session) = setup_with_text(32 * 1024, 100, true).await;
+    let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER reject_history_completion BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    let (id, rx) = start(&studio, &session, "SELECT 123 AS retained_answer");
+    let events = finish(rx).await;
+    assert_eq!(terminal(&events)["status"], "completed");
+    assert!(
+        events.iter().any(
+            |e| matches!(e, QueryEvent::Notice { message } if message.contains("local history"))
+        )
+    );
+    assert_eq!(
+        studio.history_entry(&id).unwrap().unwrap().provenance,
+        HistoryProvenance::Admitted
+    );
+    release(&studio, &events);
+    studio.clear_history().unwrap();
+    database
+        .execute_batch("DROP TRIGGER reject_history_completion")
+        .unwrap();
+    studio.shutdown_and_wait().await.unwrap();
+    assert!(studio.history_entry(&id).unwrap().is_none());
+    drop(studio);
+    let restarted = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    assert!(restarted.history_entry(&id).unwrap().is_none());
 }

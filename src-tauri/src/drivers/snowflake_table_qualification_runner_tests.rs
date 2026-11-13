@@ -762,7 +762,19 @@ async fn qualification_studio_runner_dropped_waiter_preserves_post_ack_owner() {
         .unwrap()
         .unwrap();
     assert_local_settlement(&receipt);
-    assert!(receipt.failure.is_none());
+    assert!(
+        receipt.failure.is_none(),
+        "failure={:?}; original={:?}; completion={:?}; transport={:?}; first transport error={:?}; outputs={}",
+        receipt.failure,
+        receipt
+            .original_call_failure
+            .as_ref()
+            .map(|failure| &failure.error),
+        receipt.completion_record_error,
+        receipt.harness.transport.report(),
+        receipt.harness.transport.first_error(),
+        receipt.outputs.len()
+    );
     assert!(receipt.persisted.is_ok());
     assert_eq!(receipt.outputs.len(), 32);
     let ledger = receipt

@@ -1,5 +1,42 @@
 # Joinery implementation roadmap
 
+## Atomic history and privacy integration (13 November 2026, locally verified)
+
+The coordinated schema-5 increment is local to the feature branch and is not
+release-qualified. It admits history before dispatch, retains exact
+permitted SQL only in the history row, and completes via SQL-free tickets.
+Console Prepare/Complete/Seal transactions bind receipt, history and audit
+evidence; clear epochs and per-profile privacy generations prevent late writers
+or compatible metadata restores from reviving removed text. Generic and typed
+execution paths use the same history authority.
+
+The original console crash window was reproduced: at `Started`, opted-in SQL
+was absent from SQLite. The exact regression now passes. All 616 standard library
+cases and all eight history integration cases pass in recorded runs, including
+nine real encrypted history restore cases and physical older-writer fencing.
+All ten actual isolated PostgreSQL script cases pass, covering exact admission/
+restart, privacy changes during a running query, failed completion retry,
+cancellation, connection loss and rollback. Review corrections for legacy
+restore, immutable-row validation and recovery admission have passing regressions.
+A legacy integration fixture failure was corrected to exercise real version-one
+migration; validators were not weakened. Final full validation passes 1,038
+frontend / 676 standard Rust cases, with strict checks. All six browser,
+73 feature-specific Snowflake execution and 27 offline qualification-runner
+cases pass. Review also caught a public event-order regression; its direct
+red/green test and complete offline runner suite pass after correction. Normal
+packaging remains pending. See the
+[current ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
+
+Generic process-crash owner recovery, durable failed generic/typed completion
+payloads and durable byte reservations remain open.
+Lifetime SQL-free tickets, clear eras and profile-generation ancestry currently
+have no complete resource budget or reclamation policy. Preserve their privacy
+authority; do not claim that console count gates bound these new tables. Keep
+both count gates and `retentionEnabled=false`. The current runnable normal app
+remains the previously verified clean-`adabd44` package below, with schema 4.
+Do not point that older writer at schema-5 evaluation metadata. Full DataGrip
+scope, actual Snowflake qualification and owner acceptance remain required.
+
 ## History completion evidence (13 November 2026, locally verified)
 
 The [history lifecycle model and UI](query-history.md#completion-and-recovery-evidence)
@@ -26,11 +63,11 @@ producer checks. The preceding `99a3ca3` app is preserved with its full inventor
 unchanged. The new app remains local and uninstalled; normal owner UI/SSO/restart
 acceptance is open.
 
-This is a prerequisite for the complete atomic workflow. Production admission,
-restart and metadata restore do not yet create pending/recovered history.
-Next implement atomic admitted/completed history, clear/prune/opt-out suppression,
-schema-5 writer fencing, publisher sealing and durable reservations together with
-real crash/privacy/restore acceptance. Keep both count gates and
+This was a prerequisite for the atomic workflow. Production admission, restart
+and metadata restore did not yet create pending/recovered history at that
+checkpoint. The schema-5 increment above implements those console persistence
+and privacy prerequisites. Continue generic crash-owner proof, durable failed
+completion payloads, reservations and resource acceptance. Keep both count gates and
 `retentionEnabled=false`. Actual Snowflake, full-capacity and owner acceptance
 remain required; the complete DataGrip target is unchanged.
 

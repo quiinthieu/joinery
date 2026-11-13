@@ -8,6 +8,7 @@ use crate::drivers::{
     },
     snowflake_process::{Certainty, Operation, ReviewedAcknowledgement, StatementIdentity},
 };
+use crate::persistence::HistoryCompletion;
 #[cfg(unix)]
 use crate::persistence::snowflake_console::validate_console_request_identity;
 use crate::persistence::snowflake_console::{ConsoleAdmissionRejection, ConsoleJournalOwner};
@@ -30,6 +31,8 @@ pub(super) struct State {
     generation: AtomicU64,
     previews: Mutex<HashMap<String, u64>>,
     journal: Mutex<Journal>,
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    lose_prepare_confirmation: AtomicBool,
     #[cfg(unix)]
     pub(super) owners: Mutex<HashMap<String, Arc<tokio::sync::Mutex<ReviewedConsole>>>>,
 }
@@ -50,17 +53,18 @@ struct Journal {
 struct Retained {
     run: ConsoleRunSnapshot,
     writes: VecDeque<Write>,
-    started_pending: bool,
-    history: Option<HistoryEntry>,
-    finished_pending: bool,
+    prepare_confirmed: bool,
+    completion: Option<HistoryCompletion>,
+    seal_pending: bool,
+    publisher_sealed: bool,
 }
 
 impl Retained {
     fn pending(&self) -> bool {
         !self.writes.is_empty()
-            || self.started_pending
-            || self.history.is_some()
-            || self.finished_pending
+            || !self.prepare_confirmed
+            || self.seal_pending
+            || !self.publisher_sealed
     }
 }
 
@@ -206,7 +210,10 @@ struct Write {
 }
 
 enum Mutation {
-    Prepare(ConsoleRunMetadata),
+    Prepare {
+        metadata: ConsoleRunMetadata,
+        seed: Box<HistoryEntry>,
+    },
     Intent {
         ordinal: u32,
         at: u64,
@@ -223,10 +230,16 @@ enum Mutation {
     Finish {
         reason: ConsoleStopReason,
         at: u64,
+        completion: HistoryCompletion,
     },
 }
 
 impl State {
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(super) fn fail_next_prepare_confirmation(&self) {
+        self.lose_prepare_confirmation
+            .store(true, Ordering::Release);
+    }
     #[cfg(all(test, unix, feature = "test-harness"))]
     pub(super) fn pending_rejection(&self, id: &str) -> Option<ConsoleAdmissionRejection> {
         self.journal.lock().rejections.get(id).cloned()
@@ -362,7 +375,11 @@ fn stop_reason(run: &ConsoleRunSnapshot) -> ConsoleStopReason {
 }
 
 fn status(run: &ConsoleRunSnapshot) -> RunStatus {
-    match run.terminal.as_ref().map(|t| t.reason) {
+    status_for_reason(run.terminal.as_ref().map(|t| t.reason))
+}
+
+fn status_for_reason(reason: Option<ConsoleStopReason>) -> RunStatus {
+    match reason {
         Some(ConsoleStopReason::Completed) => RunStatus::Completed,
         Some(ConsoleStopReason::Cancelled) => RunStatus::Cancelled,
         Some(ConsoleStopReason::OutcomeUnknown | ConsoleStopReason::Interrupted) => {
@@ -373,10 +390,51 @@ fn status(run: &ConsoleRunSnapshot) -> RunStatus {
     }
 }
 
+fn history_completion(
+    reason: ConsoleStopReason,
+    provenance: HistoryProvenance,
+    elapsed_ms: Option<u32>,
+) -> HistoryCompletion {
+    HistoryCompletion {
+        provenance,
+        status: Some(status_for_reason(Some(reason))),
+        elapsed_ms,
+        execution_summary: None,
+        snowflake_dml: None,
+        snowflake_ddl: None,
+    }
+}
+
 impl Mutation {
+    fn recorded(
+        &self,
+        store: &Persistence,
+        id: &str,
+        expected: &ConsoleRunSnapshot,
+    ) -> AppResult<bool> {
+        match self {
+            // Exact Prepare retry also validates the seed fingerprint, including
+            // the permitted original text. A receipt snapshot alone cannot do so.
+            Self::Prepare { .. } => Ok(false),
+            Self::Finish { completion, .. } => {
+                let Some(recorded) = store.console_lifecycle(id)? else {
+                    return Ok(false);
+                };
+                let completion_matches = recorded
+                    .completion
+                    .as_ref()
+                    .is_some_and(|value| value.matches(completion));
+                // Privacy may concurrently suppress/redact history. Its current
+                // disposition is authoritative; replay never supplies SQL anew.
+                Ok(!recorded.legacy && recorded.run == *expected && completion_matches)
+            }
+            _ => Ok(store.console_run(id)?.as_ref() == Some(expected)),
+        }
+    }
+
     fn apply(&self, run: &mut ConsoleRunSnapshot) {
         match self {
-            Self::Prepare(_) => return,
+            Self::Prepare { .. } => return,
             Self::Intent { ordinal, at } => {
                 run.state = ConsoleRunState::Running;
                 run.steps.push(ConsoleStep {
@@ -405,7 +463,7 @@ impl Mutation {
                 }
                 absorb(&mut run.observations, observations);
             }
-            Self::Finish { reason, at } => {
+            Self::Finish { reason, at, .. } => {
                 run.terminal = Some(ConsoleTerminal {
                     reason: *reason,
                     finished_at: *at,
@@ -426,7 +484,9 @@ impl Mutation {
         revision: u64,
     ) -> AppResult<ConsoleRunSnapshot> {
         match self {
-            Self::Prepare(metadata) => Ok(store.console_prepare_run(owner, metadata.clone())?.run),
+            Self::Prepare { metadata, seed } => Ok(store
+                .console_prepare_lifecycle(owner, metadata.clone(), seed)?
+                .run),
             Self::Intent { ordinal, at } => {
                 store.console_step_intent(owner, id, revision, *ordinal, *at)
             }
@@ -446,7 +506,13 @@ impl Mutation {
                 ordinal,
                 observations,
             } => store.console_observe(owner, id, revision, *ordinal, observations.clone()),
-            Self::Finish { reason, at } => store.console_finish(owner, id, revision, *reason, *at),
+            Self::Finish {
+                reason,
+                at,
+                completion,
+            } => Ok(store
+                .console_complete_lifecycle(owner, id, revision, *reason, *at, completion)?
+                .run),
         }
     }
 }
@@ -491,18 +557,13 @@ impl Studio {
         for id in pending {
             let retained = runs.get_mut(&id).ok_or_else(recording_error)?;
             while let Some(write) = retained.writes.front() {
-                let durable = self
-                    .persistence
-                    .console_run(&retained.run.metadata.run_id)?;
                 // Reconcile an uncertain local commit against the complete expected
-                // snapshot, including immutable original acknowledgement evidence.
-                if durable.as_ref() != Some(&write.after) {
-                    match (&write.operation, &durable) {
-                        (Mutation::Prepare(_), None) => {}
-                        (Mutation::Prepare(_), Some(_)) => return Err(recording_error()),
-                        (_, Some(run)) if run.revision == write.before => {}
-                        _ => return Err(recording_error()),
-                    }
+                // original AND lifecycle side writes, not a terminal flag alone.
+                if !write.operation.recorded(
+                    &self.persistence,
+                    &retained.run.metadata.run_id,
+                    &write.after,
+                )? {
                     let actual = write.operation.persist(
                         &self.persistence,
                         owner,
@@ -512,40 +573,50 @@ impl Studio {
                     if actual != write.after {
                         return Err(recording_error());
                     }
+                    #[cfg(all(test, unix, feature = "test-harness"))]
+                    if matches!(write.operation, Mutation::Prepare { .. })
+                        && self
+                            .console
+                            .lose_prepare_confirmation
+                            .swap(false, Ordering::AcqRel)
+                    {
+                        // Fault after the real SQLite transaction committed,
+                        // before its acknowledgement reaches the retained outbox.
+                        return Err(recording_error());
+                    }
+                }
+                if matches!(write.operation, Mutation::Prepare { .. }) {
+                    retained.prepare_confirmed = true;
                 }
                 retained.writes.pop_front();
             }
-            let m = &retained.run.metadata;
-            if retained.started_pending {
-                self.persistence.record_audit_once(&AuditEntry {
-                    id: format!("{}:started", m.run_id),
-                    occurred_at: m.created_at,
-                    connection_id: m.connection_id.clone(),
-                    action: "snowflake-console".into(),
-                    digest: m.plan_digest.clone(),
-                    outcome: "started".into(),
-                })?;
-                retained.started_pending = false;
-            }
-            if let Some(history) = &retained.history {
-                self.persistence.record_history_once(history)?;
-                retained.history = None;
-            }
-            if retained.finished_pending {
-                self.persistence.record_audit_once(&AuditEntry {
-                    id: format!("{}:finished", m.run_id),
-                    occurred_at: retained
-                        .run
-                        .terminal
-                        .as_ref()
-                        .ok_or_else(recording_error)?
-                        .finished_at,
-                    connection_id: m.connection_id.clone(),
-                    action: "snowflake-console".into(),
-                    digest: m.plan_digest.clone(),
-                    outcome: format!("{:?}", status(&retained.run)),
-                })?;
-                retained.finished_pending = false;
+            if retained.seal_pending {
+                let sealed = self.persistence.console_seal_publishers(
+                    owner,
+                    &retained.run.metadata.run_id,
+                    retained.run.revision,
+                );
+                let sealed = match sealed {
+                    Ok(value) => value,
+                    Err(error) => self
+                        .persistence
+                        .console_lifecycle(&retained.run.metadata.run_id)?
+                        .filter(|value| value.publisher_sealed)
+                        .ok_or(error)?,
+                };
+                if sealed.legacy
+                    || !sealed.publisher_sealed
+                    || sealed.run != retained.run
+                    || !match (&sealed.completion, &retained.completion) {
+                        (Some(actual), Some(expected)) => actual.matches(expected),
+                        (None, None) => true,
+                        _ => false,
+                    }
+                {
+                    return Err(recording_error());
+                }
+                retained.publisher_sealed = true;
+                retained.seal_pending = false;
             }
             dirty.remove(&id);
         }
@@ -557,6 +628,12 @@ impl Studio {
         {
             let mut journal = self.console.journal.lock();
             let retained = journal.runs.get_mut(id).ok_or_else(recording_error)?;
+            if retained.publisher_sealed {
+                return Err(recording_error());
+            }
+            if let Mutation::Finish { completion, .. } = &operation {
+                retained.completion = Some(completion.clone());
+            }
             let before = retained.run.revision;
             operation.apply(&mut retained.run);
             retained.writes.push_back(Write {
@@ -645,6 +722,9 @@ impl Studio {
             .get(client_request_id)
             .and_then(|id| journal.runs.get(id))
         {
+            if !r.prepare_confirmed {
+                return Err(recording_error());
+            }
             return Ok(Some(SnowflakeConsoleRunView {
                 run: r.run.clone(),
                 results: journal
@@ -674,7 +754,15 @@ impl Studio {
         let mut run = self
             .persistence
             .console_run_by_client_request(client_request_id)?;
-        if run.as_ref().is_some_and(|r| r.terminal.is_none()) {
+        let mut lifecycle = run
+            .as_ref()
+            .map(|run| {
+                self.persistence
+                    .console_lifecycle(&run.metadata.run_id)?
+                    .ok_or_else(recording_error)
+            })
+            .transpose()?;
+        if lifecycle.as_ref().is_some_and(|r| !r.publisher_sealed) {
             let mut journal = self.console.journal.lock();
             // A fresh coordinator can seal abandoned intents only after taking
             // the exclusive OS lease. A live other owner leaves evidence unsealed.
@@ -693,6 +781,14 @@ impl Studio {
                 run = self
                     .persistence
                     .console_run_by_client_request(client_request_id)?;
+                lifecycle = run
+                    .as_ref()
+                    .map(|run| {
+                        self.persistence
+                            .console_lifecycle(&run.metadata.run_id)?
+                            .ok_or_else(recording_error)
+                    })
+                    .transpose()?;
             }
         }
         Ok(run.map(|run| {
@@ -702,11 +798,14 @@ impl Studio {
                 .iter()
                 .filter_map(|id| self.results.info(id).ok())
                 .collect();
-            if run.terminal.is_some() {
+            let publisher_sealed = lifecycle
+                .as_ref()
+                .is_some_and(|value| value.publisher_sealed);
+            if publisher_sealed {
                 journal.details.insert(run.clone());
             }
             SnowflakeConsoleRunView {
-                pending_recording: run.terminal.is_none(),
+                pending_recording: !publisher_sealed,
                 run,
                 results,
             }
@@ -815,6 +914,13 @@ impl Studio {
                 ErrorCode::Conflict,
                 "The console run has not settled",
             ));
+        }
+        if !self
+            .persistence
+            .console_lifecycle(&run.metadata.run_id)?
+            .is_some_and(|value| value.publisher_sealed)
+        {
+            return Err(recording_error());
         }
         let result_ids = journal.result_ids(&run.metadata.run_id);
         for id in &result_ids {
@@ -1201,16 +1307,35 @@ impl Studio {
                 writes.push_back(Write {
                     before: 0,
                     after: run.clone(),
-                    operation: Mutation::Prepare(metadata),
+                    operation: Mutation::Prepare {
+                        metadata,
+                        seed: Box::new(HistoryEntry {
+                            provenance: HistoryProvenance::Admitted,
+                            id: run_id.clone(),
+                            connection_id: profile.id.clone(),
+                            connection_name: profile.name.clone(),
+                            started_at: run.metadata.created_at,
+                            sql: profile
+                                .store_query_text
+                                .then(|| compiled.original_sql().to_owned()),
+                            statement_count: compiled.units().len(),
+                            status: None,
+                            elapsed_ms: None,
+                            execution_summary: None,
+                            snowflake_dml: None,
+                            snowflake_ddl: None,
+                        }),
+                    },
                 });
                 journal.runs.insert(
                     run.metadata.run_id.clone(),
                     Retained {
                         run,
                         writes,
-                        started_pending: true,
-                        history: None,
-                        finished_pending: false,
+                        prepare_confirmed: false,
+                        completion: None,
+                        seal_pending: false,
+                        publisher_sealed: false,
                     },
                 );
                 journal
@@ -1222,6 +1347,11 @@ impl Studio {
             }
             let stored = plans.remove(&request.plan_id).unwrap();
             drop(plans);
+            // Retain the candidate BEFORE the first transaction. A failed commit
+            // can be uncertain; its owner settles locally and never dispatches,
+            // even if a later exact readback confirms Prepare.
+            let admission_error = self.flush_console_recordings().err();
+            let admission_failed = admission_error.is_some();
             let token = CancellationToken::new();
             self.jobs.lock().insert(
                 run_id.clone(),
@@ -1258,6 +1388,7 @@ impl Studio {
                     token,
                     generation,
                     events,
+                    admission_error,
                 }))
                 .catch_unwind()
                 .await
@@ -1273,6 +1404,9 @@ impl Studio {
                 }
                 drop(completion);
             });
+            if admission_failed {
+                return Err(recording_error());
+            }
             Ok(run_id)
         })();
         match admission {
@@ -1448,6 +1582,12 @@ impl Drop for OwnerCompletion {
     fn drop(&mut self) {
         {
             let mut journal = self.studio.console.journal.lock();
+            // Queue settlement before releasing publisher ownership. Failed or
+            // uncertain seals remain dirty and retain the same journal lease.
+            if let Some(retained) = journal.runs.get_mut(&self.run_id) {
+                retained.seal_pending = true;
+                journal.dirty.insert(self.run_id.clone());
+            }
             journal.active.remove(&self.run_id);
             journal.publishers.remove(&self.run_id);
         }
@@ -1466,6 +1606,7 @@ struct RunOwner {
     token: CancellationToken,
     generation: (u64, u64),
     events: EventHandler,
+    admission_error: Option<AppError>,
 }
 
 #[cfg(unix)]
@@ -1509,11 +1650,15 @@ impl Studio {
         if original.terminal.is_none()
             && let Ok(run) = self.console_snapshot(id)
         {
+            let reason = stop_reason(&run);
             let _ = self.console_stage(
                 id,
                 Mutation::Finish {
-                    reason: stop_reason(&run),
+                    reason,
                     at: now_ms(),
+                    // The owner's monotonic clock was lost. Keep permitted SQL
+                    // from Prepare; completion never reconstructs its text.
+                    completion: history_completion(reason, HistoryProvenance::Recorded, None),
                 },
             );
         }
@@ -1530,28 +1675,6 @@ impl Studio {
         let Ok(snapshot) = self.console_snapshot(id) else {
             return;
         };
-        if original.terminal.is_none() {
-            let mut journal = self.console.journal.lock();
-            let retained = journal.runs.get_mut(id).unwrap();
-            retained.history = Some(HistoryEntry {
-                provenance: HistoryProvenance::Recorded,
-                id: id.into(),
-                connection_id: session.profile.id.clone(),
-                connection_name: session.profile.name.clone(),
-                started_at: snapshot.metadata.created_at,
-                sql: None,
-                statement_count: snapshot.metadata.step_count as usize,
-                status: Some(status(&snapshot)),
-                // The owner's monotonic timer was lost during unwind. Wall
-                // clock distance from admission is not a measured duration.
-                elapsed_ms: None,
-                execution_summary: None,
-                snowflake_dml: None,
-                snowflake_ddl: None,
-            });
-            retained.finished_pending = true;
-            journal.dirty.insert(id.into());
-        }
         let _ = self.flush_console_recordings();
         *session.active_run.lock() = None;
         self.jobs.lock().remove(id);
@@ -1574,6 +1697,7 @@ impl Studio {
             token,
             generation,
             events,
+            admission_error,
         } = owner;
         let began = Instant::now();
         let _lane = session.lane.lock().await;
@@ -1587,11 +1711,24 @@ impl Studio {
             unreachable!()
         };
         let mut console = owner.lock().await;
-        let delivery_open = events(QueryEvent::Started {
-            run_id: run_id.clone(),
-        });
-        let mut error = None;
-        if !delivery_open {
+        let delivery_open = admission_error.is_none()
+            && events(QueryEvent::Started {
+                run_id: run_id.clone(),
+            });
+        let mut error = admission_error;
+        if error.is_some() {
+            let _ = self.console_stage(
+                &run_id,
+                Mutation::Observe {
+                    ordinal: None,
+                    observations: ConsoleObservations {
+                        recording_failed: true,
+                        first_error: Some(ConsoleErrorCode::Recording),
+                        ..Default::default()
+                    },
+                },
+            );
+        } else if !delivery_open {
             let _ = self.console_stage(
                 &run_id,
                 Mutation::Observe {
@@ -1819,39 +1956,21 @@ impl Studio {
             });
         }
         let snapshot = self.console_snapshot(&run_id).unwrap();
+        let elapsed_ms = began.elapsed().as_millis().min(u32::MAX as u128) as u32;
+        let reason = stop_reason(&snapshot);
         let _ = self.console_stage(
             &run_id,
             Mutation::Finish {
-                reason: stop_reason(&snapshot),
+                reason,
                 at: now_ms(),
+                completion: history_completion(
+                    reason,
+                    HistoryProvenance::Recorded,
+                    Some(elapsed_ms),
+                ),
             },
         );
         let snapshot = self.console_snapshot(&run_id).unwrap();
-        let elapsed_ms = began.elapsed().as_millis().min(u32::MAX as u128) as u32;
-        let history = HistoryEntry {
-            provenance: HistoryProvenance::Recorded,
-            id: run_id.clone(),
-            connection_id: session.profile.id.clone(),
-            connection_name: session.profile.name.clone(),
-            started_at: snapshot.metadata.created_at,
-            sql: session
-                .profile
-                .store_query_text
-                .then(|| compiled.original_sql().to_owned()),
-            statement_count: compiled.units().len(),
-            status: Some(status(&snapshot)),
-            elapsed_ms: Some(elapsed_ms),
-            execution_summary: None,
-            snowflake_dml: None,
-            snowflake_ddl: None,
-        };
-        {
-            let mut journal = self.console.journal.lock();
-            let retained = journal.runs.get_mut(&run_id).unwrap();
-            retained.history = Some(history);
-            retained.finished_pending = true;
-            journal.dirty.insert(run_id.clone());
-        }
         if self.flush_console_recordings().is_err() {
             events(QueryEvent::Notice { message: "The original console outcome is retained in memory, but local recording is pending. Keep Joinery open.".into() });
         }

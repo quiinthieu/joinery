@@ -1,9 +1,48 @@
 use joinery_core::{
-    domain::{HistoryEntry, HistoryPageRequest, HistorySummary, now_ms},
+    domain::{
+        ConnectionProfile, EngineKind, Environment, HistoryEntry, HistoryPageRequest,
+        HistoryProvenance, HistorySummary, SafeMode, TlsMode, now_ms,
+    },
     persistence::Persistence,
 };
 use serde_json::{Value, json};
 use std::{collections::HashMap, path::Path};
+
+fn open_store(root: &Path) -> Persistence {
+    let store = Persistence::open(root).unwrap();
+    store.save_profile(&profile_fixture()).unwrap();
+    store
+}
+
+fn profile_fixture() -> ConnectionProfile {
+    ConnectionProfile {
+        id: "9d1cc438-08d1-43cd-9fac-8478beb301bb".into(),
+        name: "Disposable history fixture".into(),
+        group_id: "local".into(),
+        engine: EngineKind::Postgres,
+        host: "127.0.0.1".into(),
+        port: 55432,
+        database: "joinery".into(),
+        username: "joinery".into(),
+        environment: Environment::Local,
+        safe_mode: SafeMode::ReadOnly,
+        tls_mode: TlsMode::Disable,
+        ca_cert_path: None,
+        ssh: None,
+        remember_password: false,
+        store_query_text: true,
+        store_drafts: false,
+        snowflake: None,
+    }
+}
+
+fn store_fixture(store: &Persistence, entry: &HistoryEntry) {
+    if entry.provenance == HistoryProvenance::Admitted {
+        store.begin_history(entry).unwrap();
+    } else {
+        store.record_history(entry).unwrap();
+    }
+}
 
 #[test]
 fn admitted_history_roundtrip_preserves_unknown_status_and_duration() {
@@ -99,7 +138,7 @@ fn insert_raw(root: &Path, value: &Value) {
     let connection = rusqlite::Connection::open(root.join("joinery.sqlite")).unwrap();
     connection
         .execute(
-            "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
+            "INSERT INTO history_v5(id,started_at,json) VALUES(?1,?2,?3)",
             rusqlite::params![
                 value["id"].as_str().unwrap(),
                 i64::try_from(value["startedAt"].as_u64().unwrap()).unwrap(),
@@ -149,13 +188,13 @@ fn history_lifecycle_restart_preserves_every_valid_state_in_all_read_modes() {
         .map(|entry| (entry.id.clone(), encoded(&entry)))
         .collect();
     {
-        let store = Persistence::open(root.path()).unwrap();
+        let store = open_store(root.path());
         for original in expected.values() {
-            store.record_history(&decode(original.clone())).unwrap();
+            store_fixture(&store, &decode(original.clone()));
         }
     }
 
-    let store = Persistence::open(root.path()).unwrap();
+    let store = open_store(root.path());
     let mut request = page_request("", 3);
     let mut seen = HashMap::new();
     loop {
@@ -194,7 +233,7 @@ fn history_lifecycle_restart_preserves_every_valid_state_in_all_read_modes() {
 #[test]
 fn history_lifecycle_search_matches_provenance_without_inventing_completion() {
     let root = tempfile::tempdir().unwrap();
-    let store = Persistence::open(root.path()).unwrap();
+    let store = open_store(root.path());
     for (id, provenance, status) in [
         ("one", "recorded", json!("completed")),
         ("two", "admitted", Value::Null),
@@ -203,7 +242,7 @@ fn history_lifecycle_search_matches_provenance_without_inventing_completion() {
     ] {
         let mut value = fixture(id, provenance, status, Value::Null);
         value["sql"] = json!("SELECT 'neutral text'");
-        store.record_history(&decode(value)).unwrap();
+        store_fixture(&store, &decode(value));
     }
     for (term, id) in [
         ("admitted", "two"),
@@ -239,7 +278,24 @@ fn history_lifecycle_search_matches_provenance_without_inventing_completion() {
 #[test]
 fn legacy_history_without_provenance_remains_recorded_after_restart_and_backup() {
     let root = tempfile::tempdir().unwrap();
-    let store = Persistence::open(root.path()).unwrap();
+    // Create the actual supported version-one format. Inserting unticketed
+    // rows into schema five would test corruption, not legacy migration.
+    let legacy = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    legacy.execute_batch(
+        "CREATE TABLE profiles(id TEXT PRIMARY KEY,json TEXT NOT NULL);
+         CREATE TABLE groups(id TEXT PRIMARY KEY,json TEXT NOT NULL);
+         CREATE TABLE history(id TEXT PRIMARY KEY,started_at INTEGER NOT NULL,json TEXT NOT NULL);
+         CREATE TABLE audit(id TEXT PRIMARY KEY,occurred_at INTEGER NOT NULL,connection_id TEXT NOT NULL,action TEXT NOT NULL,digest TEXT NOT NULL,outcome TEXT NOT NULL);
+         CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+         PRAGMA user_version=1;",
+    ).unwrap();
+    let profile = profile_fixture();
+    legacy
+        .execute(
+            "INSERT INTO profiles VALUES(?1,?2)",
+            rusqlite::params![profile.id, serde_json::to_string(&profile).unwrap()],
+        )
+        .unwrap();
     for status in [
         "completed",
         "stopped",
@@ -249,10 +305,19 @@ fn legacy_history_without_provenance_remains_recorded_after_restart_and_backup()
     ] {
         let mut value = fixture(status, "recorded", json!(status), json!(23));
         value.as_object_mut().unwrap().remove("provenance");
-        insert_raw(root.path(), &value);
+        legacy
+            .execute(
+                "INSERT INTO history(id,started_at,json) VALUES(?1,?2,?3)",
+                rusqlite::params![
+                    status,
+                    i64::try_from(value["startedAt"].as_u64().unwrap()).unwrap(),
+                    value.to_string()
+                ],
+            )
+            .unwrap();
     }
-    drop(store);
-    let store = Persistence::open(root.path()).unwrap();
+    drop(legacy);
+    let store = open_store(root.path());
     let page = store.history_page(&page_request("recorded", 10)).unwrap();
     assert_eq!(page.entries.len(), 5);
     assert_eq!(store.history("recorded").unwrap().len(), 5);
@@ -265,6 +330,9 @@ fn legacy_history_without_provenance_remains_recorded_after_restart_and_backup()
         assert_summary(summary, &value);
     }
     assert!(store.create_metadata_backup().is_ok());
+    drop(store);
+    let store = open_store(root.path());
+    assert_eq!(store.history("recorded").unwrap().len(), 5);
 }
 
 fn invalid_semantic_entries() -> Vec<HistoryEntry> {
@@ -331,7 +399,7 @@ fn invalid_semantic_entries() -> Vec<HistoryEntry> {
 #[test]
 fn history_lifecycle_public_writes_reject_inconsistent_typed_entries() {
     let root = tempfile::tempdir().unwrap();
-    let store = Persistence::open(root.path()).unwrap();
+    let store = open_store(root.path());
     for entry in invalid_semantic_entries() {
         assert!(store.record_history(&entry).is_err(), "{}", entry.id);
         assert!(store.history_entry(&entry.id).unwrap().is_none());
@@ -363,7 +431,7 @@ fn history_lifecycle_invalid_persisted_rows_fail_reads_and_backup_validation() {
     }
     for value in invalid {
         let root = tempfile::tempdir().unwrap();
-        let store = Persistence::open(root.path()).unwrap();
+        let store = open_store(root.path());
         insert_raw(root.path(), &value);
         let id = value["id"].as_str().unwrap();
         assert!(store.history_entry(id).is_err(), "detail {id}");
@@ -383,10 +451,10 @@ fn history_lifecycle_invalid_persisted_rows_fail_reads_and_backup_validation() {
 #[test]
 fn history_lifecycle_backup_copy_reopens_with_exact_sql_and_nullable_evidence() {
     let root = tempfile::tempdir().unwrap();
-    let store = Persistence::open(root.path()).unwrap();
+    let store = open_store(root.path());
     let originals = valid_matrix();
     for entry in &originals {
-        store.record_history(entry).unwrap();
+        store_fixture(&store, entry);
     }
     let backup = store.create_metadata_backup().unwrap();
     let backup_path = root
@@ -396,9 +464,11 @@ fn history_lifecycle_backup_copy_reopens_with_exact_sql_and_nullable_evidence() 
     let snapshot = rusqlite::Connection::open(&backup_path).unwrap();
     for entry in &originals {
         let raw: String = snapshot
-            .query_row("SELECT json FROM history WHERE id=?1", [&entry.id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT json FROM history_v5 WHERE id=?1",
+                [&entry.id],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(), encoded(entry));
     }
@@ -410,7 +480,7 @@ fn history_lifecycle_backup_copy_reopens_with_exact_sql_and_nullable_evidence() 
     // not simulate owner recovery or the product restore/merge workflow.
     let restored_root = tempfile::tempdir().unwrap();
     std::fs::copy(&backup_path, restored_root.path().join("joinery.sqlite")).unwrap();
-    let reopened = Persistence::open(restored_root.path()).unwrap();
+    let reopened = open_store(restored_root.path());
     assert_eq!(reopened.history("").unwrap().len(), originals.len());
     for entry in originals {
         assert_eq!(

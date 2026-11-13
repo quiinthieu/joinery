@@ -110,6 +110,28 @@ fn arg<T: serde::de::DeserializeOwned>(args: &Value, key: &str) -> AppResult<T> 
 // submitting a thousand queries to a database or enrolling a desktop command.
 fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
     let store = joinery_core::persistence::Persistence::open(root)?;
+    // Each seed is a new set of admissions. Clear must never make an old
+    // execution identity reusable, even in the isolated browser harness.
+    let namespace = uuid::Uuid::new_v4();
+    store.save_profile(&ConnectionProfile {
+        id: "history-fixture-connection".into(),
+        name: "History fixture".into(),
+        group_id: "local".into(),
+        engine: EngineKind::Postgres,
+        host: "127.0.0.1".into(),
+        port: 55432,
+        database: "joinery".into(),
+        username: "joinery".into(),
+        environment: Environment::Local,
+        safe_mode: SafeMode::ReadOnly,
+        tls_mode: TlsMode::Disable,
+        ca_cert_path: None,
+        ssh: None,
+        remember_password: false,
+        store_query_text: true,
+        store_drafts: false,
+        snowflake: None,
+    })?;
     let started_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| AppError::internal("Fixture clock is invalid"))?
@@ -124,7 +146,7 @@ fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
-            id: format!("history-fixture-{index:04}"),
+            id: format!("history-fixture-{namespace}-{index:04}"),
             connection_id: "history-fixture-connection".into(),
             connection_name: format!("History fixture {index:04}"),
             // Many timestamp ties exercise the secondary cursor key.
@@ -160,12 +182,12 @@ fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
     .into_iter()
     .enumerate()
     {
-        store.record_history(&HistoryEntry {
+        let entry = HistoryEntry {
             provenance,
             execution_summary: None,
             snowflake_dml: None,
             snowflake_ddl: None,
-            id: format!("history-lifecycle-{name}"),
+            id: format!("history-lifecycle-{namespace}-{name}"),
             connection_id: "history-fixture-connection".into(),
             connection_name: format!("Lifecycle fixture {name}"),
             // Keep existing tied-timestamp pages unchanged.
@@ -174,9 +196,18 @@ fn seed_history_fixture(root: &std::path::Path) -> AppResult<Value> {
             statement_count: 1,
             status,
             elapsed_ms,
-        })?;
+        };
+        if provenance == HistoryProvenance::Admitted {
+            store.begin_history(&entry)?;
+        } else {
+            store.record_history(&entry)?;
+        }
     }
-    Ok(json!({ "count": 1_011, "olderId": "history-fixture-0000" }))
+    Ok(json!({
+        "count": 1_011,
+        "olderId": format!("history-fixture-{namespace}-0000"),
+        "admittedId": format!("history-lifecycle-{namespace}-admitted"),
+    }))
 }
 
 // Snowflake profile persistence can be exercised offline. This harness must

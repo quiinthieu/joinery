@@ -42,6 +42,7 @@ impl OriginalResult {
 
 pub(super) struct PendingReceipt {
     pub(super) entry: Option<HistoryEntry>,
+    ticket: Option<HistoryTicket>,
     pub(super) original: OriginalResult,
     connection_id: String,
     digest: String,
@@ -51,10 +52,16 @@ pub(super) struct PendingReceipt {
 }
 
 impl PendingReceipt {
-    pub(super) fn statement(entry: HistoryEntry, digest: String, original: OriginalResult) -> Self {
+    pub(super) fn statement(
+        ticket: HistoryTicket,
+        entry: HistoryEntry,
+        digest: String,
+        original: OriginalResult,
+    ) -> Self {
         Self {
             connection_id: entry.connection_id.clone(),
             entry: Some(entry),
+            ticket: Some(ticket),
             original,
             digest,
             started_pending: false,
@@ -74,6 +81,7 @@ impl PendingReceipt {
             digest,
             original: OriginalResult::Boundary(result),
             entry: None,
+            ticket: None,
             started_pending,
             audit_pending: true,
             history_pending: false,
@@ -135,9 +143,24 @@ impl Studio {
             }
             if receipt.history_pending
                 && receipt
-                    .entry
+                    .ticket
                     .as_ref()
-                    .is_some_and(|entry| self.persistence.record_history(entry).is_ok())
+                    .zip(receipt.entry.as_ref())
+                    .is_some_and(|(ticket, entry)| {
+                        self.persistence
+                            .finish_history(
+                                ticket,
+                                &HistoryCompletion {
+                                    provenance: entry.provenance,
+                                    status: entry.status,
+                                    elapsed_ms: entry.elapsed_ms,
+                                    execution_summary: entry.execution_summary.clone(),
+                                    snowflake_dml: entry.snowflake_dml.clone(),
+                                    snowflake_ddl: entry.snowflake_ddl.clone(),
+                                },
+                            )
+                            .is_ok()
+                    })
             {
                 receipt.history_pending = false;
             }

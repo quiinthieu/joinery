@@ -33,6 +33,15 @@ confirmation and removes history rows; audit entries remain. Clearing invalidate
 pending list and detail responses in the history view and mounted palette. An
 already opened editor is independent work and is not erased by clearing history.
 
+Current execution admits a history row before dispatch. Only the connection's
+current persisted setting can permit SQL text; a stale open session cannot
+override an opt-out. The original reviewed template is retained exactly,
+including comments and Unicode, before parameter binding or wire rewriting.
+Completion carries a SQL-free ticket and cannot recreate a cleared or pruned
+row. Turning text storage off, deleting the profile or clearing history revokes
+authority to retain the corresponding SQL. Turning storage back on does not restore
+previously removed text.
+
 ## Completion and recovery evidence
 
 History distinguishes a recorded outcome from admission and local recovery. A
@@ -51,20 +60,32 @@ entry still requires explicit activation and only opens saved SQL in a new tab.
 Recovery provenance does not authorize resuming a run or infer failure,
 cancellation, rollback or committed effects.
 
-This is the shared history representation and presentation contract. Normal
-execution producers currently record terminal rows. The console publication-panic
-fallback now preserves its recorded status with unavailable duration because the
-owner's monotonic timer is no longer available. Production admission, interruption
-recovery and metadata restore do **not yet create the new lifecycle states**;
-the fixed local fixture exercises those states. Atomic creation/completion and
-privacy suppression remain the next required implementation.
+Generic, typed Snowflake and retained-console paths now create admitted history
+before dispatch and finish through the original ticket. Console Prepare and
+Complete atomically bind history, receipt and audit evidence; publisher sealing
+must settle these obligations before releasing a recording hold. Startup can
+recover terminal console evidence whose publisher did not finish. Compatible
+metadata restore preserves disjoint pending SQL and marks restored evidence;
+live clear/opt-out authority prevents an older backup from reviving removed text.
+Incomparable privacy branches are refused before creating undo or replacing data.
+
+Generic process-crash owner recovery remains incomplete: an unowned admitted row
+stays admitted rather than guessing its outcome. Generic and typed completion
+retry payloads remain process-local until SQLite accepts them; a durable history
+ticket alone does not preserve a failed completion payload across process death.
+The console publication-panic fallback preserves its known status with unavailable
+duration when the owner's monotonic timer is no longer available. No recovery
+automatically reconnects or replays SQL.
 
 History writes, full-detail reads, summary pages, compatibility reads and backup
 validation share lifecycle invariants. Missing legacy provenance defaults to
 Recorded; explicit null or unknown provenance is invalid. Admitted rows cannot
 carry a terminal status, measured duration or completed execution/DML/DDL
-evidence. An unknown completion cannot carry a measured duration. These JSON
-contract changes do not migrate the SQLite physical schema, which remains 4.
+evidence. An unknown completion cannot carry a measured duration. Schema 5 adds
+SQL-free admission/privacy authority and physically fences cached schema-4
+writers. Preserve an original backup and use a separate evaluation metadata root;
+the previous `adabd44` app cannot open schema-5 metadata. Do not run older and
+newer builds against the same directory.
 
 ## Current limits and remaining requirements
 
@@ -73,6 +94,12 @@ requires every whitespace-separated word; it is not full Unicode case folding
 (`Straße` and `STRASSE` differ). Preview length counts Unicode scalar values,
 not grapheme clusters. The backend accepts 1–100 entries per page and validates
 cursor identities and JavaScript-safe timestamps.
+
+Exact SQL retained for a new admission is limited to 1 MiB. With SQL-text history
+enabled, an oversized template is refused before dispatch. This local safety
+bound does not establish complete DataGrip script-size parity. New ticket seed
+and completion metadata are SQL-free and individually bounded; that does not
+bound their lifetime count.
 
 Paging is a live view, not a snapshot across inserts, pruning or restoration.
 Refresh to restart browsing after changes. The existing policy retains up to
@@ -87,22 +114,26 @@ memory and writer-contention acceptance remain open. The compatibility `history`
 API still returns up to 1,000 full matching entries; the history view and palette
 use the new summary/detail APIs.
 
-This browsing and lifecycle-model increment does not implement the dependent
-[atomic admitted/completed history and privacy contract](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract),
-publisher settlement or durable reservations. Those remain required, together
-with account qualification and owner acceptance. See the
+The [atomic history/privacy contract](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
+now has local execution/storage coverage. Durable reservations and a complete
+resource/reclamation policy for lifetime tickets, clear eras and privacy
+generations remain required; console count gates do not bound these tables.
+Generic crash-owner proof, full-capacity measurements, account qualification and
+owner acceptance also remain open. Keep both count gates and
+`retentionEnabled=false`. See the
 [capability matrix](datagrip-feature-matrix.md) and
 [verification ledger](replacement-verification.md).
 
 ## Reproducible local acceptance
 
-Current-source full validation passes 1,038 frontend and 653 standard Rust cases,
-including 15 inline history cases, a backup-invariant case and all eight new
-integration cases. All 54 focused UI, 68 feature-specific Snowflake producer and
-five actual browser cases pass. The local SDK-bearing ARM64 app at
-`src-tauri/target/release/bundle/macos/Joinery.app` packages from clean `adabd44`;
-resources, strict ad-hoc signature, original license bytes and guarded SDK startup
-pass with zero authentication/SQL. The preceding `99a3ca3` app is preserved.
+Current-source full validation passes 1,038 frontend and 676 standard Rust cases,
+including all eight history integration and nine encrypted history privacy cases.
+All ten actual isolated PostgreSQL cases, 73 synthetic Snowflake execution cases,
+27 offline qualification-runner cases and six actual browser cases pass. Exact
+source scopes, commands, initial failures and corrections are
+recorded in the ledger. The new normal SDK-bearing package remains pending;
+`src-tauri/target/release/bundle/macos/Joinery.app` is still the preceding clean
+`adabd44` schema-4 app, now separately preserved. Keep its metadata root separate.
 Normal packaged owner interaction and restart acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.
@@ -121,9 +152,11 @@ timestamp ties, paging, a match older than the newest 1,000 entries, deep Unicod
 SQL text, exact reopening, renderer reload, metadata-only and empty SQL, and
 clearing while an actual detail response is delayed. Five older fixture rows
 exercise pending/recovered provenance, known original completion and unavailable
-duration through the history view and keyboard palette. These history cases
-submit no database SQL. The separately scoped PostgreSQL browser case executes
-reviewed synthetic bindings and verifies template-only history.
+duration through the history view and keyboard palette. Those seeded cases
+submit no database SQL. The additional live-history case runs an actual isolated
+PostgreSQL sleep, inspects admission before completion, clears history and checks
+late completion plus renderer reload. The separately scoped parameter case
+executes reviewed PostgreSQL bindings and verifies template-only history.
 
 For a manual walkthrough, execute a disposable query with history text enabled,
 open Query history, search for text near the end of the statement, and activate

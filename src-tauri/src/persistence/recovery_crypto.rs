@@ -58,7 +58,7 @@ pub(crate) struct SnapshotManifest {
 impl SnapshotManifest {
     fn validate(&self) -> AppResult<()> {
         if self.format_version != 1
-            || !(1..=4).contains(&self.schema_version)
+            || !(1..=super::SCHEMA_VERSION as u32).contains(&self.schema_version)
             || self.payload_bytes > MAX_PAYLOAD_BYTES
             || self.payload_sha256.len() != 64
             || !self
@@ -205,7 +205,9 @@ fn encrypt_with_work_factor<R: Read + Seek, W: Write>(
     output: &mut W,
     work_factor: u8,
 ) -> AppResult<EncryptedSnapshotInfo> {
-    if !(1..=4).contains(&schema_version) || !(1..=WORK_FACTOR).contains(&work_factor) {
+    if !(1..=super::SCHEMA_VERSION as u32).contains(&schema_version)
+        || !(1..=WORK_FACTOR).contains(&work_factor)
+    {
         return Err(invalid_file());
     }
     snapshot.seek(SeekFrom::Start(0)).map_err(io_error)?;
@@ -492,12 +494,17 @@ mod tests {
             payload_bytes: 0,
             payload_sha256: hex::encode(Sha256::digest([])),
         };
+        for schema_version in 1..=super::super::SCHEMA_VERSION as u32 {
+            let mut value = base.clone();
+            value.schema_version = schema_version;
+            value.validate().unwrap();
+        }
         for version in [0, 2, u32::MAX] {
             let mut value = base.clone();
             value.format_version = version;
             assert!(value.validate().is_err());
         }
-        for version in [0, 5, u32::MAX] {
+        for version in [0, super::super::SCHEMA_VERSION as u32 + 1, u32::MAX] {
             let mut value = base.clone();
             value.schema_version = version;
             assert!(value.validate().is_err());
