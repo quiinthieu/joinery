@@ -69,10 +69,29 @@ metadata restore preserves disjoint pending SQL and marks restored evidence;
 live clear/opt-out authority prevents an older backup from reviving removed text.
 Incomparable privacy branches are refused before creating undo or replacing data.
 
-Generic process-crash owner recovery remains incomplete: an unowned admitted row
-stays admitted rather than guessing its outcome. Generic and typed completion
+Schema 6 binds generic and typed admissions to a process-held OS lease. On a
+fresh startup, only an existing, valid lease whose lock can be acquired proves
+that its owner has exited. Such a pending entry becomes Interrupted, with unknown
+status and unavailable duration. An already durable original completion is
+preserved. A live owner is left alone. Legacy or imported unbound admissions,
+and admissions whose lease file is missing, remain unresolved. Joinery never
+creates a replacement proof file to guess that an owner died. Invalid proof
+refuses startup recovery rather than asserting an outcome.
+
+Both history completion and finished audit recording must succeed before the
+runtime releases its binding. A release failure keeps the local recording hold
+and prevents ordinary shutdown until retry succeeds. Restore holds an exclusive
+admission/privacy gate through replacement and refuses current live, missing or
+invalid owner proofs before creating undo. Imported backup mappings never confer
+local execution authority, even if a matching lease filename exists.
+
+The real PostgreSQL child-process crash and ten SQLite ownership cases pass;
+broader validation is recorded in the
+[ownership ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
+Generic and typed completion
 retry payloads remain process-local until SQLite accepts them; a durable history
 ticket alone does not preserve a failed completion payload across process death.
+Dead-owner recovery cannot reconstruct an audit payload that never became durable.
 The console publication-panic fallback preserves its known status with unavailable
 duration when the owner's monotonic timer is no longer available. No recovery
 automatically reconnects or replays SQL.
@@ -81,11 +100,14 @@ History writes, full-detail reads, summary pages, compatibility reads and backup
 validation share lifecycle invariants. Missing legacy provenance defaults to
 Recorded; explicit null or unknown provenance is invalid. Admitted rows cannot
 carry a terminal status, measured duration or completed execution/DML/DDL
-evidence. An unknown completion cannot carry a measured duration. Schema 5 adds
-SQL-free admission/privacy authority and physically fences cached schema-4
-writers. Preserve an original backup and use a separate evaluation metadata root;
-the previous `adabd44` app cannot open schema-5 metadata. Do not run older and
-newer builds against the same directory.
+evidence. An unknown completion cannot carry a measured duration. Schema 6 adds
+SQL-free ownership and physically fences cached schema-5 history/profile/audit writers.
+Preserve an original backup and use a separate evaluation metadata root; the
+previous `952758b` app cannot open schema-6 metadata. Do not run older and newer
+builds against the same directory. Lease files are retained, and ticket/privacy/
+owner lifetime budgets remain incomplete. The proof assumes Joinery's private
+directory and stable files; it does not defend against a same-user actor replacing
+an owner file with another valid inode.
 
 ## Current limits and remaining requirements
 
@@ -118,26 +140,27 @@ The [atomic history/privacy contract](snowflake-console-retention-design.md#atom
 now has local execution/storage coverage. Durable reservations and a complete
 resource/reclamation policy for lifetime tickets, clear eras and privacy
 generations remain required; console count gates do not bound these tables.
-Generic crash-owner proof, full-capacity measurements, account qualification and
-owner acceptance also remain open. Keep both count gates and
+Durable failed generic/typed completion payloads, full-capacity measurements,
+account qualification and normal packaged owner acceptance also remain open. Keep both count gates and
 `retentionEnabled=false`. See the
 [capability matrix](datagrip-feature-matrix.md) and
 [verification ledger](replacement-verification.md).
 
 ## Reproducible local acceptance
 
-Current-source full validation passes 1,038 frontend and 676 standard Rust cases,
+Current-source full validation passes 1,038 frontend and 687 standard Rust cases,
 including all eight history integration and nine encrypted history privacy cases.
-All ten actual isolated PostgreSQL cases, 73 synthetic Snowflake execution cases,
-27 offline qualification-runner cases and six actual browser cases pass. Exact
+Ten actual isolated PostgreSQL script cases, the new actual child-process crash
+case, ten SQLite ownership cases and six actual browser cases pass. All 73
+synthetic Snowflake execution and 27 offline runner cases pass. Independent
+review finds no material issue. Exact
 source scopes, commands, initial failures and corrections are
-recorded in the ledger. The normal SDK-bearing ARM64 package from clean
+recorded in the ledger. The preceding normal SDK-bearing ARM64 package from clean
 `952758b` passes resources, strict ad-hoc signature and guarded SDK startup with
 zero authentication/SQL. It is local and uninstalled at
-`src-tauri/target/release/bundle/macos/Joinery.app`. All 559 source hashes match
-final full validation, PostgreSQL and browser checks; native suites precede only
-the verified diagnostic-wording change. The previous `adabd44` schema-4 app is
-separately preserved; keep its metadata root separate.
+`src-tauri/target/release/bundle/macos/Joinery.app`. Its 559 captured source hashes
+match its schema-5 checks, not the new schema-6 increment. That app is also
+separately preserved before a new package is built; keep metadata roots separate.
 Normal packaged owner interaction and restart acceptance remain open.
 
 Use the pinned Node/Rust toolchains and isolated fixture setup in the README.

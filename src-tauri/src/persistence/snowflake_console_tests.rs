@@ -112,10 +112,10 @@ fn for_refusal(value: &ConsoleAdmissionRejection) -> ConsoleRunMetadata {
 }
 
 fn downgrade_fixture_to_v3(connection: &Connection) {
-    let objects = schema_objects(5)
+    let objects = schema_objects(super::super::SCHEMA_VERSION)
         .unwrap()
         .into_iter()
-        .chain(super::super::history::schema_objects(5).unwrap())
+        .chain(super::super::history::schema_objects(super::super::SCHEMA_VERSION).unwrap())
         .collect::<Vec<_>>();
     // Remove guards before their owning tables; SQLite drops table triggers
     // automatically, which would otherwise hide an incorrect downgrade order.
@@ -128,14 +128,15 @@ fn downgrade_fixture_to_v3(connection: &Connection) {
             }
         }
     }
-    for (kind, name) in super::super::history::schema_objects(5).unwrap() {
+    for (kind, name) in super::super::history::schema_objects(super::super::SCHEMA_VERSION).unwrap()
+    {
         if kind == "table" {
             connection
                 .execute_batch(&format!("DROP TABLE {name}"))
                 .unwrap();
         }
     }
-    connection.execute_batch("ALTER TABLE profiles_v5 RENAME TO profiles; ALTER TABLE history_v5 RENAME TO history; ALTER TABLE audit_v5 RENAME TO audit; DROP TABLE snowflake_console_retention_v5;").unwrap();
+    connection.execute_batch("ALTER TABLE profiles_v6 RENAME TO profiles; ALTER TABLE history_v6 RENAME TO history; ALTER TABLE audit_v6 RENAME TO audit; DROP TABLE snowflake_console_retention_v5;").unwrap();
     for table in [
         "snowflake_console_runs_v5",
         "snowflake_console_rejections_v5",

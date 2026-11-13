@@ -7,6 +7,7 @@ pub(super) struct PendingHistory {
     audit: AuditEntry,
     history_pending: bool,
     audit_pending: bool,
+    ownership_pending: bool,
 }
 
 pub(super) struct AdmissionOwner<'a> {
@@ -197,6 +198,7 @@ impl Studio {
                 audit,
                 history_pending: true,
                 audit_pending: true,
+                ownership_pending: true,
             },
         );
         self.flush_pending_history()
@@ -216,8 +218,20 @@ impl Studio {
             if receipt.audit_pending && self.persistence.record_audit_once(&receipt.audit).is_ok() {
                 receipt.audit_pending = false;
             }
+            if receipt.ownership_pending
+                && !receipt.history_pending
+                && !receipt.audit_pending
+                && self
+                    .persistence
+                    .release_owned_history(&self.history_owner, &receipt.ticket)
+                    .is_ok()
+            {
+                receipt.ownership_pending = false;
+            }
         }
-        pending.retain(|_, receipt| receipt.history_pending || receipt.audit_pending);
+        pending.retain(|_, receipt| {
+            receipt.history_pending || receipt.audit_pending || receipt.ownership_pending
+        });
         if pending.is_empty() {
             Ok(())
         } else {

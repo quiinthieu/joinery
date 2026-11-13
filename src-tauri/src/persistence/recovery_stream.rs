@@ -1256,6 +1256,7 @@ impl Persistence {
         control: &RecoveryControl,
     ) -> AppResult<RecoveryBackup> {
         owner.validate(self)?;
+        let _history_gate = super::history_owner::AdmissionGate::claim(&self.root, true)?;
         let _lock = recovery_lock(&self.root)?;
         control.checkpoint()?;
         let area = Area::root(&self.root)?.child("backups")?;
@@ -1333,6 +1334,7 @@ impl Persistence {
         }
         initialize_schema(&mut candidate, None)?;
         let mut current = self.connection.lock();
+        let history_owners = super::history_owner::RestoreOwners::prove(&self.root, &current)?;
         owner.validate(self)?;
         if !current.is_autocommit() {
             return Err(conflict(
@@ -1367,6 +1369,7 @@ impl Persistence {
             control.checked(result)?;
             reset?;
         }
+        history_owners.recover(&mut candidate)?;
         db_bytes(&candidate)?;
         validate(&candidate, control)?;
         // Preserve current verifier configuration; OS credentials never enter a

@@ -315,8 +315,10 @@ impl Persistence {
     ) -> AppResult<MetadataBackup> {
         // The process-held lease prevents restore from replacing the journal
         // while another application instance still owns an executing console.
-        let _console_owner = self.claim_console_journal_owner()?;
+        let _console_owner = snowflake_console::claim_migration_lease(&self.root)?;
+        let _history_gate = super::history_owner::AdmissionGate::claim(&self.root, true)?;
         let mut current = self.connection.lock();
+        let history_owners = super::history_owner::RestoreOwners::prove(&self.root, &current)?;
         let path = self.backup_path(id)?;
         let before = info(&path, id)?;
         if before.digest != digest {
@@ -352,6 +354,7 @@ impl Persistence {
         // sealed before replacement, so copying cannot create replayable work.
         initialize_schema(&mut pinned, None)?;
         snowflake_console::merge_for_restore(&current, &mut pinned)?;
+        history_owners.recover(&mut pinned)?;
         snowflake_console::interrupt_records(&mut pinned)?;
         validate(&pinned)?;
         // The verifier lives in the OS store, which is intentionally never backed up.
@@ -467,8 +470,13 @@ mod tests {
     // These fixtures start with an empty current journal. Rebuild an actual
     // legacy schema, rather than changing only user_version on newer tables.
     fn legacy_empty_backup(path: &Path, version: i64) {
-        assert!((1..=4).contains(&version));
+        assert!((1..=5).contains(&version));
         let old = Connection::open(path).unwrap();
+        if version == 5 {
+            old.execute_batch("DROP TABLE history_owners_v6; ALTER TABLE profiles_v6 RENAME TO profiles_v5; ALTER TABLE history_v6 RENAME TO history_v5; ALTER TABLE audit_v6 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
+            validate(&old).unwrap();
+            return;
+        }
         old.pragma_update(None, "foreign_keys", false).unwrap();
         let mut objects = snowflake_console::schema_objects(SCHEMA_VERSION).unwrap();
         for (kind, name) in &objects {
@@ -494,7 +502,7 @@ mod tests {
             }
         }
         for base in ["profiles", "history", "audit"] {
-            old.execute_batch(&format!("ALTER TABLE {base}_v5 RENAME TO {base};"))
+            old.execute_batch(&format!("ALTER TABLE {base}_v6 RENAME TO {base};"))
                 .unwrap();
         }
         if version >= 2 {
@@ -834,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn console_negative_versions_one_through_five_restore_preserve_live_refusals() {
+    fn console_negative_versions_one_through_six_restore_preserve_live_refusals() {
         use snowflake_console::{ConsoleAdmissionRejection, ConsoleRunMetadata};
         for version in 1..=SCHEMA_VERSION {
             let root = tempfile::tempdir().unwrap();
@@ -994,14 +1002,14 @@ mod tests {
         let path = db.backup_path(&snapshot.id).unwrap();
         let edited = Connection::open(&path).unwrap();
         edited
-            .execute("INSERT INTO profiles_v5 VALUES('bad','{}')", [])
+            .execute("INSERT INTO profiles_v6 VALUES('bad','{}')", [])
             .unwrap();
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(
             db.restore_metadata_backup(&snapshot.id, &changed.digest)
                 .is_err()
         );
-        edited.execute_batch("DELETE FROM profiles_v5; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v5; END;").unwrap();
+        edited.execute_batch("DELETE FROM profiles_v6; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v6; END;").unwrap();
         drop(edited);
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(

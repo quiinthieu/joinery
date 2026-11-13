@@ -616,7 +616,7 @@ async fn postgres_history_privacy_actions_cannot_be_undone_by_late_completion() 
 async fn postgres_history_clear_during_failed_completion_retry_never_reinserts_sql() {
     let (root, studio, session) = setup_with_text(32 * 1024, 100, true).await;
     let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-    database.execute_batch("CREATE TRIGGER reject_history_completion BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_history_completion BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;").unwrap();
     let (id, rx) = start(&studio, &session, "SELECT 123 AS retained_answer");
     let events = finish(rx).await;
     assert_eq!(terminal(&events)["status"], "completed");

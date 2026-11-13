@@ -1843,7 +1843,7 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     let database =
         rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
             .unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END; CREATE TRIGGER reject_history BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     std::fs::write(fixture.controls.join("release-dml-ack"), b"").unwrap();
@@ -1894,7 +1894,7 @@ async fn sdk_studio_receipt_dml_dropped_waiter_retries_only_original_local_recor
     );
     let audits: u32 = database
         .query_row(
-            "SELECT COUNT(*) FROM audit_v5 WHERE action='snowflake-dml' AND outcome='succeeded'",
+            "SELECT COUNT(*) FROM audit_v6 WHERE action='snowflake-dml' AND outcome='succeeded'",
             [],
             |row| row.get(0),
         )
@@ -1935,7 +1935,7 @@ async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_aud
     let database =
         rusqlite::Connection::open(fixture.directory.path().join("workspace/joinery.sqlite"))
             .unwrap();
-    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
+    database.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(ABORT, 'local failure'); END;").unwrap();
     waiter.abort();
     assert!(waiter.await.unwrap_err().is_cancelled());
     std::fs::write(fixture.controls.join("release-transaction-ack"), b"").unwrap();
@@ -1971,7 +1971,7 @@ async fn sdk_studio_receipt_boundary_dropped_waiter_keeps_helper_ack_through_aud
         .unwrap();
     studio.shutdown_and_wait().await.unwrap();
     studio.shutdown_and_wait().await.unwrap();
-    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v5 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
+    let audits: u32 = database.query_row("SELECT COUNT(*) FROM audit_v6 WHERE action='transaction-boundary' AND outcome='acknowledged'", [], |row| row.get(0)).unwrap();
     assert_eq!(audits, 1);
     assert_eq!(
         std::fs::read_to_string(fixture.controls.join("transaction-effects"))

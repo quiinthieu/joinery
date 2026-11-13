@@ -20,7 +20,7 @@ new source or actual Snowflake behavior.
 | Results, copying and export                  | Opt-in disk-backed result storage; recorded real PostgreSQL and synthetic/loopback Snowflake million-row checks; [large-result contract](large-results.md)                       | Actual Snowflake million-row paging/export, wide values, type fidelity, memory and normal packaged interaction remain unqualified                           |
 | Safe data editing and import                 | Reviewed bounded SQL writes are locally integrated with one-use authority and retained original outcomes                                                                         | Snowflake grid editing and CSV import remain disabled; safe identity/concurrency handling and account data effects need implementation and proof            |
 | Transactions                                 | Separately reviewed BEGIN/COMMIT/ROLLBACK and rollback recovery; [transaction contract](snowflake-sdk-transactions-design.md)                                                    | Actual commit/rollback data effects, mode changes, console isolation and DML/DDL implicit-commit behavior remain unqualified                                |
-| History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority and atomic console receipt/history/audit transitions; [workflow and evidence](query-history.md) | Generic crash-owner proof, durable failed generic/typed completion payloads, retention policy, full-capacity behavior and normal packaged Snowflake/owner recovery remain open |
+| History, scripts and persistence             | Saved SQL, paged search/exact reopening, durable admission/privacy authority, atomic console transitions and locally verified schema-6 process-owner recovery; [workflow and evidence](query-history.md) | New package pending. Durable failed completion payloads, retention/lifetime policy, full-capacity behavior and normal packaged Snowflake/owner recovery remain open |
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
@@ -44,6 +44,18 @@ metadata inventory. Offline review supplies no execution authority. No existing
 application-table access or account execution is authorized by this matrix.
 Broad product work remains required alongside qualification; internal checks do
 not substitute for completing the rows.
+
+## Process-owned history recovery checkpoint (13 November 2026)
+
+| Capability | Implemented / verified scope | Remaining gate |
+| --- | --- | --- |
+| Generic/typed process-owner recovery | Schema-6 source, ten real SQLite cases and one actual PostgreSQL child-process crash pass; full validation, ten PostgreSQL script, six browser, 73 synthetic execution and 27 offline runner cases pass; independent review finds no material issue | New package pending. No actual Snowflake crash or normal packaged owner acceptance |
+| Ownership and restore safety | Live locks protect pending rows; missing proofs remain unresolved; invalid proofs fail safely. Runtime completion/audit precede binding release. Restore excludes admission/privacy changes and strips imported ownership authority | Dead-owner fallback cannot reconstruct a missing audit payload. No same-user filesystem tamper resistance claim; lifetime proof/ticket/privacy budgets, durable failed completion payloads and full-capacity evidence remain required |
+
+See the [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
+The local package remains the preceding clean `952758b` schema-5 app. Keep it
+separate from schema-6 evaluation roots. The following checkpoints are historical
+source-scoped evidence, not acceptance of the new source.
 
 ## Atomic history/privacy integration checkpoint (13 November 2026)
 

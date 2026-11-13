@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 pub(super) mod history;
 pub use history::{HistoryCompletion, HistoryDisposition, HistoryTicket};
+mod history_owner;
+pub(crate) use history_owner::HistoryOwner;
 mod library;
 mod recovery;
 pub(crate) mod recovery_crypto;
@@ -55,7 +57,7 @@ impl Persistence {
     }
 
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
-        self.json_rows("SELECT json FROM profiles_v5 ORDER BY id")
+        self.json_rows("SELECT json FROM profiles_v6 ORDER BY id")
     }
     pub fn groups(&self) -> AppResult<Vec<ConnectionGroup>> {
         self.json_rows("SELECT json FROM groups ORDER BY id")
@@ -84,11 +86,12 @@ impl Persistence {
     }
 
     pub fn save_profile(&self, profile: &ConnectionProfile) -> AppResult<()> {
+        let _gate = history_owner::AdmissionGate::claim(&self.root, false)?;
         let json = serde_json::to_string(profile)
             .map_err(|_| AppError::internal("Could not encode profile"))?;
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
-        tx.execute("INSERT INTO profiles_v5(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
+        tx.execute("INSERT INTO profiles_v6(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![profile.id,json]).map_err(db_error)?;
         history::lifecycle::ensure_profile(&tx, &profile.id)?;
         if !profile.store_query_text {
             history::lifecycle::redact_profile(&tx, &profile.id)?;
@@ -100,10 +103,11 @@ impl Persistence {
     }
 
     pub fn delete_profile(&self, id: &str) -> AppResult<()> {
+        let _gate = history_owner::AdmissionGate::claim(&self.root, false)?;
         let mut connection = self.connection.lock();
         let tx = connection.transaction().map_err(db_error)?;
         let existing_json: Option<String> = tx
-            .query_row("SELECT json FROM profiles_v5 WHERE id=?1", [id], |r| {
+            .query_row("SELECT json FROM profiles_v6 WHERE id=?1", [id], |r| {
                 r.get(0)
             })
             .optional()
@@ -114,7 +118,7 @@ impl Persistence {
                 .unwrap_or(true),
             None => true,
         };
-        tx.execute("DELETE FROM profiles_v5 WHERE id=?1", [id])
+        tx.execute("DELETE FROM profiles_v6 WHERE id=?1", [id])
             .map_err(db_error)?;
         history::lifecycle::redact_profile(&tx, id)?;
         workspace::purge_connection(&tx, id)?;
@@ -139,7 +143,7 @@ impl Persistence {
 
     pub fn audit_log(&self) -> AppResult<Vec<AuditEntry>> {
         let conn = self.connection.lock();
-        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit_v5 ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
+        let mut statement = conn.prepare("SELECT id,occurred_at,connection_id,action,digest,outcome FROM audit_v6 ORDER BY occurred_at DESC LIMIT 1000").map_err(db_error)?;
         statement
             .query_map([], |row| {
                 Ok(AuditEntry {
@@ -177,6 +181,7 @@ impl Persistence {
         self.import_history(entry)
     }
     fn import_history(&self, entry: &HistoryEntry) -> AppResult<()> {
+        let _gate = history_owner::AdmissionGate::claim(&self.root, false)?;
         entry.validate_lifecycle()?;
         if entry.provenance == HistoryProvenance::Admitted {
             return Err(AppError::invalid("Pending history requires admission"));
@@ -202,6 +207,7 @@ impl Persistence {
     }
 
     pub fn clear_history(&self) -> AppResult<()> {
+        let _gate = history_owner::AdmissionGate::claim(&self.root, false)?;
         let mut c = self.connection.lock();
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -220,7 +226,7 @@ impl Persistence {
         self.connection
             .lock()
             .execute(
-                "INSERT INTO audit_v5 VALUES(?1,?2,?3,?4,?5,?6)",
+                "INSERT INTO audit_v6 VALUES(?1,?2,?3,?4,?5,?6)",
                 params![
                     new_id(),
                     now_ms() as i64,
@@ -240,12 +246,12 @@ impl Persistence {
         let mut conn = self.connection.lock();
         let tx = conn.transaction().map_err(db_error)?;
         tx.execute(
-            "INSERT INTO audit_v5(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
+            "INSERT INTO audit_v6(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",
             params![entry.id, timestamp, entry.connection_id, entry.action, entry.digest, entry.outcome],
         ).map_err(db_error)?;
         let stored: (i64, String, String, String, String) = tx
             .query_row(
-                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v5 WHERE id=?1",
+                "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v6 WHERE id=?1",
                 [&entry.id],
                 |row| {
                     Ok((
@@ -311,17 +317,20 @@ fn enable_wal(connection: &Connection, budget: Duration) -> rusqlite::Result<()>
     result.and(restored)
 }
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub(super) fn metadata_table(connection: &Connection, base: &str) -> AppResult<&'static str> {
-    let modern = schema_version(connection)? >= 5;
-    match (base, modern) {
-        ("profiles", true) => Ok("profiles_v5"),
-        ("history", true) => Ok("history_v5"),
-        ("audit", true) => Ok("audit_v5"),
-        ("profiles", false) => Ok("profiles"),
-        ("history", false) => Ok("history"),
-        ("audit", false) => Ok("audit"),
+    let version = schema_version(connection)?;
+    match (base, version) {
+        ("profiles", 6..) => Ok("profiles_v6"),
+        ("history", 6..) => Ok("history_v6"),
+        ("audit", 6..) => Ok("audit_v6"),
+        ("profiles", 5) => Ok("profiles_v5"),
+        ("history", 5) => Ok("history_v5"),
+        ("audit", 5) => Ok("audit_v5"),
+        ("profiles", _) => Ok("profiles"),
+        ("history", _) => Ok("history"),
+        ("audit", _) => Ok("audit"),
         ("groups", _) => Ok("groups"),
         ("settings", _) => Ok("settings"),
         _ => Err(AppError::invalid("Unknown metadata table")),
@@ -351,7 +360,7 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
     let version = schema_version(&transaction)?;
     // A live version-2 coordinator must finish recording before its physical
     // tables are renamed. Private backup copies need no external lease.
-    let _migration_lease = if version == 2 || version == 3 || version == 4 {
+    let _migration_lease = if (2..=5).contains(&version) {
         migration_root
             .map(snowflake_console::claim_migration_lease)
             .transpose()?
@@ -403,6 +412,12 @@ fn initialize_schema(connection: &mut Connection, migration_root: Option<&Path>)
         snowflake_console::migrate_v5(&transaction)?;
         transaction.execute_batch("ALTER TABLE profiles RENAME TO profiles_v5; ALTER TABLE history RENAME TO history_v5; ALTER TABLE audit RENAME TO audit_v5;").map_err(db_error)?;
         history::lifecycle::migrate(&transaction)?;
+    }
+    if version < 6 {
+        transaction.execute_batch("ALTER TABLE profiles_v5 RENAME TO profiles_v6; ALTER TABLE history_v5 RENAME TO history_v6; ALTER TABLE audit_v5 RENAME TO audit_v6;").map_err(db_error)?;
+        transaction
+            .execute_batch(history_owner::SCHEMA)
+            .map_err(db_error)?;
     }
     if version < SCHEMA_VERSION {
         transaction
@@ -877,7 +892,7 @@ mod tests {
         db.connection
             .lock()
             .execute(
-                "UPDATE history_v5 SET json=?1 WHERE id='legacy-script'",
+                "UPDATE history_v6 SET json=?1 WHERE id='legacy-script'",
                 [legacy.to_string()],
             )
             .unwrap();

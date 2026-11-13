@@ -1382,7 +1382,7 @@ pub(super) fn validate_records(connection: &Connection) -> AppResult<()> {
     if super::schema_version(connection)? >= 4 {
         retention::validate_records(connection)?;
     }
-    if super::schema_version(connection)? == 5 {
+    if super::schema_version(connection)? >= 5 {
         super::history::validate_records(connection)?;
         visit_ids(connection, false, false, |id| {
             lifecycle::read(connection, id)?.ok_or_else(invalid)?;

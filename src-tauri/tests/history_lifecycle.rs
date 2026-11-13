@@ -138,7 +138,7 @@ fn insert_raw(root: &Path, value: &Value) {
     let connection = rusqlite::Connection::open(root.join("joinery.sqlite")).unwrap();
     connection
         .execute(
-            "INSERT INTO history_v5(id,started_at,json) VALUES(?1,?2,?3)",
+            "INSERT INTO history_v6(id,started_at,json) VALUES(?1,?2,?3)",
             rusqlite::params![
                 value["id"].as_str().unwrap(),
                 i64::try_from(value["startedAt"].as_u64().unwrap()).unwrap(),
@@ -279,7 +279,7 @@ fn history_lifecycle_search_matches_provenance_without_inventing_completion() {
 fn legacy_history_without_provenance_remains_recorded_after_restart_and_backup() {
     let root = tempfile::tempdir().unwrap();
     // Create the actual supported version-one format. Inserting unticketed
-    // rows into schema five would test corruption, not legacy migration.
+    // rows into the current schema would test corruption, not legacy migration.
     let legacy = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
     legacy.execute_batch(
         "CREATE TABLE profiles(id TEXT PRIMARY KEY,json TEXT NOT NULL);
@@ -465,7 +465,7 @@ fn history_lifecycle_backup_copy_reopens_with_exact_sql_and_nullable_evidence() 
     for entry in &originals {
         let raw: String = snapshot
             .query_row(
-                "SELECT json FROM history_v5 WHERE id=?1",
+                "SELECT json FROM history_v6 WHERE id=?1",
                 [&entry.id],
                 |row| row.get(0),
             )

@@ -14,7 +14,7 @@ use crate::{
     },
     export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
     file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
-    persistence::{HistoryCompletion, HistoryTicket, Persistence},
+    persistence::{HistoryCompletion, HistoryOwner, HistoryTicket, Persistence},
     results::{RESULT_BUDGET, ROW_LIMIT, ResultStore},
     safety,
     secrets::{OsSecrets, SecretStore},
@@ -268,6 +268,7 @@ enum PreparedCompareSide {
 
 pub struct Studio {
     persistence: Persistence,
+    history_owner: HistoryOwner,
     secrets: Arc<dyn SecretStore>,
     file_dialog: Arc<dyn FileDialogProvider>,
     pub file_capabilities: FileCapabilities,
@@ -365,12 +366,14 @@ impl Studio {
         #[cfg(unix)] snowflake_runtime: Option<Arc<SnowflakeRuntime>>,
     ) -> AppResult<Arc<Self>> {
         let persistence = Persistence::open(root)?;
+        let history_owner = persistence.claim_history_owner()?;
         let results = ResultStore::default();
         results.set_temporary_disk_enabled(
             persistence.setting("temporary-result-storage")?.as_deref() == Some("true"),
         );
         Ok(Arc::new(Self {
             persistence,
+            history_owner,
             secrets,
             file_dialog,
             file_capabilities: FileCapabilities::default(),
@@ -1765,7 +1768,9 @@ impl Studio {
             status: None,
             elapsed_ms: None,
         };
-        let history_ticket = self.persistence.begin_history(&seed)?;
+        let history_ticket = self
+            .persistence
+            .begin_owned_history(&self.history_owner, &seed)?;
         let cancellation_sent = Arc::new(AtomicBool::new(false));
         self.jobs.lock().insert(
             run_id.clone(),
@@ -6428,7 +6433,7 @@ mod browse_classification_tests {
                 .prepare_transaction_control(&session.info.id, &request)
                 .unwrap();
             let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v5 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
+            database.execute_batch("CREATE TRIGGER reject_audit BEFORE INSERT ON audit_v6 BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;").unwrap();
             let result = studio.execute_transaction_control(&plan.id, None).await;
             assert_eq!(
                 driver.boundary_calls.lock().len(),

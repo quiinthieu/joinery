@@ -49,6 +49,7 @@ pub(super) struct PendingReceipt {
     started_pending: bool,
     audit_pending: bool,
     history_pending: bool,
+    ownership_pending: bool,
 }
 
 impl PendingReceipt {
@@ -67,6 +68,7 @@ impl PendingReceipt {
             started_pending: false,
             audit_pending: true,
             history_pending: true,
+            ownership_pending: true,
         }
     }
 
@@ -85,6 +87,7 @@ impl PendingReceipt {
             started_pending,
             audit_pending: true,
             history_pending: false,
+            ownership_pending: false,
         }
     }
 }
@@ -164,9 +167,24 @@ impl Studio {
             {
                 receipt.history_pending = false;
             }
+            if receipt.ownership_pending
+                && !receipt.started_pending
+                && !receipt.audit_pending
+                && !receipt.history_pending
+                && receipt.ticket.as_ref().is_some_and(|ticket| {
+                    self.persistence
+                        .release_owned_history(&self.history_owner, ticket)
+                        .is_ok()
+                })
+            {
+                receipt.ownership_pending = false;
+            }
         }
         pending.retain(|_, receipt| {
-            receipt.started_pending || receipt.audit_pending || receipt.history_pending
+            receipt.started_pending
+                || receipt.audit_pending
+                || receipt.history_pending
+                || receipt.ownership_pending
         });
         if pending.is_empty() {
             Ok(())

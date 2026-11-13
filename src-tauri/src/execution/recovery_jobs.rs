@@ -731,7 +731,7 @@ mod tests {
         };
         let ticket = studio.persistence.begin_history(&seed).unwrap();
         let database = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
-        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
+        database.execute_batch("CREATE TRIGGER reject_completion BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(ABORT,'fixture completion failure'); END").unwrap();
         let completion = HistoryCompletion {
             provenance: HistoryProvenance::Recorded,
             status: Some(RunStatus::Completed),

@@ -660,7 +660,7 @@ fn reviewed_console_timeout_persists_reload_backup_and_rejects_malformed_storage
     malformed["snowflake"]["reviewedConsoleTimeoutSeconds"] = serde_json::Value::Null;
     let db = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
     db.execute(
-        "UPDATE profiles_v5 SET json=?1 WHERE id=?2",
+        "UPDATE profiles_v6 SET json=?1 WHERE id=?2",
         rusqlite::params![malformed.to_string(), saved.id],
     )
     .unwrap();

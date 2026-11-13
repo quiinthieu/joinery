@@ -653,13 +653,13 @@ async fn reviewed_console_history_and_audit_outbox_are_idempotent_across_disconn
     let f = Fixture::new();
     let (studio, info) = connected(&f).await;
     let db = database(&f);
-    db.execute_batch("CREATE TRIGGER deny_console_history BEFORE UPDATE ON history_v5 BEGIN SELECT RAISE(FAIL,'fixture history failure'); END;").unwrap();
+    db.execute_batch("CREATE TRIGGER deny_console_history BEFORE UPDATE ON history_v6 BEGIN SELECT RAISE(FAIL,'fixture history failure'); END;").unwrap();
     let start = approved(&studio, &info.id, "SELECT 1");
     start_run(&studio, &start, Arc::new(|_| true)).unwrap();
     assert!(finished(&studio, &start).await.pending_recording);
     studio.disconnect_and_wait(&info.id).await.unwrap();
     assert!(studio.shutdown_and_wait().await.is_err());
-    db.execute_batch("DROP TRIGGER deny_console_history; CREATE TRIGGER deny_console_audit BEFORE INSERT ON audit_v5 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(FAIL,'fixture audit failure'); END;").unwrap();
+    db.execute_batch("DROP TRIGGER deny_console_history; CREATE TRIGGER deny_console_audit BEFORE INSERT ON audit_v6 WHEN NEW.outcome != 'started' BEGIN SELECT RAISE(FAIL,'fixture audit failure'); END;").unwrap();
     assert!(
         studio
             .snowflake_console_run(&start.client_request_id)

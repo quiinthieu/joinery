@@ -8,19 +8,23 @@ Keep DataGrip available until your required workflows are accepted.
 
 For local execution history, follow the [paged history walkthrough](query-history.md):
 search all retained entries, browse summaries and open exact saved SQL explicitly
-without executing it. Current schema-5 execution saves admitted history before
+without executing it. Schema-6 source saves admitted history before
 dispatch and uses SQL-free completion tickets. Clear and profile opt-out prevent
-late completion from restoring removed text. This does not close generic
-process-crash ownership, configurable retention, full-capacity or actual
-Snowflake acceptance requirements.
+late completion from restoring removed text. Process-owned recovery has local
+SQLite and actual PostgreSQL crash coverage; full validation, browser and offline
+native checks pass within the ledger's recorded scopes. A new package is pending.
+Configurable retention, full-capacity and actual Snowflake acceptance remain
+required.
 
 History's [completion labels](query-history.md#completion-and-recovery-evidence)
 preserve unavailable timing and distinguish admitted/recovered metadata from a
 recorded outcome. **Duration unavailable** does not mean zero milliseconds.
 Retained-console history, receipt and audit obligations now settle atomically;
 startup can recover original terminal evidence left by an unfinished publisher.
-Generic process-crash owner proof and durable failed generic completion payloads
-remain open. Never replay SQL to discover an uncertain outcome.
+For generic/typed admissions, startup recovers only proven dead local owners.
+Unbound/imported entries or missing proof stay unresolved; known durable
+completion remains intact. Durable failed completion payloads remain open.
+Never replay SQL to discover an uncertain outcome.
 
 The new [reviewed retained-console walkthrough](snowflake-sdk-console-workflow.md)
 describes opt-in connection setup, mixed-script review, retained session context,
@@ -60,9 +64,11 @@ See the [query-limit contract](snowflake-console-query-limits.md) and current
 ledger for verification status. The current `952758b` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
-Current source upgrades local metadata to schema 5 under exclusive ownership.
-It adds SQL-free history/privacy authority and physically fences cached older
-writers. The previous `adabd44` schema-4 app cannot open schema-5 metadata.
+Current source upgrades local metadata to schema 6, adds SQL-free process
+ownership and physically fences cached schema-5 history/profile/audit writers. Restore holds
+an exclusive admission/privacy gate through replacement and refuses live or
+unverifiable current owners. The preceding `952758b` schema-5 package cannot
+open schema-6 metadata and does not contain this source increment yet.
 Use a separate
 evaluation data directory, preserve the original backup and never run old and new
 versions against one directory. Going back to an old backup can lose newer

@@ -1,6 +1,37 @@
 # Joinery implementation roadmap
 
+## Process-owned history recovery (13 November 2026, locally verified)
+
+The schema-6 increment binds generic/typed admission to an OS-held owner lease.
+It recovers only proven dead local owners, preserves durable original completion,
+and never reconnects or replays SQL. Clear/opt-out/deletion suppression survives
+recovery. Restore excludes admission/privacy changes through replacement and
+imports no execution authority. Physical metadata renaming fences cached v5
+privacy writers; existing console/lifecycle tables retain their v5 names.
+
+Ten real SQLite cases and the actual isolated PostgreSQL child-process crash
+case pass. Full validation passes 1,038 frontend / 687 standard Rust cases,
+including strict checks. Ten actual PostgreSQL script, six browser, 73 synthetic
+Snowflake execution and 27 offline runner cases pass. Independent review finds
+no material issue. Packaging remains pending; see the
+[ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
+The packaged app is still the preceding clean `952758b` schema-5 build until a
+new package is recorded. Keep evaluation metadata separate from older builds.
+
+Next required work: durable failed generic/typed completion payloads, bounded
+ticket/privacy/owner lifetime resource policy and reservations, then full-capacity
+and normal packaged owner/Snowflake acceptance. Lease-file cleanup is not yet
+implemented. Keep both count gates and `retentionEnabled=false`; all applicable
+DataGrip replacement requirements remain open until individually demonstrated.
+The [next durable-outcome design](history-durable-outcomes-design.md) records
+capture/settlement crash boundaries, rollback exceptions, privacy and resource
+decisions, and the real-process acceptance required before implementation claims.
+
 ## Atomic history and privacy integration (13 November 2026, locally verified)
+
+This preceding checkpoint is pinned to schema 5 and clean `952758b`; its source
+status and remaining crash-owner work describe that historical point. Follow the
+schema-6 section above for current source and its still-open acceptance gates.
 
 The coordinated schema-5 increment is local to the feature branch and is not
 release-qualified. It admits history before dispatch, retains exact

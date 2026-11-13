@@ -1,8 +1,34 @@
 # Implementation and release status
 
+## Process-owned history recovery (13 November 2026, locally verified)
+
+Schema-6 source implements OS-leased generic/typed history ownership, truthful
+dead-owner recovery, runtime completion/audit-before-release, restore exclusion and
+current-only ownership authority. Ten real SQLite regressions and the actual
+isolated PostgreSQL child-process crash pass with unchanged captured sources.
+The test verifies live-owner protection, exact SQL and prior completion, then
+SIGKILL recovery with unknown outcome/duration and no prefix/suffix replay.
+Full validation passes 1,038 frontend and 687 standard Rust cases, with 144
+intentional default fixture ignores and strict compilation/Clippy checks.
+Ten actual PostgreSQL script cases, six actual browser cases, 73 synthetic
+Snowflake execution cases and 27 offline runner cases pass. Independent review
+finds no material issue. All six final check scopes contain the same 562 source
+files. Packaging remains pending; see the
+[ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
+
+The current packaged app remains clean `952758b` (schema 5); it does not contain
+this source increment. Never open schema-6 evaluation metadata with that app.
+Durable failed completion payloads, lifetime resource budgets, full-capacity and
+actual account/normal owner workflows remain incomplete. No installation,
+publication or account activity is part of these checks.
+
 ## Atomic history/privacy integration (13 November 2026, locally verified)
 
-Current schema-5 source admits history before dispatch with exact SQL only when
+This preceding checkpoint is pinned to schema 5 and clean `952758b`. Its open
+crash-owner gate is advanced by the schema-6 source section above; its evidence
+does not qualify later source.
+
+Schema-5 source admitted history before dispatch with exact SQL only when
 the persisted profile permits it. Completion uses SQL-free authority; clear,
 pruning, opt-out and profile deletion prevent late recreation. Console Prepare/
 Complete atomically record receipt/history/audit obligations and require publisher

@@ -8,6 +8,62 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Process-owned history recovery (13 November 2026)
+
+Base `b575c4c` on `feat/datagrip-replacement`. Three bounded `gpt-6.1-sol`
+high-effort agents own storage/tests, the real child-process fixture, and
+independent read-only review. The lead owns runtime integration, coordination,
+serial verification and documentation. Existing model selections were reused;
+no fallback or global configuration change. Build checks use the 20 GiB
+free-space gate and preserve unique logs plus exact source hashes under
+`.cache/verification/reviewed-console/`. Synthetic local data only; no account
+activity. The private hub remains unchanged under the no-publication boundary.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `history-owner-process-red` | Exit 101 before the intended assertion: fixture released result descriptors too early. This is not defect reproduction |
+| `history-owner-process-fixture-corrected-red` | Actual PostgreSQL confirms the child is sleeping in the reviewed script; after killing/reaping only that child, restart incorrectly leaves history Admitted instead of Interrupted. Exit 101, 6.054 seconds, unchanged source. Scoped synthetic table/sequence and backend cleanup |
+| `history-owner-first-unit` | Nine pass / one fails at imported-branch fixture with unrelated privacy lineage. One audit-reader version-routing helper changed during compilation, so this is not frozen-source qualification. The privacy conflict is preserved; fixture corrected to fork a compatible pre-admission SQLite snapshot |
+| `history-owner-unit-corrected` | All ten real SQLite ownership cases pass, exit zero, 25.272 seconds including compile, unchanged sources. Covers held/dead/missing/invalid proof, hardlinks/symlinks/permissions/stale handles, original completion, privacy suppression, exclusive gate, restore provenance, invalid ownership metadata and cached v5 writer fencing |
+| `history-owner-process-green` | Actual PostgreSQL child-process crash passes, exit zero, 20.595 seconds including compile, unchanged sources. Live-owner observer leaves Admitted; killed/reaped owner recovers Interrupted with exact original SQL, no status/duration, prior completion preserved. Sequence/table detect prefix or suffix replay. No automatic remote execution |
+| `history-owner-validate` | Full validation stops at standard Rust: 1,038 frontend and 622 library cases pass / five fail / four intentional library ignores. All five failures occur in one test fault helper still constructing dynamic `{table}_v5` trigger targets; no fault was installed. Exit 101, 133.57 seconds, unchanged source. Helper corrected to schema-6 names; assertions and production behavior unchanged |
+| `history-owner-validate-fixture-corrected` | All 1,038 frontend / 687 standard Rust cases pass, 144 default fixture ignores. Full validation then fails formatting on one assertion in the new process fixture; desktop compile/strict Clippy not reached. Exit 1, 191.862 seconds, unchanged sources. Fixture formatted with the repository's Rust 2024 settings; no semantic change |
+| `history-owner-check-rust-formatted` | Formatting, desktop compilation and strict all-target/all-feature Clippy pass, exit zero, 40.508 seconds, unchanged source |
+| `history-owner-validate-reviewed` | Complete pnpm validate passes: 1,038 frontend / 687 standard Rust cases, 144 default fixture ignores, formatting, contracts, TypeScript, production UI build, desktop compile and strict Clippy. Exit zero, 222.248 seconds, unchanged source |
+| `history-owner-postgres` | All ten actual isolated PostgreSQL script cases pass, 3.321 seconds, unchanged source; cancellation, connection loss, script/transaction handling and active-query privacy/failed completion retry remain verified |
+| `history-owner-process-reviewed` | Final-source actual PostgreSQL child-process crash case passes again, 0.852 seconds with compiled executable reuse, unchanged source. This includes the fixture-only metadata target and Rust 2024 formatting corrections |
+| `history-owner-browser` | All six actual headless Chromium cases pass, 72.333 seconds including bridge startup, unchanged source. Real SQLite paging/search/palette and actual PostgreSQL active-query clear, late completion, renderer restart and reviewed parameter writes pass; screenshots are not substituted for interaction |
+| `history-owner-snowflake-producers` | All 73 synthetic SDK execution cases pass, 262.794 seconds including compilation, unchanged source. Includes actual SQLite release-failure regression retaining the hold after completion/audit without redispatch; remote behavior is synthetic, not account qualification |
+| `history-owner-qualification-runners` | All 27 offline runner cases pass, two intentional optimized/full-runtime ignores, 446.313 seconds including Cargo startup, unchanged source. Covers mutation child exits before/after ACK, dropped waiters, storage failures, context drift, deadline cleanup and bounded capture; no account activity |
+| `history-owner-independent-review` | Read-only substantial increment review finds no material issue: all three admissions, task lifetimes, completion/audit/release holds, dead-owner recovery, both restore paths, current-only authority, physical v5 fencing and legacy validation routing. Latest audit-reader source checked directly after graph metadata changed; no recorded coverage gaps in reviewed paths, best-effort scope |
+| `history-owner-final-coverage` | All 28 changed Rust paths report metadata-match / no recorded issue at graph generation 2026-11-13T05:24:22Z, metadata 05:30:57Z. Recording and hashes complete. This is best-effort recorded coverage, not proof of exhaustive correctness |
+| `history-owner-doc-links` / `history-owner-doc-review` | All 783 repository-relative Markdown path targets exist; fragments not validated. Read-only documentation review found two stale historical/schema-scope descriptions, corrected before commit; no acceptance gate was removed |
+| `history-owner-fixture-stopped` | Only the lead-owned isolated PostgreSQL fixture was stopped after database/browser checks. The unrelated logistics database remained running; no user process was stopped |
+| `history-owner-prior-app-preservation` | Prior clean `952758b` normal app preserved using APFS copy-on-write before later packaging. All 15,120 inventory entries match the original artifact and strict signature passes. Regular-file inventory 242,581,015 bytes. Net free-space decrease was 212,934,656 bytes while full validation was also active, so it is not attributed solely to cloning. Nothing deleted or installed |
+
+Full validation, database/browser/native checks and independent review pass.
+All six final check receipts capture the same 562 source files without changes
+during their run. Packaging remains pending. The normal local app remains
+clean `952758b` schema 5. This new
+source uses schema 6; keep its metadata separate. Dead-owner proof assumes
+Joinery's private directory/stable inodes, not resistance to a same-user actor
+replacing valid proof files. Lifetime proof/ticket/privacy budgets and durable
+failed generic/typed completion payloads remain required; a recorded admission
+does not preserve an uncommitted original outcome across process death.
+
+Reproduce the crash acceptance only against the disposable loopback PostgreSQL
+fixture described in README:
+
+```sh
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features \
+  --test history_process \
+  postgres_history_recovers_only_after_real_process_death_without_replay \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+
+The helper-only ignored case must never be invoked separately. Standard test
+runs intentionally leave both process cases ignored.
+
 ### Atomic history and privacy integration (13 November 2026)
 
 Base is `e3ebaaf` on `feat/datagrip-replacement`. Three bounded

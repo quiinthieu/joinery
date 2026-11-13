@@ -270,7 +270,9 @@ impl Studio {
                 status: None,
                 elapsed_ms: None,
             };
-            let history_ticket = self.persistence.begin_history(&seed)?;
+            let history_ticket = self
+                .persistence
+                .begin_owned_history(&self.history_owner, &seed)?;
             session.metadata_gate.lock().hold();
             *session.observed_runtime.lock() = None;
             *session.completion.lock() = None;

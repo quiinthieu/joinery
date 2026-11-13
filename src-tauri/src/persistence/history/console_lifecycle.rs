@@ -42,14 +42,17 @@ fn audit(
             "started".into()
         },
     };
-    connection.execute("INSERT INTO audit_v5(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![entry.id,sqlite_integer(entry.occurred_at)?,entry.connection_id,entry.action,entry.digest,entry.outcome]).map_err(db_error)?;
+    connection.execute("INSERT INTO audit_v6(id,occurred_at,connection_id,action,digest,outcome) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO NOTHING",params![entry.id,sqlite_integer(entry.occurred_at)?,entry.connection_id,entry.action,entry.digest,entry.outcome]).map_err(db_error)?;
     check_audit(connection, &entry)
 }
 
 fn check_audit(connection: &Connection, entry: &AuditEntry) -> AppResult<()> {
+    let table = crate::persistence::metadata_table(connection, "audit")?;
     let value: Option<(i64, String, String, String, String)> = connection
         .query_row(
-            "SELECT occurred_at,connection_id,action,digest,outcome FROM audit_v5 WHERE id=?1",
+            &format!(
+                "SELECT occurred_at,connection_id,action,digest,outcome FROM {table} WHERE id=?1"
+            ),
             [&entry.id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
