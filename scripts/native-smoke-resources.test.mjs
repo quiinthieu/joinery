@@ -37,6 +37,7 @@ const sourceNames = [
   "helper.mjs",
   "main.mjs",
   "mutation-batch.mjs",
+  "mutation-read.mjs",
   "query-submit-guard.mjs",
   "transport-source-pins.mjs",
 ];
@@ -282,6 +283,22 @@ test("rejects tampered supplements, provenance, helper source, and Node LICENSE"
     {
       name: "missing batch source",
       mutate: (fixture) => rmSync(path.join(fixture.stage, "helper/mutation-batch.mjs")),
+      error: /missing/,
+    },
+    {
+      name: "repository owner metadata source",
+      mutate: (fixture) =>
+        put(fixture.root, "snowflake-helper/src/mutation-read.mjs", "// changed\n"),
+      error: /does not match the repository source/,
+    },
+    {
+      name: "packaged owner metadata source",
+      mutate: (fixture) => put(fixture.stage, "helper/mutation-read.mjs", "// changed\n"),
+      error: /hash did not match/,
+    },
+    {
+      name: "missing owner metadata source",
+      mutate: (fixture) => rmSync(path.join(fixture.stage, "helper/mutation-read.mjs")),
       error: /missing/,
     },
     {

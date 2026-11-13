@@ -102,9 +102,13 @@ export function validateMutationRequest(r, helper) {
 export function mutationOwnerAdmits(helper, r) {
   const owner = helper.mutationOwner;
   if (!owner)
-    return r.op !== "mutationFinish" && (!(r.op === "mutationBatch") || r.payload.owner === null);
+    return (
+      r.op !== "mutationFinish" &&
+      r.op !== "mutationRead" &&
+      (!(r.op === "mutationBatch") || r.payload.owner === null)
+    );
   return (
-    ["mutationBatch", "mutationFinish"].includes(r.op) &&
+    ["mutationBatch", "mutationFinish", "mutationRead"].includes(r.op) &&
     r.payload.owner === owner.token &&
     sameMutationContext(r.payload.expected, owner.expected) &&
     (r.op !== "mutationBatch" ||

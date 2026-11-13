@@ -105,6 +105,7 @@ function makeFixture({ nodeMode = 0o755 } = {}) {
     "main.mjs",
     "helper.mjs",
     "mutation-batch.mjs",
+    "mutation-read.mjs",
     "framing.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
@@ -448,7 +449,12 @@ test("stages only runtime/helper/dependencies with exact hashes and honest notic
   assert.equal(manifest.runtime.version, NODE_VERSION);
   assert.equal(manifest.runtime.npmVersion, NPM_VERSION);
   assert.equal(existsSync(path.join(result.target, "helper", "main.mjs")), true);
-  for (const name of ["sql-contract.json", "sql-contract.mjs", "mutation-batch.mjs"]) {
+  for (const name of [
+    "sql-contract.json",
+    "sql-contract.mjs",
+    "mutation-batch.mjs",
+    "mutation-read.mjs",
+  ]) {
     assert.equal(
       readFileSync(path.join(result.target, "helper", name), "utf8"),
       readFileSync(path.join(fixture.repoRoot, "snowflake-helper", "src", name), "utf8"),

@@ -21,6 +21,8 @@ pub(crate) mod snowflake_edit_snapshot;
 pub mod snowflake_external;
 #[cfg(unix)]
 mod snowflake_metadata;
+#[cfg(unix)]
+pub(crate) mod snowflake_mutation_read;
 pub mod snowflake_mutations;
 #[cfg(unix)]
 pub mod snowflake_process;

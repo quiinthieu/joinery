@@ -35,6 +35,7 @@ function fixture(t) {
     "main.mjs",
     "helper.mjs",
     "mutation-batch.mjs",
+    "mutation-read.mjs",
     "framing.mjs",
     "query-submit-guard.mjs",
     "transport-source-pins.mjs",
@@ -234,7 +235,12 @@ test("source drift is rejected even when resource and manifest agree", (t) => {
   assert.throws(() => verify(f, []), /does not match this checkout/);
 });
 
-for (const name of ["sql-contract.json", "sql-contract.mjs", "mutation-batch.mjs"]) {
+for (const name of [
+  "sql-contract.json",
+  "sql-contract.mjs",
+  "mutation-batch.mjs",
+  "mutation-read.mjs",
+]) {
   test(`helper resource ${name} cannot drift even with a matching manifest`, (t) => {
     const f = fixture(t);
     writeFileSync(path.join(f.stage, "helper", name), "changed contract");

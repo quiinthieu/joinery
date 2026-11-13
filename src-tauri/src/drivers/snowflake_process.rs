@@ -548,7 +548,7 @@ fn parse_reviewed_context(value: &Value) -> Option<ReviewedContext> {
     })
 }
 fn streams_rows(op: &str) -> bool {
-    matches!(op, "query" | "reviewedSql")
+    matches!(op, "query" | "reviewedSql" | "mutationRead")
 }
 fn parse_dml_kind(value: &Value) -> Option<SnowflakeDmlKind> {
     serde_json::from_value(value.clone()).ok()
@@ -557,6 +557,10 @@ fn parse_ddl_kind(value: &Value) -> Option<SnowflakeDdlKind> {
     serde_json::from_value(value.clone()).ok()
 }
 fn valid_transaction_impact(op: &str, payload: &Value, impact: Impact) -> bool {
+    if op == "mutationRead" {
+        return impact == Impact::Read
+            && super::snowflake_mutation_read::ReadState::parse(payload).is_ok();
+    }
     if matches!(op, "mutationBatch" | "mutationFinish") {
         return impact == Impact::Mutating && BatchRequest::parse(op, payload).is_ok();
     }
@@ -679,6 +683,7 @@ struct Pending {
     ddl_acknowledged: Option<DdlAcknowledgement>,
     statement_acknowledged: Option<ReviewedAcknowledgement>,
     batch: Option<BatchEvidence>,
+    mutation_read: Option<super::snowflake_mutation_read::ReadState>,
     statement_events: u8,
     wire_id: Option<String>,
     terminal: watch::Sender<Option<Report>>,
@@ -810,6 +815,7 @@ pub struct Operation {
     pub id: String,
     token: OperationToken,
     op: String,
+    admitted_batch: Option<BatchRequest>,
     pub columns: watch::Receiver<Option<Vec<Column>>>,
     pub rows: mpsc::Receiver<RowBatch>,
     terminal: watch::Receiver<Option<Report>>,
@@ -819,6 +825,25 @@ impl Operation {
     pub fn token(&self) -> OperationToken {
         self.token.clone()
     }
+    /// Native recorder association uses immutable admission data, never the
+    /// caller-editable display ID or a terminal supplied by a different helper.
+    pub(crate) fn matches_batch_binding(
+        &self,
+        helper: &HelperGeneration,
+        id: &str,
+        request: &BatchRequest,
+    ) -> bool {
+        let op = match request {
+            BatchRequest::Batch { .. } => "mutationBatch",
+            BatchRequest::Finish { .. } => "mutationFinish",
+        };
+        self.token.id == id
+            && self.op == op
+            && self.owner.generation == helper.generation
+            && std::sync::Weak::ptr_eq(&self.token.owner, &helper.owner)
+            && self.admitted_batch.as_ref() == Some(request)
+    }
+
     pub fn phase(&self) -> Phase {
         let state = self.owner.state.lock().unwrap();
         if let Some(report) = self.completion_evidence(&state) {
@@ -983,6 +1008,7 @@ impl Operation {
                 | "reviewedSql"
                 | "mutationBatch"
                 | "mutationFinish"
+                | "mutationRead"
                 | "close"
         ) {
             self.owner.retire_target(&self.token, Retirement::Dropped);
@@ -1341,6 +1367,7 @@ impl Supervisor {
                                         | "reviewedSql"
                                         | "mutationBatch"
                                         | "mutationFinish"
+                                        | "mutationRead"
                                 )
                         })
                         .map(|(id, _)| id.clone())
@@ -1562,6 +1589,7 @@ impl Inner {
             },
             id,
             op: "cancel".into(),
+            admitted_batch: None,
             columns,
             rows,
             terminal: terminal_rx,
@@ -1711,6 +1739,7 @@ impl Inner {
                     | "reviewedSql"
                     | "mutationBatch"
                     | "mutationFinish"
+                    | "mutationRead"
                     | "credit"
                     | "cancel"
                     | "close"
@@ -1728,6 +1757,10 @@ impl Inner {
         let batch = BatchRequest::parse(op, &payload)
             .map_err(|_| "invalid mutation batch payload")?
             .map(BatchEvidence::new);
+        let admitted_batch = batch.as_ref().map(|evidence| evidence.request.clone());
+        let mutation_read = (op == "mutationRead")
+            .then(|| super::snowflake_mutation_read::ReadState::parse(&payload))
+            .transpose()?;
         let priority = matches!(op, "credit" | "cancel" | "close");
         if priority && impact != Impact::Control {
             return Err("invalid control impact");
@@ -1817,6 +1850,7 @@ impl Inner {
                 ddl_acknowledged: None,
                 statement_acknowledged: None,
                 batch,
+                mutation_read,
                 ddl_kind,
                 transaction_action,
                 statement_events: 0,
@@ -1859,6 +1893,7 @@ impl Inner {
             },
             id: id.into(),
             op: op.into(),
+            admitted_batch,
             columns: column_rx,
             rows: rows_rx,
             terminal: terminal_rx,
@@ -1993,6 +2028,7 @@ impl Inner {
                         && matches!(
                             pending.op.as_str(),
                             "query"
+                                | "mutationRead"
                                 | "context"
                                 | "switchSchema"
                                 | "transaction"
@@ -2197,6 +2233,7 @@ impl Inner {
                     || !matches!(
                         pending.op.as_str(),
                         "query"
+                            | "mutationRead"
                             | "context"
                             | "switchSchema"
                             | "transaction"
@@ -2221,6 +2258,11 @@ impl Inner {
                 let Some(columns) = event.get("columns").and_then(Value::as_array) else {
                     return false;
                 };
+                if let Some(read) = &mut pending.mutation_read
+                    && !read.columns(&event["columns"])
+                {
+                    return false;
+                }
                 if columns.len() > 1000 {
                     return false;
                 }
@@ -2254,6 +2296,11 @@ impl Inner {
                 let Ok(rows) = serde_json::from_value::<Rows>(value.clone()) else {
                     return false;
                 };
+                if let Some(read) = &mut pending.mutation_read
+                    && !read.batch(value)
+                {
+                    return false;
+                }
                 if rows.is_empty()
                     || rows.len() > 128
                     || rows.iter().any(|r| Some(r.len()) != pending.width)
@@ -2281,6 +2328,14 @@ impl Inner {
                 let Some(ok) = event.get("ok").and_then(Value::as_bool) else {
                     return false;
                 };
+                if ok
+                    && let Some(read) = &pending.mutation_read
+                    && (!read.terminal(&event["result"])
+                        || pending.statements.len() != 1
+                        || event.get("sdkRequestId").and_then(Value::as_str).is_none())
+                {
+                    return false;
+                }
                 let mut batch_terminal = pending.batch.clone();
                 if let Some(batch) = &mut batch_terminal {
                     if ok {
@@ -2385,6 +2440,7 @@ impl Inner {
                     && matches!(
                         pending.op.as_str(),
                         "query"
+                            | "mutationRead"
                             | "context"
                             | "switchSchema"
                             | "transaction"
@@ -2450,9 +2506,13 @@ impl Inner {
                 {
                     self.logout_acknowledged.store(true, Ordering::SeqCst);
                 }
-                let terminal_connection_loss = code
-                    .as_deref()
-                    .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
+                let cancelled_owner_read = pending.op == "mutationRead"
+                    && code.as_deref() == Some("cancelled")
+                    && matches!(pending.phase, Phase::Dispatching | Phase::Acknowledged);
+                let terminal_connection_loss = cancelled_owner_read
+                    || code
+                        .as_deref()
+                        .is_some_and(|c| matches!(c, "connectionClosed" | "outcomeUnknown"))
                     || unverified_use
                     || ((pending.boundary_acknowledged.is_some()
                         || pending.dml_acknowledged.is_some()
@@ -2504,12 +2564,15 @@ impl Inner {
                     });
                     state = self.state.lock().unwrap();
                 }
-                // A failed reviewed drain must close admission before waking
-                // the original terminal recipient. Preserve its original report;
-                // stage other operations for publication outside State.
-                let reviewed_retirement = (pending.op == "reviewedSql" || report.batch.is_some())
-                    && terminal_connection_loss
-                    && !closing;
+                // A failed owned drain must close admission before waking the
+                // original terminal recipient. An active owner-read cancellation
+                // retires the physical helper, even though the read is not DML.
+                // Preserve its original report; publish other work outside State.
+                let reviewed_retirement =
+                    (matches!(pending.op.as_str(), "reviewedSql" | "mutationRead")
+                        || report.batch.is_some())
+                        && terminal_connection_loss
+                        && !closing;
                 let retirement_publications = if reviewed_retirement {
                     self.retire_locked(&mut state, Retirement::Requested)
                 } else {
@@ -3175,6 +3238,10 @@ mod tests {
     #[cfg(all(unix, feature = "test-harness"))]
     mod generation_tests {
         include!("snowflake_process_generation_tests.rs");
+    }
+    #[cfg(all(unix, feature = "test-harness"))]
+    mod mutation_read_process_tests {
+        include!("snowflake_mutation_read_process_tests.rs");
     }
     type TerminalPublicationObserver = Box<dyn FnOnce(&Inner)>;
     std::thread_local! {

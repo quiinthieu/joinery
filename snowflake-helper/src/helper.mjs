@@ -7,6 +7,11 @@ import {
   runMutationRequest,
   validateMutationRequest,
 } from "./mutation-batch.mjs";
+import {
+  validateMutationReadRequest,
+  mutationReadOwnerAdmits,
+  runMutationRead,
+} from "./mutation-read.mjs";
 
 export function connectionOptions(profile, clientConfigFile) {
   const { reviewedConsoleTimeoutSeconds, ...identity } = profile;
@@ -117,6 +122,7 @@ export class Helper {
     this.setupBootstrap = 0;
     this.setupRun = null;
     this.mutationOwner = null;
+    this.mutationReadOwners = new WeakMap();
     emit({
       v: 1,
       type: "hello",
@@ -160,6 +166,7 @@ export class Helper {
         "reviewedSql",
         "mutationBatch",
         "mutationFinish",
+        "mutationRead",
       ].includes(request.op)
     ) {
       const p = request.payload;
@@ -261,6 +268,7 @@ export class Helper {
         "setup",
         "mutationBatch",
         "mutationFinish",
+        "mutationRead",
       ].includes(r.op)
     )
       return this.finish(r, "unsupported");
@@ -273,6 +281,10 @@ export class Helper {
     // No queued or pipelined request can reserve a future setup statement.
     if (r.op === "setup" && (this.active || this.queue.length)) return this.rejectSetup(r);
     if (!this.validateWork(r)) return;
+    if (r.op === "mutationRead") {
+      if (!mutationReadOwnerAdmits(this, r)) return this.finish(r, "invalidInput");
+      this.mutationReadOwners.set(r, this.mutationOwner);
+    }
     if (!mutationOwnerAdmits(this, r)) return this.finish(r, "invalidInput");
     if (r.op === "setup" && !this.setupRun)
       this.setupRun = {
@@ -341,6 +353,13 @@ export class Helper {
   }
   validateWork(r) {
     const p = r.payload;
+    if (r.op === "mutationRead") {
+      if (!validateMutationReadRequest(r, this)) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
     if (r.op === "mutationBatch" || r.op === "mutationFinish") {
       if (!validateMutationRequest(r, this)) {
         this.finish(r, "invalidInput");
@@ -540,7 +559,10 @@ export class Helper {
     if (this.active || this.retired) return;
     const r = this.queue.shift();
     if (!r) return;
-    if (!mutationOwnerAdmits(this, r)) {
+    if (
+      !mutationOwnerAdmits(this, r) ||
+      (r.op === "mutationRead" && !mutationReadOwnerAdmits(this, r, this.mutationReadOwners.get(r)))
+    ) {
       this.finish(r, "invalidInput");
       this.pump();
       return;
@@ -553,12 +575,15 @@ export class Helper {
       stream: null,
       dispatching: false,
       statements: new Map(),
+      mutationReadOwner: this.mutationReadOwners.get(r),
     });
     try {
       a.submitOwner = this.submitGuard?.beginOperation();
       if (r.op === "mutationBatch" || r.op === "mutationFinish") {
         if (!this.validateWork(r)) return;
         await runMutationRequest(this, a);
+      } else if (r.op === "mutationRead") {
+        await runMutationRead(this, a);
       } else if (r.op === "query" || r.op === "reviewedSql") {
         if (r.op === "reviewedSql" && !this.validateWork(r)) return;
         const result = await this.execute(a, r.payload.sql, r.payload.binds, true);
@@ -921,13 +946,20 @@ export class Helper {
       try {
         if (this.retired || this.done.has(a.request) || this.state !== "connected")
           return reject(error("connectionClosed"));
+        if (
+          a.request.op === "mutationRead" &&
+          !mutationReadOwnerAdmits(this, a.request, a.mutationReadOwner)
+        )
+          return reject(error("invalidInput"));
         a.statement = this.connection.execute({
           sqlText: sql,
           binds,
           rowMode: "array",
           fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
           streamResult: true,
-          ...(a.request.op === "reviewedSql" ? { parameters: { MULTI_STATEMENT_COUNT: 1 } } : {}),
+          ...(["reviewedSql", "mutationRead"].includes(a.request.op)
+            ? { parameters: { MULTI_STATEMENT_COUNT: 1 } }
+            : {}),
           complete,
         });
         // Do not infer an ID from a native URL or completion callback. Register
@@ -965,11 +997,13 @@ export class Helper {
         ? 65536 - Buffer.byteLength(JSON.stringify(columns))
         : 131072;
     if (a.setupEntry && privateBudget < 0) throw error("resultLimitReached");
+    const readBytes = a.mutationRead ? Buffer.byteLength(JSON.stringify(columns)) + 2 : 0;
+    if (a.mutationRead && readBytes > a.mutationRead.maxBytes) throw error("resultLimitReached");
     if (publish) this.send(a.request, "columns", { columns });
     const stream = (a.stream = statement.streamRows());
     let rowsSeen = 0,
       rowsRetained = 0,
-      bytes = 0,
+      bytes = readBytes,
       truncated = false;
     const values = [];
     let batch = [],
@@ -1036,7 +1070,7 @@ export class Helper {
           values.push(row);
           continue;
         }
-        const p = a.request.payload;
+        const p = a.mutationRead ?? a.request.payload;
         if (
           a.discard ||
           truncated ||
@@ -1084,7 +1118,7 @@ export class Helper {
     if (p.discard && this.removeQueued(r, p.target)) return;
     if (
       !a ||
-      !["query", "reviewedSql"].includes(a.request.op) ||
+      !["query", "reviewedSql", "mutationRead"].includes(a.request.op) ||
       a.request.id !== p.target ||
       a.credits + p.batches > 32
     )
@@ -1107,6 +1141,7 @@ export class Helper {
           "ddl",
           "mutationBatch",
           "mutationFinish",
+          "mutationRead",
         ].includes(r.op) && r.id === target,
     );
     if (index < 0) return false;
@@ -1130,7 +1165,7 @@ export class Helper {
     if (
       a &&
       a.request.id === p.target &&
-      ["mutationBatch", "mutationFinish"].includes(a.request.op)
+      ["mutationBatch", "mutationFinish", "mutationRead"].includes(a.request.op)
     ) {
       this.send(r, "accepted");
       if (a.batch) a.batch.terminal = mutationInterruptedSummary(a, "cancelled");

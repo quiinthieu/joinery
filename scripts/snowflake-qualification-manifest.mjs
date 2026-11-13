@@ -31,6 +31,7 @@ export const SOURCE_PATHS = Object.freeze([
   "snowflake-helper/src/main.mjs",
   "snowflake-helper/src/helper.mjs",
   "snowflake-helper/src/mutation-batch.mjs",
+  "snowflake-helper/src/mutation-read.mjs",
   "snowflake-helper/src/framing.mjs",
   "snowflake-helper/src/query-submit-guard.mjs",
   "snowflake-helper/src/transport-source-pins.mjs",

@@ -54,6 +54,8 @@ mod snowflake_connection_tests;
 pub type EventHandler = Arc<dyn Fn(QueryEvent) -> bool + Send + Sync>;
 pub type ExportEventHandler = Arc<dyn Fn(ExportEvent) -> bool + Send + Sync>;
 
+#[cfg(unix)]
+mod batch_outcome_recording;
 mod history_receipts;
 mod outcome_memory;
 mod outcome_recording;
@@ -271,7 +273,7 @@ enum PreparedCompareSide {
 
 pub struct Studio {
     persistence: Persistence,
-    history_owner: HistoryOwner,
+    history_owner: Arc<HistoryOwner>,
     outcome_memory: outcome_memory::OutcomeMemory,
     secrets: Arc<dyn SecretStore>,
     file_dialog: Arc<dyn FileDialogProvider>,
@@ -282,6 +284,8 @@ pub struct Studio {
     pending_snowflake_receipts: Mutex<HashMap<String, snowflake_receipts::PendingReceipt>>,
     pending_history: Mutex<HashMap<String, history_receipts::PendingHistory>>,
     console: snowflake_console::State,
+    #[cfg(unix)]
+    batch_outcomes: batch_outcome_recording::State,
     jobs: Mutex<HashMap<String, Job>>,
     exports: Mutex<HashMap<String, ExportJob>>,
     result_sessions: Mutex<HashMap<String, String>>,
@@ -370,7 +374,7 @@ impl Studio {
         #[cfg(unix)] snowflake_runtime: Option<Arc<SnowflakeRuntime>>,
     ) -> AppResult<Arc<Self>> {
         let persistence = Persistence::open(root)?;
-        let history_owner = persistence.claim_history_owner()?;
+        let history_owner = Arc::new(persistence.claim_history_owner()?);
         let results = ResultStore::default();
         results.set_temporary_disk_enabled(
             persistence.setting("temporary-result-storage")?.as_deref() == Some("true"),
@@ -401,6 +405,8 @@ impl Studio {
             recovery_jobs: Mutex::new(recovery_jobs::RecoveryJobs::default()),
             recovery_finished: tokio::sync::Notify::new(),
             console: snowflake_console::State::default(),
+            #[cfg(unix)]
+            batch_outcomes: batch_outcome_recording::State::default(),
             tunnels: SshManager::default(),
             #[cfg(unix)]
             snowflake_runtime,
@@ -538,6 +544,16 @@ impl Studio {
         self.flush_pending_history()?;
         self.flush_pending_snowflake_receipts()?;
         self.flush_console_recordings()?;
+        #[cfg(unix)]
+        {
+            self.flush_batch_outcomes()?;
+            if !self.batch_outcomes.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "A Snowflake edit owner has not settled locally; finish or disconnect it before restoring metadata",
+                ));
+            }
+        }
         let undo = self.persistence.restore_metadata_backup(id, digest)?;
         self.console.revoke();
         self.plans.lock().clear();
@@ -5300,6 +5316,17 @@ impl Studio {
         self.snowflake_cleanup
             .wait_all(Duration::from_secs(10))
             .await?;
+        #[cfg(unix)]
+        {
+            // Reaping is an exact local retirement witness, never remote rollback.
+            self.flush_batch_outcomes()?;
+            if !self.batch_outcomes.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "A Snowflake edit outcome or owner is still recording locally; keep Joinery open and try closing again",
+                ));
+            }
+        }
         self.console.release_journal();
         Ok(())
     }

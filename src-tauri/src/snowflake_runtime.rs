@@ -199,7 +199,7 @@ fn development_root() -> PathBuf {
 struct ExpectedPins {
     node_sha256: String,
     lock_sha256: String,
-    sources: [(&'static str, String); 9],
+    sources: [(&'static str, String); 10],
 }
 
 impl ExpectedPins {
@@ -224,6 +224,12 @@ impl ExpectedPins {
                     "mutation-batch.mjs",
                     digest_bytes(include_bytes!(
                         "../../snowflake-helper/src/mutation-batch.mjs"
+                    )),
+                ),
+                (
+                    "mutation-read.mjs",
+                    digest_bytes(include_bytes!(
+                        "../../snowflake-helper/src/mutation-read.mjs"
                     )),
                 ),
                 (
@@ -309,6 +315,7 @@ fn validate_resources(root: &Path, pins: &ExpectedPins) -> io::Result<()> {
         "helper/main.mjs",
         "helper/helper.mjs",
         "helper/mutation-batch.mjs",
+        "helper/mutation-read.mjs",
         "helper/framing.mjs",
         "helper/query-submit-guard.mjs",
         "helper/transport-source-pins.mjs",
@@ -517,6 +524,7 @@ mod tests {
                 ("main.mjs", "synthetic main"),
                 ("helper.mjs", "synthetic helper"),
                 ("mutation-batch.mjs", "synthetic mutation batch"),
+                ("mutation-read.mjs", "synthetic mutation read"),
                 ("framing.mjs", "synthetic framing"),
                 ("query-submit-guard.mjs", "synthetic guard"),
                 ("transport-source-pins.mjs", "synthetic source verifier"),
@@ -626,6 +634,7 @@ mod tests {
             "helper/main.mjs",
             "helper/helper.mjs",
             "helper/mutation-batch.mjs",
+            "helper/mutation-read.mjs",
             "helper/framing.mjs",
             "helper/query-submit-guard.mjs",
             "helper/transport-source-pins.mjs",
@@ -647,6 +656,7 @@ mod tests {
             "helper/main.mjs",
             "helper/helper.mjs",
             "helper/mutation-batch.mjs",
+            "helper/mutation-read.mjs",
             "helper/framing.mjs",
             "helper/query-submit-guard.mjs",
             "helper/transport-source-pins.mjs",
@@ -1253,6 +1263,10 @@ pub mod studio_fixture {
                 (
                     "mutation-batch.mjs",
                     include_bytes!("../../snowflake-helper/src/mutation-batch.mjs").as_slice(),
+                ),
+                (
+                    "mutation-read.mjs",
+                    include_bytes!("../../snowflake-helper/src/mutation-read.mjs").as_slice(),
                 ),
                 (
                     "framing.mjs",

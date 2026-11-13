@@ -79,6 +79,7 @@ test("invalid bundled JSON or schema prevents helper module loading", async (t) 
     for (const name of [
       "helper.mjs",
       "mutation-batch.mjs",
+      "mutation-read.mjs",
       "disposable-setup-ledger.mjs",
       "sql-contract.mjs",
     ])
@@ -98,6 +99,7 @@ test("disposable source copy proves helper SQL and version recognition derive fr
   for (const name of [
     "helper.mjs",
     "mutation-batch.mjs",
+    "mutation-read.mjs",
     "disposable-setup-ledger.mjs",
     "sql-contract.mjs",
   ])
