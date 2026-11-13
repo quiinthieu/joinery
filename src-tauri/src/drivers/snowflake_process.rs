@@ -752,6 +752,10 @@ pub struct Supervisor {
     pid: u32,
     bounds: Bounds,
 }
+#[path = "snowflake_process_retirement.rs"]
+mod retirement;
+pub use retirement::HelperRetirementObserver;
+
 /// Opaque identity of one physical helper generation, without a liveness promise.
 /// Retaining this handle keeps neither the helper nor its supervisor alive.
 #[derive(Clone)]

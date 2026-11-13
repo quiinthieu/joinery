@@ -161,3 +161,197 @@ fn reaped_generation_requires_sealed_admission_and_both_private_reaper_flags() {
         );
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires explicit JOINERY_TEST_NODE; local owned helper generation/reaping only"]
+async fn retirement_observer_survives_last_supervisor_drop_and_cancelled_waiter() {
+    let (supervisor, root) = actual_batch_supervisor("manual").await;
+    let observer = supervisor.retirement_observer();
+    let identity = supervisor.helper_generation();
+    let owner = Arc::downgrade(&supervisor.inner);
+    let cleanup_authority = Arc::downgrade(
+        supervisor
+            .inner
+            .exited
+            .authority
+            .as_ref()
+            .expect("owned cleanup authority"),
+    );
+    assert!(identity.same_helper(&observer.helper_generation()));
+    assert!(observer.reaped_generation().is_none());
+    assert!(observer.wait(Duration::ZERO).await.is_none());
+
+    let waiting_observer = observer.clone();
+    let waiter = tokio::spawn(async move { waiting_observer.wait(Duration::from_secs(60)).await });
+    tokio::task::yield_now().await;
+    assert!(
+        !waiter.is_finished(),
+        "live helper must not yield a reap proof"
+    );
+    waiter.abort();
+    assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
+
+    supervisor.request_retirement();
+    assert!(observer.reaped_generation().is_none());
+    drop(supervisor);
+    let proof = observer
+        .wait(REAP_LIMIT)
+        .await
+        .expect("post-drop actual reap");
+    wait_for_inner_drop(&owner).await;
+    assert!(identity.matches_reaped(&proof));
+    assert!(identity.matches_reaped(&observer.clone().wait(Duration::ZERO).await.unwrap()));
+    assert_eq!(proof.generation(), identity.generation());
+    assert!(
+        cleanup_authority.upgrade().is_none(),
+        "observer must not retain root-removal authority"
+    );
+    assert!(!root.exists());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires explicit JOINERY_TEST_NODE; local owned helper generation/reaping only"]
+async fn retirement_observers_keep_reused_uuid_physical_owners_distinct_after_drop() {
+    let (first, first_root) = actual_batch_supervisor("manual").await;
+    let (second, second_root) = actual_batch_supervisor("manual").await;
+    let first_observer = first.retirement_observer();
+    let second_observer = second.retirement_observer();
+    let first_identity = first_observer.helper_generation();
+    let second_identity = second_observer.helper_generation();
+    let first_owner = Arc::downgrade(&first.inner);
+    let second_owner = Arc::downgrade(&second.inner);
+    assert_eq!(first_identity.generation(), second_identity.generation());
+
+    drop(first);
+    let first_proof = first_observer
+        .wait(REAP_LIMIT)
+        .await
+        .expect("first child reap");
+    wait_for_inner_drop(&first_owner).await;
+    assert!(first_identity.matches_reaped(&first_proof));
+    assert!(!second_identity.matches_reaped(&first_proof));
+    assert!(!second.is_closed());
+    assert!(second_observer.reaped_generation().is_none());
+
+    drop(second);
+    let second_proof = second_observer
+        .wait(REAP_LIMIT)
+        .await
+        .expect("second child reap");
+    wait_for_inner_drop(&second_owner).await;
+    assert!(second_identity.matches_reaped(&second_proof));
+    assert!(!first_identity.matches_reaped(&second_proof));
+    assert!(!first_root.exists() && !second_root.exists());
+}
+
+fn observer_fixture(
+    retired: bool,
+    receipt: Option<CleanupReport>,
+) -> (
+    Supervisor,
+    watch::Sender<bool>,
+    watch::Sender<Option<CleanupReport>>,
+) {
+    let (mut inner, _normal, _control) = isolated();
+    let (retired_sender, _retired) = watch::channel(retired);
+    let (cleanup_sender, cleanup) = watch::channel(receipt);
+    let inner_mut = Arc::get_mut(&mut inner).unwrap();
+    inner_mut.stop = retired_sender.clone();
+    inner_mut.exited = CleanupObserver {
+        receiver: cleanup,
+        authority: None,
+    };
+    // Internal watch guard tests control publication independently. Marking
+    // State already retired prevents Supervisor::drop from injecting updates.
+    // Actual-child tests above prove the production order and source of facts.
+    inner_mut.state.get_mut().unwrap().retired = Some(Retirement::Requested);
+    (
+        Supervisor {
+            inner,
+            pid: 0,
+            bounds: Bounds::default(),
+        },
+        retired_sender,
+        cleanup_sender,
+    )
+}
+
+fn observer_receipt(child_started: bool, reaped: bool) -> CleanupReport {
+    CleanupReport {
+        child_started,
+        reaped,
+        temporary_root_removed: false,
+    }
+}
+
+#[tokio::test]
+async fn observer_requires_private_retirement_and_both_reaper_flags() {
+    for (retired, cleanup) in [
+        (false, Some(observer_receipt(true, true))),
+        (true, None),
+        (true, Some(observer_receipt(false, false))),
+        (true, Some(observer_receipt(false, true))),
+        (true, Some(observer_receipt(true, false))),
+    ] {
+        let (supervisor, _retired, _cleanup) = observer_fixture(retired, cleanup);
+        let observer = supervisor.retirement_observer();
+        assert!(observer.reaped_generation().is_none());
+        assert!(observer.wait(Duration::ZERO).await.is_none());
+    }
+    let (supervisor, _retired, _cleanup) =
+        observer_fixture(true, Some(observer_receipt(true, true)));
+    let observer = supervisor.retirement_observer();
+    assert!(observer.reaped_generation().is_some());
+    assert!(observer.wait(Duration::ZERO).await.is_some());
+}
+
+#[tokio::test]
+async fn closed_channels_and_dead_identity_without_reap_never_grant_proof() {
+    for (retired, cleanup) in [
+        (false, Some(observer_receipt(true, true))),
+        (true, None),
+        (true, Some(observer_receipt(true, false))),
+        (true, Some(observer_receipt(false, true))),
+    ] {
+        let (supervisor, retired_sender, cleanup_sender) = observer_fixture(retired, cleanup);
+        let observer = supervisor.retirement_observer();
+        let owner = Arc::downgrade(&supervisor.inner);
+        drop(supervisor);
+        drop(retired_sender);
+        drop(cleanup_sender);
+        assert!(owner.upgrade().is_none());
+        assert!(observer.wait(Duration::from_secs(1)).await.is_none());
+        assert!(observer.reaped_generation().is_none());
+    }
+}
+
+#[tokio::test]
+async fn closed_true_retirement_watch_allows_later_private_cleanup() {
+    let (supervisor, retired_sender, cleanup_sender) = observer_fixture(true, None);
+    let observer = supervisor.retirement_observer();
+    drop(supervisor);
+    drop(retired_sender);
+    let mut waiting = Box::pin(observer.wait(Duration::from_secs(1)));
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    cleanup_sender.send_replace(Some(observer_receipt(true, true)));
+    assert!(waiting.await.is_some());
+    drop(cleanup_sender);
+    assert!(observer.wait(Duration::ZERO).await.is_some());
+}
+
+#[tokio::test]
+async fn closed_true_cleanup_watch_allows_later_private_retirement() {
+    // Production retires before publishing cleanup. The observer nevertheless
+    // retains either final fact safely if private publication ordering changes.
+    let (supervisor, retired_sender, cleanup_sender) =
+        observer_fixture(false, Some(observer_receipt(true, true)));
+    let observer = supervisor.retirement_observer();
+    drop(supervisor);
+    drop(cleanup_sender);
+    let mut waiting = Box::pin(observer.wait(Duration::from_secs(1)));
+    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+    retired_sender.send_replace(true);
+    assert!(waiting.await.is_some());
+    drop(retired_sender);
+    assert!(observer.wait(Duration::ZERO).await.is_some());
+}

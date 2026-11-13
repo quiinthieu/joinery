@@ -84,6 +84,68 @@ fn assert_conflict<T>(result: AppResult<T>) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn batch_helper_retirement_survives_supervisor_drop_and_waits_for_original() {
+    let (_root, store, owner) = setup();
+    let gate = store.operation_gate(&owner).unwrap();
+    let process = helper(&uuid::Uuid::new_v4().to_string()).await;
+    let (_d, reservation, group) = reserve_pinned(&store, &owner, &gate, &process);
+    let observer = process.retirement_observer();
+    let original = original(
+        &reservation,
+        &evidence(request(None, 1), uuid::Uuid::new_v4(), Outcome::Pending, 0),
+    );
+    let exact_original = original.as_bytes().to_vec();
+    assert!(observer.reaped_generation().is_none());
+    drop(process);
+    // Same-thread reaping has not run yet; dropping the admission owner alone
+    // cannot release the recorded transaction's native binding.
+    assert!(observer.reaped_generation().is_none());
+    let proof = observer
+        .wait(Duration::from_secs(5))
+        .await
+        .expect("private proof remains available after supervisor drop");
+    assert!(observer.helper_generation().matches_reaped(&proof));
+    assert_conflict(store.retire_manual_transaction(&owner, &gate, &group, &proof));
+    store
+        .capture_batch_outcome(&owner, &gate, &reservation, &original)
+        .unwrap();
+    assert_conflict(store.retire_manual_transaction(&owner, &gate, &group, &proof));
+    store
+        .settle_batch_outcome(&owner, &gate, &reservation, &original)
+        .unwrap();
+    let before_audits = audits(&store);
+    assert_eq!(
+        store
+            .retire_manual_transaction(&owner, &gate, &group, &proof)
+            .unwrap(),
+        ManualTransactionRetirement::Retired
+    );
+    assert_eq!(audits(&store), before_audits);
+    assert_eq!(
+        store
+            .batch_evidence(reservation.operation_id())
+            .unwrap()
+            .unwrap()
+            .as_bytes(),
+        exact_original
+    );
+    assert_eq!(
+        store
+            .manual_transaction_evidence(group.id(), 0, 64)
+            .unwrap()
+            .disposition,
+        "unknown"
+    );
+    assert!(
+        binding(&store.connection.lock(), group.id())
+            .unwrap()
+            .is_none()
+    );
+    assert!(!owner.batch_credits.lock().contains_key(group.id()));
+    validate_records(&store.connection.lock()).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn batch_helper_retirement_capture_serializes_shared_admission_across_handles() {
     let (root, store, owner) = setup();
     let other = Persistence::open(root.path()).unwrap();

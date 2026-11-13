@@ -422,6 +422,10 @@ impl SnowflakeExternal {
     pub fn cleanup_observer(&self) -> CleanupObserver {
         self.process.cleanup_observer()
     }
+    /// Capture before disconnecting; observing reaping must not retain this driver.
+    pub fn retirement_observer(&self) -> super::snowflake_process::HelperRetirementObserver {
+        self.process.retirement_observer()
+    }
     /// A logical close is immediate; only this receipt/cleanup observer proves logout/reap.
     pub fn shutdown_receiver(&self) -> watch::Receiver<Option<Arc<ShutdownReport>>> {
         self.shutdown.subscribe()
