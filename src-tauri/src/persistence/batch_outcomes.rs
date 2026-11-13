@@ -1225,6 +1225,19 @@ pub(crate) struct VolatileBatchRollbackToken {
     no_dispatch: Option<BatchReservation>,
     remote_transaction: Option<String>,
 }
+impl VolatileBatchRollbackToken {
+    pub(crate) fn clear_settled_predecessor(&self, settled_operation_id: &str) {
+        if let Some(prerequisite) = &self.predecessor {
+            let mut guard = prerequisite.lock();
+            if guard
+                .as_ref()
+                .is_some_and(|prior| prior.reservation.operation_id() == settled_operation_id)
+            {
+                *guard = None;
+            }
+        }
+    }
+}
 #[derive(Clone, Debug)]
 struct PendingOriginal {
     reservation: BatchReservation,
@@ -1828,7 +1841,7 @@ impl Persistence {
                 Intent::ContinueManual | Intent::Commit
             )
             || m.transaction_id != group.id
-            || m.ordinal != prior.ordinal + 1
+            || m.ordinal <= prior.ordinal
             || m.prior_pending_count != prior.prior_pending_count + 1
             || state.ordinal != m.ordinal
             || state.pending != m.prior_pending_count
@@ -1983,7 +1996,7 @@ impl Persistence {
                 Intent::ContinueManual | Intent::Commit
             )
             || m.transaction_id != group.id
-            || m.ordinal != prior.ordinal + 1
+            || m.ordinal <= prior.ordinal
             || m.prior_pending_count != prior.prior_pending_count + 1
             || state.ordinal != m.ordinal
             || state.pending != m.prior_pending_count

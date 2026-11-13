@@ -31,6 +31,7 @@ const MAX_GROUPS: usize = 32;
 
 #[derive(Default)]
 pub(super) struct State {
+    flush_lock: Mutex<()>,
     pending: Mutex<HashMap<String, Arc<BatchOutcomeCell>>>,
     groups: Mutex<HashMap<String, IdleGroup>>,
 }
@@ -257,6 +258,24 @@ impl Studio {
         observer: HelperRetirementObserver,
         source: ProtectedRollbackSource<'_>,
     ) -> AppResult<Arc<BatchOutcomeCell>> {
+        let _flush = self.batch_outcomes.flush_lock.lock();
+        if matches!(
+            source,
+            ProtectedRollbackSource::RejectedAdmission { cell, .. }
+                | ProtectedRollbackSource::UnsettledPending { cell, .. }
+                if cell.is_settled()
+        ) {
+            return self.admit_batch_cell(
+                memory,
+                descriptor,
+                Attempt::Finish {
+                    group: group.clone(),
+                    owner: helper_owner,
+                    action: FinishAction::Rollback,
+                },
+                observer,
+            );
+        }
         Self::validate_batch_descriptor(&descriptor, &observer)?;
         {
             let groups = self.batch_outcomes.groups.lock();
@@ -770,6 +789,24 @@ impl Studio {
         }
     }
     fn flush_batch_cell(&self, cell: &BatchOutcomeCell) -> AppResult<()> {
+        let _flush = self.batch_outcomes.flush_lock.lock();
+        self.flush_batch_cell_locked(cell)
+    }
+
+    fn clear_settled_predecessor_tokens(&self, settled_operation_id: &str) {
+        let tokens = self
+            .batch_outcomes
+            .pending
+            .lock()
+            .values()
+            .filter_map(|pending_cell| pending_cell.state.lock().volatile.clone())
+            .collect::<Vec<_>>();
+        for token in tokens {
+            token.clear_settled_predecessor(settled_operation_id);
+        }
+    }
+
+    fn flush_batch_cell_locked(&self, cell: &BatchOutcomeCell) -> AppResult<()> {
         self.poll_batch_terminal(cell)?;
         {
             let s = cell.state.lock();
@@ -785,43 +822,50 @@ impl Studio {
         }
         self.reserve_batch_cell(cell)
             .map_err(|_| recording_error(false))?;
-        let mut s = cell.state.lock();
-        if s.reservation.is_none() {
-            s.reservation = Some(
-                self.persistence
-                    .promote_volatile_batch_rollback(
-                        &self.history_owner,
-                        s.gate.as_ref().unwrap(),
-                        s.volatile.as_ref().ok_or_else(conflict)?,
-                    )
-                    .map_err(|_| recording_error(false))?,
-            );
-            s.volatile.take();
-        }
-        if !s.settled {
-            let gate = s.gate.as_ref().unwrap();
-            let r = s.reservation.as_ref().unwrap();
-            if s.no_original {
-                self.persistence
-                    .abandon_reserved_batch(&self.history_owner, gate, r)
-                    .map_err(|_| recording_error(false))?;
-            } else {
-                let original = s.original.as_ref().ok_or_else(conflict)?;
-                self.persistence
-                    .capture_batch_outcome(&self.history_owner, gate, r, original)
-                    .map_err(|_| recording_error(false))?;
-                s.captured = true;
-                self.persistence
-                    .settle_batch_outcome(
-                        &self.history_owner,
-                        s.gate.as_ref().unwrap(),
-                        s.reservation.as_ref().unwrap(),
-                        s.original.as_ref().unwrap(),
-                    )
-                    .map_err(|_| recording_error(true))?;
+        let needs_predecessor_release = {
+            let mut s = cell.state.lock();
+            if s.reservation.is_none() {
+                s.reservation = Some(
+                    self.persistence
+                        .promote_volatile_batch_rollback(
+                            &self.history_owner,
+                            s.gate.as_ref().unwrap(),
+                            s.volatile.as_ref().ok_or_else(conflict)?,
+                        )
+                        .map_err(|_| recording_error(false))?,
+                );
+                s.volatile.take();
             }
-            s.settled = true;
+            if !s.settled {
+                let gate = s.gate.as_ref().unwrap();
+                let r = s.reservation.as_ref().unwrap();
+                if s.no_original {
+                    self.persistence
+                        .abandon_reserved_batch(&self.history_owner, gate, r)
+                        .map_err(|_| recording_error(false))?;
+                } else {
+                    let original = s.original.as_ref().ok_or_else(conflict)?;
+                    self.persistence
+                        .capture_batch_outcome(&self.history_owner, gate, r, original)
+                        .map_err(|_| recording_error(false))?;
+                    s.captured = true;
+                    self.persistence
+                        .settle_batch_outcome(
+                            &self.history_owner,
+                            s.gate.as_ref().unwrap(),
+                            s.reservation.as_ref().unwrap(),
+                            s.original.as_ref().unwrap(),
+                        )
+                        .map_err(|_| recording_error(true))?;
+                }
+                s.settled = true;
+            }
+            s.original.is_some()
+        };
+        if needs_predecessor_release {
+            self.clear_settled_predecessor_tokens(cell.operation_id());
         }
+        let mut s = cell.state.lock();
         if let Some(original) = s.original.take() {
             match original.try_reclaim_buffer() {
                 Ok(buffer) => s.memory.as_mut().unwrap().restore_buffer(buffer),
@@ -857,6 +901,7 @@ impl Studio {
     }
     /// Retry local storage only. Never reconnect, replay SQL, or infer rollback.
     pub(super) fn flush_batch_outcomes(&self) -> AppResult<()> {
+        let _flush = self.batch_outcomes.flush_lock.lock();
         let mut cells = self
             .batch_outcomes
             .pending
@@ -869,7 +914,7 @@ impl Studio {
         cells.sort_by_key(|cell| cell.state.lock().volatile.is_none());
         let mut failed = false;
         for cell in cells {
-            if self.flush_batch_cell(&cell).is_err() {
+            if self.flush_batch_cell_locked(&cell).is_err() {
                 failed = true;
             }
             self.forget_batch_cell(&cell);

@@ -137,6 +137,10 @@ export default {
               setTimeout(complete, 5);
               return;
             }
+            if (sql === 'ROLLBACK' && existsSync(marker('hold-rollback-ack')) && !existsSync(marker('release-rollback-ack')) && !cancelled) {
+              setTimeout(complete, 5);
+              return;
+            }
             options.complete(null, statement);
           };
           complete();
@@ -1252,7 +1256,7 @@ process.stdin.on('end', () => {{ helper.stop(); }});
     assert_eq!(pending.outcome, Outcome::Pending);
     let tx_id = pending.transaction_id.clone().unwrap();
 
-    let cont_edits = driver
+    let cont_edits_first = driver
         .test_prepare_continuation_edits(
             &preview_req,
             preview.rows.clone(),
@@ -1260,9 +1264,42 @@ process.stdin.on('end', () => {{ helper.stop(); }});
         )
         .unwrap();
 
-    // Exhaust guard batch capacity and fault SQLite capture so the queued zero-step Rejected original stays unsettled!
+    // 1. Exhaust guard batch capacity and fault SQLite capture; verify delayed flush clears successor_recovery.
     std::fs::write(&exhaust_marker, "").unwrap();
     let db = sqlite_db(&f);
+    db.execute_batch(
+        "CREATE TRIGGER fail_rejected_capture BEFORE INSERT ON batch_captures_v8 \
+         BEGIN SELECT RAISE(ABORT, 'synthetic rejected capture fault'); END;",
+    )
+    .unwrap();
+
+    let rejected_first = studio
+        .continue_snowflake_grid_edits(&tx_id, cont_edits_first, true)
+        .await
+        .unwrap();
+    assert_eq!(rejected_first.outcome, Outcome::Rejected);
+    assert!(rejected_first.recording_error.is_some());
+    assert!(
+        studio.snowflake_grid.test_has_successor_recovery(&tx_id),
+        "unsettled zero-step Rejected must retain RejectedAdmission recovery"
+    );
+
+    db.execute_batch("DROP TRIGGER fail_rejected_capture;")
+        .unwrap();
+    studio.flush_snowflake_grid_outcomes().unwrap();
+    assert!(
+        !studio.snowflake_grid.test_has_successor_recovery(&tx_id),
+        "reconciling a settled RejectedAdmission cell must clear stale successor_recovery"
+    );
+
+    // 2. Prepare a second continuation after recording settles, fault SQLite again, and run protected Rollback while unsettled!
+    let cont_edits = driver
+        .test_prepare_continuation_edits(
+            &preview_req,
+            preview.rows.clone(),
+            &[SnapshotMutation::Delete { row_index: 2 }],
+        )
+        .unwrap();
     db.execute_batch(
         "CREATE TRIGGER fail_rejected_capture BEFORE INSERT ON batch_captures_v8 \
          BEGIN SELECT RAISE(ABORT, 'synthetic rejected capture fault'); END;",
@@ -1315,6 +1352,7 @@ process.stdin.on('end', () => {{ helper.stop(); }});
             .collect::<Vec<_>>(),
         [
             pending.operation_id.as_str(),
+            rejected_first.operation_id.as_str(),
             rejected.operation_id.as_str(),
             rolled.operation_id.as_str()
         ]
@@ -1332,6 +1370,7 @@ process.stdin.on('end', () => {{ helper.stop(); }});
     );
     for op_id in [
         &pending.operation_id,
+        &rejected_first.operation_id,
         &rejected.operation_id,
         &rolled.operation_id,
     ] {
@@ -1344,6 +1383,63 @@ process.stdin.on('end', () => {{ helper.stop(); }});
                 .settled
         );
     }
+
+    // 3. Also verify NoDispatch (ordinal 3) after a settled zero-step Rejected (ordinal 2) still authorizes protected Rollback!
+    std::fs::remove_file(&exhaust_marker).unwrap();
+    studio
+        .session_contexts_with_refresh(&session_id, true)
+        .await
+        .unwrap();
+    let (preview_req2, preview2, edits2) =
+        browse_and_prepare(&studio, &session_id, &[update_row0("second-tx")]).await;
+    let pending2 = studio
+        .execute_snowflake_grid_edits(&session_id, edits2, Mode::Manual)
+        .await
+        .unwrap();
+    assert_eq!(pending2.outcome, Outcome::Pending);
+    let tx_id2 = pending2.transaction_id.clone().unwrap();
+
+    std::fs::write(&exhaust_marker, "").unwrap();
+    let cont_edits2 = driver
+        .test_prepare_continuation_edits(
+            &preview_req2,
+            preview2.rows.clone(),
+            &[SnapshotMutation::Delete { row_index: 2 }],
+        )
+        .unwrap();
+    let rejected2 = studio
+        .continue_snowflake_grid_edits(&tx_id2, cont_edits2, true)
+        .await
+        .unwrap();
+    assert_eq!(rejected2.outcome, Outcome::Rejected);
+    assert!(rejected2.recording_error.is_none());
+
+    std::fs::remove_file(&exhaust_marker).unwrap();
+    studio
+        .snowflake_grid
+        .inject_fault(GridTestFault::RefuseAdmissionBeforeDispatch);
+    assert_eq!(
+        studio
+            .finish_snowflake_grid_transaction(&tx_id2, FinishAction::Commit)
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Conflict
+    );
+
+    let rolled2 = studio
+        .finish_snowflake_grid_transaction(&tx_id2, FinishAction::Rollback)
+        .await
+        .unwrap();
+    assert_eq!(rolled2.outcome, Outcome::RolledBack);
+    assert!(rolled2.recording_error.is_none());
+    let page2 = studio
+        .persistence
+        .manual_transaction_evidence(&tx_id2, 0, 16)
+        .unwrap();
+    assert_eq!(page2.disposition, "rolledBack");
+    assert_eq!(page2.members.len(), 4);
 
     studio.shutdown_and_wait().await.unwrap();
 }
@@ -1446,5 +1542,188 @@ async fn grid_studio_removed_session_and_disconnect_retire_unknown_without_inven
             .manual_transaction_evidence(&tx_id, 0, 16)
             .unwrap();
         assert_eq!(page.disposition, "unknown");
+    }
+}
+
+#[tokio::test]
+async fn grid_studio_inflight_protected_rollback_allows_global_flush_and_settled_volatile_fallback_settles()
+ {
+    let _guard = FIXTURE_LANE.lock().await;
+
+    // 1. In-flight protected Rollback must not block flush_snowflake_grid_outcomes() when SQLite recovers!
+    {
+        let f = grid_fixture();
+        let (studio, info) = connected(&f).await;
+        let (_, _, edits) =
+            browse_and_prepare(&studio, &info.id, &[update_row0("inflight-rb-flush")]).await;
+
+        let db = sqlite_db(&f);
+        db.execute_batch(
+            "CREATE TRIGGER fail_grid_capture BEFORE INSERT ON batch_captures_v8 \
+             BEGIN SELECT RAISE(ABORT, 'synthetic capture fault'); END;",
+        )
+        .unwrap();
+
+        let pending = studio
+            .execute_snowflake_grid_edits(&info.id, edits, Mode::Manual)
+            .await
+            .unwrap();
+        assert_eq!(pending.outcome, Outcome::Pending);
+        assert!(pending.recording_error.is_some());
+        let tx_id = pending.transaction_id.clone().unwrap();
+
+        // Remaining ordinary Studio session entry points reject cleanly while owned edits are open.
+        assert_eq!(
+            studio.catalog(&info.id).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio.database_objects(&info.id).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio.completion_catalog(&info.id).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio
+                .preflight_snowflake_ddl(&SnowflakeDdlPreflightRequest {
+                    session_id: info.id.clone(),
+                    action: SnowflakeDdlAction::DropTable {
+                        browse_revision: new_id(),
+                        target_id: new_id(),
+                    },
+                })
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            studio
+                .prepare_transaction_control(
+                    &info.id,
+                    &TransactionControlRequest {
+                        revision: new_id(),
+                        action: ExplicitTransactionAction::Rollback,
+                    }
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        std::fs::write(f.controls.join("hold-rollback-ack"), "").unwrap();
+        let rollback_handle = studio
+            .start_finish_snowflake_grid_transaction(&tx_id, FinishAction::Rollback)
+            .unwrap();
+
+        for _ in 0..200 {
+            if queries(&f).iter().any(|s| s == "ROLLBACK") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(queries(&f).iter().any(|s| s == "ROLLBACK"));
+        assert_eq!(studio.usage().active_runs, 1);
+        assert_eq!(studio.batch_outcomes.pending_count(), 2);
+
+        // SQLite recovers while ROLLBACK is still in flight; global flush settles Pending and reclaims its buffer!
+        db.execute_batch("DROP TRIGGER fail_grid_capture;").unwrap();
+        studio.flush_snowflake_grid_outcomes().unwrap();
+        assert_eq!(studio.batch_outcomes.pending_count(), 1);
+        assert!(
+            studio
+                .persistence
+                .batch_evidence(&pending.operation_id)
+                .unwrap()
+                .unwrap()
+                .settled
+        );
+
+        std::fs::write(f.controls.join("release-rollback-ack"), "").unwrap();
+        let rolled = rollback_handle.await.unwrap().unwrap();
+        assert_eq!(rolled.outcome, Outcome::RolledBack);
+        assert!(rolled.recording_error.is_none());
+        assert_eq!(studio.usage().active_runs, 0);
+        assert!(studio.batch_outcomes.is_empty());
+        assert!(studio.snowflake_grid.is_empty());
+        studio.shutdown_and_wait().await.unwrap();
+    }
+
+    // 2. SettledPending volatile rollback fallback + reset_fixtures() on detached manual owner.
+    {
+        let f = grid_fixture();
+        let (studio, info) = connected(&f).await;
+        let (_, _, edits) =
+            browse_and_prepare(&studio, &info.id, &[update_row0("settled-volatile-rb")]).await;
+
+        let pending = studio
+            .execute_snowflake_grid_edits(&info.id, edits, Mode::Manual)
+            .await
+            .unwrap();
+        assert_eq!(pending.outcome, Outcome::Pending);
+        assert!(pending.recording_error.is_none());
+        assert_eq!(studio.batch_outcomes.pending_count(), 0);
+        let tx_id = pending.transaction_id.clone().unwrap();
+
+        // Fault SQLite reservation ONLY for emergencyRollback after Pending has already settled.
+        let db = sqlite_db(&f);
+        db.execute_batch(
+            "CREATE TRIGGER reject_rb_reserve BEFORE INSERT ON batch_operations_v8 \
+             WHEN NEW.pool = 'emergencyRollback' \
+             BEGIN SELECT RAISE(ABORT, 'synthetic rollback reserve fault'); END;",
+        )
+        .unwrap();
+
+        let rolled = studio
+            .finish_snowflake_grid_transaction(&tx_id, FinishAction::Rollback)
+            .await
+            .unwrap();
+        assert_eq!(rolled.outcome, Outcome::RolledBack);
+        assert!(rolled.recording_error.is_some());
+        assert_eq!(studio.batch_outcomes.pending_count(), 1);
+
+        db.execute_batch("DROP TRIGGER reject_rb_reserve;").unwrap();
+        studio.flush_snowflake_grid_outcomes().unwrap();
+        assert!(studio.batch_outcomes.is_empty());
+        assert!(studio.snowflake_grid.is_empty());
+
+        let page = studio
+            .persistence
+            .manual_transaction_evidence(&tx_id, 0, 16)
+            .unwrap();
+        assert_eq!(page.disposition, "rolledBack");
+        assert_eq!(page.members.len(), 2);
+
+        // Resume metadata, open another manual transaction, detach from sessions map, and verify reset_fixtures() reaps helper.
+        studio
+            .session_contexts_with_refresh(&info.id, true)
+            .await
+            .unwrap();
+        let (_, _, edits2) =
+            browse_and_prepare(&studio, &info.id, &[update_row0("reset-detached")]).await;
+        let pending2 = studio
+            .execute_snowflake_grid_edits(&info.id, edits2, Mode::Manual)
+            .await
+            .unwrap();
+        let tx2_id = pending2.transaction_id.unwrap();
+        let detached = studio.sessions.lock().remove(&info.id);
+        assert!(detached.is_some());
+        drop(detached);
+
+        studio.reset_fixtures().await.unwrap();
+        studio.flush_snowflake_grid_outcomes().unwrap();
+        assert!(studio.batch_outcomes.is_empty());
+        assert!(studio.snowflake_grid.is_empty());
+        assert_eq!(
+            studio
+                .persistence
+                .manual_transaction_evidence(&tx2_id, 0, 16)
+                .unwrap()
+                .disposition,
+            "unknown"
+        );
+        studio.shutdown_and_wait().await.unwrap();
     }
 }

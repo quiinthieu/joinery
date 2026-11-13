@@ -2475,6 +2475,8 @@ impl Studio {
             ));
         }
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -2519,6 +2521,8 @@ impl Studio {
                 self.disconnect(session_id);
             }
         })?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -2572,6 +2576,8 @@ impl Studio {
                 self.disconnect(session_id);
             }
         })?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.transactions {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -2702,6 +2708,8 @@ impl Studio {
     pub async fn completion_catalog(&self, session_id: &str) -> AppResult<CompletionCatalog> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         self.ddl_preflights.lock().remove(session_id);
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -2795,6 +2803,10 @@ impl Studio {
     ) -> AppResult<TableSchema> {
         let session = self
             .session(session_id)
+            .map_err(AppError::with_completion_invalidated)?;
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(session_id)
             .map_err(AppError::with_completion_invalidated)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(
@@ -3044,6 +3056,8 @@ impl Studio {
     pub async fn catalog(&self, session_id: &str) -> AppResult<Vec<TableInfo>> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         let _lane = if snowflake_dml::sdk_profile(&session.profile) {
             Some(Self::relation_lane(&session).await?)
         } else {
@@ -3056,7 +3070,10 @@ impl Studio {
         session_id: &str,
     ) -> AppResult<Vec<DatabaseObjectSummary>> {
         let _recovery_activity = self.begin_recovery_activity()?;
-        let mut objects = self.session(session_id)?.driver.database_objects().await?;
+        let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        let mut objects = session.driver.database_objects().await?;
         if objects.len() > 10_000 {
             objects.truncate(10_000);
         }
@@ -3070,11 +3087,10 @@ impl Studio {
         let _recovery_activity = self.begin_recovery_activity()?;
         const MAX_OBJECT_DDL_BYTES: usize = 256 * 1024;
         const MAX_OBJECT_DEPS: usize = 200;
-        let mut details = self
-            .session(session_id)?
-            .driver
-            .object_details(object)
-            .await?;
+        let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        let mut details = session.driver.object_details(object).await?;
         details.ddl = details.ddl.capped(MAX_OBJECT_DDL_BYTES);
         details.uses = finalize_dependency_edges(&details.object, details.uses, MAX_OBJECT_DEPS);
         details.used_by =
@@ -3084,6 +3100,8 @@ impl Studio {
     pub async fn schema(&self, session_id: &str, table: &TableRef) -> AppResult<TableSchema> {
         let _recovery_activity = self.begin_recovery_activity()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         self.schema_for_session(&session, table).await
     }
     async fn resolve_statement_provenance(
@@ -3152,10 +3170,10 @@ impl Studio {
         table: &TableRef,
     ) -> AppResult<Vec<InboundForeignKey>> {
         let _recovery_activity = self.begin_recovery_activity()?;
-        self.session(session_id)?
-            .driver
-            .referencing_keys(table)
-            .await
+        let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        session.driver.referencing_keys(table).await
     }
     pub async fn schema_diagram(&self, session_id: &str, schema: &str) -> AppResult<SchemaDiagram> {
         let _recovery_activity = self.begin_recovery_activity()?;
@@ -3166,6 +3184,8 @@ impl Studio {
             ));
         }
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.schema_diagram {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -3187,6 +3207,8 @@ impl Studio {
             ));
         }
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.schema_diff {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
@@ -5269,12 +5291,22 @@ impl Studio {
 
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
+        let grid_runs = {
+            #[cfg(unix)]
+            {
+                self.snowflake_grid.active_run_count()
+            }
+            #[cfg(not(unix))]
+            {
+                0
+            }
+        };
         ResourceUsage {
             retained_bytes,
             temporary_result_bytes: self.results.disk_usage(),
             result_count,
             session_count: self.sessions.lock().len(),
-            active_runs: self.jobs.lock().len() + self.exports.lock().len(),
+            active_runs: self.jobs.lock().len() + self.exports.lock().len() + grid_runs,
         }
     }
     /// Retire fixture work admitted before the configuration-gate snapshot.
@@ -5295,6 +5327,8 @@ impl Studio {
             for id in ids {
                 self.disconnect(&id);
             }
+            #[cfg(unix)]
+            self.snowflake_grid.close_all_helpers();
             (pending, {
                 #[cfg(unix)]
                 {

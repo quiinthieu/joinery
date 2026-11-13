@@ -135,6 +135,9 @@ impl Studio {
         let _recovery_activity = self.begin_recovery_activity()?;
         self.flush_pending_snowflake_receipts()?;
         let session = self.session(&request.session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
         let revision = session.metadata_gate.lock().revision.clone();
         let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
             .await
@@ -225,6 +228,8 @@ impl Studio {
     ) -> AppResult<PreparedPlan> {
         let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         session.metadata_gate.lock().check(None, false)?;
         if session.active_run.lock().is_some() {
             return Err(AppError::new(

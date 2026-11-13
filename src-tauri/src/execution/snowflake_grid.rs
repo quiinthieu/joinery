@@ -57,6 +57,10 @@ impl State {
         self.active_runs.load(Ordering::Acquire) == 0 && self.owners.lock().is_empty()
     }
 
+    pub(super) fn active_run_count(&self) -> usize {
+        self.active_runs.load(Ordering::Acquire)
+    }
+
     pub(super) fn close_all_helpers(&self) {
         let drivers = self
             .owners
@@ -124,6 +128,14 @@ impl State {
             .lock()
             .get(transaction_id)
             .map(|owner| owner.native.clone())
+    }
+
+    #[cfg(all(test, unix, feature = "test-harness"))]
+    pub(super) fn test_has_successor_recovery(&self, transaction_id: &str) -> bool {
+        self.owners
+            .lock()
+            .get(transaction_id)
+            .is_some_and(|owner| owner.state.lock().successor_recovery.is_some())
     }
 
     #[cfg(all(test, unix, feature = "test-harness"))]
@@ -724,6 +736,13 @@ impl Studio {
         for (group_id, owner) in snapshot {
             let settled_operation_id = {
                 let mut st = owner.state.lock();
+                if matches!(
+                    &st.successor_recovery,
+                    Some(SuccessorRollbackRecovery::RejectedAdmission(rec))
+                        if rec.cell.is_settled()
+                ) {
+                    st.successor_recovery = None;
+                }
                 if let Some(cell) = &st.blocked_cell {
                     if cell.is_settled() {
                         let id = cell.operation_id().to_owned();
@@ -1113,8 +1132,15 @@ impl Studio {
                 (cell, prior, Vec::new())
             } else {
                 let mut predecessors = Vec::new();
-                let cell = {
-                    let st = owner.state.lock();
+                let (pending_snapshot, taken_recovery) = {
+                    let mut st = owner.state.lock();
+                    if matches!(
+                        &st.successor_recovery,
+                        Some(SuccessorRollbackRecovery::RejectedAdmission(rec))
+                            if rec.cell.is_settled()
+                    ) {
+                        st.successor_recovery = None;
+                    }
                     if let Some((_, ref pending_cell)) = st.pending_authority
                         && !pending_cell.is_settled()
                     {
@@ -1126,26 +1152,43 @@ impl Studio {
                     {
                         predecessors.push(rec.cell.clone());
                     }
-                    match &st.successor_recovery {
-                        Some(SuccessorRollbackRecovery::NoDispatch(rec)) => {
-                            let (authority, _) =
-                                st.pending_authority.as_ref().ok_or_else(conflict)?;
-                            self.admit_protected_grid_rollback(
-                                memory,
-                                descriptor,
-                                &owner.group,
-                                helper_owner,
-                                owner.observer.clone(),
-                                ProtectedRollbackSource::NoDispatch {
-                                    authority,
-                                    successor: &rec.successor,
-                                    request: &rec.request,
-                                    proof: &rec.proof,
-                                },
-                            )?
-                        }
-                        Some(SuccessorRollbackRecovery::RejectedAdmission(rec))
-                            if !rec.cell.is_settled() =>
+                    (st.pending_authority.clone(), st.successor_recovery.take())
+                };
+                let admitted = match &taken_recovery {
+                    Some(SuccessorRollbackRecovery::NoDispatch(rec)) => {
+                        let (authority, _) = pending_snapshot.as_ref().ok_or_else(conflict)?;
+                        self.admit_protected_grid_rollback(
+                            memory,
+                            descriptor,
+                            &owner.group,
+                            helper_owner,
+                            owner.observer.clone(),
+                            ProtectedRollbackSource::NoDispatch {
+                                authority,
+                                successor: &rec.successor,
+                                request: &rec.request,
+                                proof: &rec.proof,
+                            },
+                        )
+                    }
+                    Some(SuccessorRollbackRecovery::RejectedAdmission(rec))
+                        if !rec.cell.is_settled() =>
+                    {
+                        self.admit_protected_grid_rollback(
+                            memory,
+                            descriptor,
+                            &owner.group,
+                            helper_owner,
+                            owner.observer.clone(),
+                            ProtectedRollbackSource::RejectedAdmission {
+                                rejected: &rec.authority,
+                                cell: &rec.cell,
+                            },
+                        )
+                    }
+                    _ => {
+                        if let Some((ref authority, ref pending_cell)) = pending_snapshot
+                            && !pending_cell.is_settled()
                         {
                             self.admit_protected_grid_rollback(
                                 memory,
@@ -1153,44 +1196,35 @@ impl Studio {
                                 &owner.group,
                                 helper_owner,
                                 owner.observer.clone(),
-                                ProtectedRollbackSource::RejectedAdmission {
-                                    rejected: &rec.authority,
-                                    cell: &rec.cell,
+                                ProtectedRollbackSource::UnsettledPending {
+                                    authority,
+                                    cell: pending_cell,
                                 },
-                            )?
-                        }
-                        _ => {
-                            if let Some((ref authority, ref pending_cell)) = st.pending_authority
-                                && !pending_cell.is_settled()
-                            {
-                                self.admit_protected_grid_rollback(
-                                    memory,
-                                    descriptor,
-                                    &owner.group,
-                                    helper_owner,
-                                    owner.observer.clone(),
-                                    ProtectedRollbackSource::UnsettledPending {
-                                        authority,
-                                        cell: pending_cell,
-                                    },
-                                )?
-                            } else {
-                                self.admit_batch_finish(
-                                    memory,
-                                    descriptor,
-                                    &owner.group,
-                                    helper_owner,
-                                    FinishAction::Rollback,
-                                    owner.observer.clone(),
-                                )?
-                            }
+                            )
+                        } else {
+                            self.admit_batch_finish(
+                                memory,
+                                descriptor,
+                                &owner.group,
+                                helper_owner,
+                                FinishAction::Rollback,
+                                owner.observer.clone(),
+                            )
                         }
                     }
                 };
-                {
-                    let mut st = owner.state.lock();
-                    st.blocked_cell = Some(cell.clone());
-                }
+                let cell = match admitted {
+                    Ok(cell) => {
+                        let mut st = owner.state.lock();
+                        st.successor_recovery = taken_recovery;
+                        st.blocked_cell = Some(cell.clone());
+                        cell
+                    }
+                    Err(error) => {
+                        owner.state.lock().successor_recovery = taken_recovery;
+                        return Err(error);
+                    }
+                };
                 guard.admitted_cell = Some(cell.clone());
                 guard.retire_driver_on_abort = Some(owner.driver.clone());
                 guard.manual_owner_on_abort = Some(owner.clone());

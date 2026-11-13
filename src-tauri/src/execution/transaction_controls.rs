@@ -32,6 +32,8 @@ impl Studio {
     ) -> AppResult<PreparedPlan> {
         let _configuration = self.configuration_mutation_guard()?;
         let session = self.session(session_id)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
         if !session.info.capabilities.explicit_transaction_controls {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
