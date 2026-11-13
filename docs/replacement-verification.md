@@ -8,6 +8,112 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake owned edit integration (13 November 2026, local foundation)
+
+Base `c51e0bc`, existing feature branch. Three reused `gpt-6.1-sol` high-effort
+agents own the closed helper read contract and native process regressions,
+Studio recording cells and SQLite regressions, and independent correctness
+review. The lead owns shared native/helper/runtime wiring, cancellation fixes,
+documentation and serialized verification. No model fallback or global
+configuration change occurs. See the [integration contract](snowflake-owned-edit-integration.md).
+
+This increment adds seven fixed pending-owner metadata reads and native stream
+validation. Exact private owner checks occur at receive, dequeue and the final
+SDK boundary. Reads preserve finish capacity and cannot submit caller SQL. It
+also retains recording candidates before SQLite admission, actual terminal
+watches, compact originals, operation gates, protected rollback memory and exact
+helper retirement observers independently of the initiating caller. Atomic
+native handoff binds immutable operation identity/request and physical helper;
+local recording retry never redispatches SQL. The driver still needs its own
+lane-bearing manual owner and a TaskTracker-owned run owner. This is an internal
+foundation with no application dispatch caller or enabled grid/CSV control.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `read-helper-fixed` | All 12 closed-read helper tests pass. Fixed SQL/shape/bounds, exact pending owner, malformed requests, changed owner before dispatch, result limits and transaction/finish-capacity isolation use synthetic SDK behavior |
+| `helper-all-first` | All 439 helper cases pass, zero skipped, 206.955 seconds of test time. Existing actual-SDK loopback HTTP cases run locally. This is not authentication or actual Snowflake semantic evidence. All 31 helper package/source/test inputs match before, after and current in `helper-source-scope.json`; three unrelated script-test files changed in the broader 64-input snapshot, so that broader snapshot is explicitly not unchanged |
+| `runtime-first` | All 58 runtime preparation/verification cases pass, including required new helper source, closed manifest hashes, drift and tamper refusal. All four script inputs unchanged |
+| `packaging-final` | All 25 smoke-resource and qualification manifest cases pass with the new module pinned. Exit zero, all 325 inputs unchanged. These synthetic artifact checks are not a normal packaged-app build |
+| `runtime-prepared` | Offline runtime preparation and guarded staged startup pass. Zero authentication and SQL requests; all 325 inputs unchanged. The normal release application is untouched |
+| `owned-focused-verified` | All 21 focused cases pass: five pure native parser cases, four actual Node helper/native framing cases (six children with injected synthetic SDK) and 12 actual SQLite/owned-native-child recording cases. No ignored cases remain in these explicitly selected runs. Three serialized commands exit zero in 49.866 seconds including compilation; all 344 inputs unchanged |
+| `owned-validate` | All 55 feature-enabled native process tests pass, zero ignored, then full `pnpm validate` passes: 1,038 frontend and 825 standard Rust cases, 146 intentional default fixture ignores, formatting/contracts/TypeScript/frontend build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Both commands exit zero in 256.971 seconds including compilation; all 344 recorded Rust/helper/script inputs unchanged. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain |
+
+Independent frozen-source review finds no remaining material issue after exact
+operation association and atomic dispatch/abandonment corrections. The final
+review covers cancellation sealing before terminal publication and the queue-test
+oracle. A documentation review corrects byte-overflow evidence attribution.
+Graph index/search/coverage calls fail with `Transport closed`; bounded direct
+source reads are used, with no exhaustive graph-coverage claim. Code/test hashes
+are retained with the local receipts.
+
+The recording cases cover reservation, capture, settlement and promotion failures;
+known-original retention; exact physical helper binding even with the same UUID;
+wrong operation ID/kind/request; protected rollback under ordinary quota
+exhaustion; session removal; idle pending reap with unknown remote disposition;
+encoder failure; actual terminal retention after caller drop; dispatch refusal,
+unwind and concurrent abandonment. SQLite and local child behavior are real;
+the batch receipts and SDK effects are synthetic. Logical count/byte limits do
+not establish allocator/RSS, large-import or whole-workflow capacity acceptance.
+
+The first native process run reproduces a cancellation race: after the cancelled
+owner-read terminal became visible, native admission could accept another request
+until helper EOF. The correction retires native admission before publishing that
+active-read terminal. A deterministic terminal-publication hook proves the seal
+at publication, then checks replay rejection, exact child reaping and no added
+SDK/COMMIT/ROLLBACK calls. A queued read remains cancellable without retiring the
+helper. Its separate regression holds COMMIT and asserts the read is genuinely
+queued with no terminal before release, then proves it cannot execute after the
+finish changes ownership. Actual-child malformed shape, cumulative row and
+terminal-count cases retire the helper; pure native tests also reject byte
+overflow. Honest transport truncation is never full freshness.
+
+Earlier local attempts expose and correct a strict Boolean validator mismatch,
+`HistoryOwner` Arc integration and test module-path/connection-readiness mistakes.
+The final focused run above is frozen after those corrections. These failures
+are retained in the ignored evidence directory; they are not pre-existing failures
+or skipped checks.
+
+Reproduce with the pinned Rust/Node toolchains in README, setting
+`JOINERY_TEST_NODE` to the prepared Node 24 executable:
+
+```sh
+node --expose-gc --test snowflake-helper/test/mutation-read.test.mjs
+pnpm test:snowflake:helper
+pnpm test:snowflake:runtime
+node --test scripts/native-smoke-resources.test.mjs scripts/snowflake-qualification-manifest.test.mjs scripts/snowflake-qualification-setup-manifest.test.mjs
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib snowflake_mutation_read -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib mutation_read_process_tests -- --include-ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib batch_outcome_recording -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --features test-harness --lib drivers::snowflake_process::tests:: -- --include-ignored --test-threads=1
+pnpm validate
+```
+
+`final-source-and-storage.json` confirms all 344 focused/full recorded inputs
+still match the passing receipts. An additional 228 frontend/configuration inputs
+match the previous passing full-validation receipt. They were not separately
+hashed at this run's start; this is not a claim of a new full frozen 565-input
+snapshot. The actual full validation command passes against the checkout.
+Debug artifacts occupy 9,869,588 KiB (about 9.4 GiB) and free space is
+199,039,209,472 bytes (about 185.4 GiB). The preserved normal executable remains
+34,912,112 bytes, SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+The consumed cleanup approval is not reused. Reduced debug symbols, disabled
+incremental compilation, serialized builds and the 20 GiB free-space floor remain.
+
+Exact commands, source hashes, logs, failures, timings and disk snapshots are in
+`.cache/verification/snowflake-mutation-read-owner/`. No new UI workflow exists
+in this increment, so these checks do not claim UI editing, account behavior,
+normal package installation or restart acceptance. Full same-session freshness,
+native dispatch/manual ownership, broader codecs, staging/import, normal-package
+qualification and owner acceptance remain required. All earlier account
+approvals are consumed or expired; `SANDBOX.BILLIE_TESTING` remains the allowed
+disposable table location subject to a fresh exact plan. No authentication,
+account SQL, fixture service startup, installation, publishing or additional
+cache deletion occurs. The preserved normal schema7 app is distinct from current
+schema8 source. The private Site remains unpublished and the persistent Goal
+stays incomplete.
+Source and regression tests are committed locally as `3c6767f`; no push occurs.
+
 ### Snowflake native edit snapshots (13 November 2026, local foundation)
 
 Base `aec290e`, existing task branch. Three reused `gpt-6.1-sol` high-effort

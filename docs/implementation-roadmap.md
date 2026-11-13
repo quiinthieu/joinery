@@ -68,8 +68,16 @@ settle; a recording failure must never select the no-original path to discard
 known evidence. The retirement/group API has no application dispatch caller.
 All 35 focused snapshot/codec, actual-helper adapter and existing relation cases
 pass; see the [native snapshot ledger](replacement-verification.md#snowflake-native-edit-snapshots-13-november-2026-local-foundation).
-Build a dedicated typed adapter and connect
-its initial pin, retained acknowledgement recording and post-reap release.
+The new [owned edit integration](snowflake-owned-edit-integration.md) adds the
+closed single-read pending-owner metadata primitive and Studio-owned recording
+cells. Its atomic native handoff retains the real terminal, binds exact physical
+helper/private operation/request identity, excludes abandonment and preserves a
+conservative hold across dispatch unwind. Idle groups retain rollback safety
+memory and exact retirement observers. Shutdown/restore account for these local
+obligations. The complete freshness bracket, typed adapter and Studio run owner
+remain required; a single metadata read cannot establish freshness. Build the
+adapter and connect its initial pin, retained original recording, native manual
+owner and post-reap release.
 The generic grid's committed-success return cannot represent pending work, and
 its primary-key deduplication cannot represent distinct keyless originals.
 Complete native review/dispatch integration. Add a reviewed owner-scoped

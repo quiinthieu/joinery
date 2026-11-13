@@ -1,5 +1,19 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Owned Snowflake edit integration
+
+The internal helper/native transport now has seven closed owner-scoped metadata
+read kinds, with exact physical owner checks, fixed SQL/bounds, credit streaming
+and cancellation that seals native admission before terminal publication. Studio
+also retains batch recording candidates, actual terminal watches, compact
+originals and protected rollback memory independently of tabs/callers. Atomic
+native dispatch rejects mismatched helpers/operations and excludes abandonment.
+These are prerequisites, not enabled grid/CSV workflows. The driver still needs
+the complete pending-owner freshness bracket, typed dispatch and retained native
+manual ownership; broader codecs, UI/import, real-account, normal package and
+owner acceptance remain required. See the [integration contract](snowflake-owned-edit-integration.md)
+and [source-scoped verification](replacement-verification.md#snowflake-owned-edit-integration-13-november-2026-local-foundation).
+
 ## Native Snowflake edit snapshots
 
 External-browser previews on explicitly writable reviewed-DML profiles now retain

@@ -1,5 +1,23 @@
 # Implementation and release status
 
+## Owned Snowflake edit integration (13 November 2026, local foundation)
+
+A closed pending-owner metadata transport and Studio-owned original-recording
+layer are implemented. Atomic dispatch binds the exact native operation/helper,
+retains its actual terminal and excludes concurrent abandonment. Reads preserve
+finish capacity; active cancellation seals admission before its result becomes
+visible. Protected rollback memory and known originals survive caller loss and
+local capture/settlement failures. See the [contract](snowflake-owned-edit-integration.md)
+and [evidence ledger](replacement-verification.md#snowflake-owned-edit-integration-13-november-2026-local-foundation).
+All 21 focused, 55 native process and 439 helper cases pass, along with full
+application validation (1,038 frontend and 825 standard Rust cases). These are
+local/synthetic-SDK checks; 146 default fixture cases remain intentionally ignored.
+The typed driver/Studio run owner, complete freshness bracket, data refresh,
+broader codecs, grid/CSV UI and real-account/normal-package/hands-on acceptance
+remain required. No public editing capability or account effect is enabled. The
+normal schema7 release app is preserved; no publishing, installation, account
+activity or additional cache cleanup occurs. Replacement remains incomplete.
+
 ## Native Snowflake edit snapshots (13 November 2026, local foundation)
 
 External-browser previews on explicitly writable reviewed-DML profiles now retain

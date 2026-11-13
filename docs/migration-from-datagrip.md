@@ -2,6 +2,12 @@
 
 ## Evaluation version notice
 
+The current source adds internal owner-scoped metadata transport and durable
+batch recording ownership, documented in the [integration contract](snowflake-owned-edit-integration.md).
+It adds no migration step or grid/CSV control. Pending transaction editing still
+requires full driver/application integration and account/native acceptance; the
+preserved normal package below does not contain this source increment.
+
 The latest source also retains native Snowflake preview originals and supports
 internal one-use preparation. It introduces no grid/CSV submission control or
 new migration action. Unsupported codecs and native capacity refusal keep a

@@ -263,8 +263,11 @@ closed assignments. Preview retention and an optional `editSnapshotId` response
 field are integrated. There is no new IPC mutation command or editing capability.
 A proposed separate `snowflake_external_grid.rs` adapter will own the lane-bearing
 `PreparedGridOperation` and mandatory admission/original-recording callbacks.
-Shared driver fields and Studio execution/outcome/group registries remain lead
-integration work.
+The [owned integration foundation](snowflake-owned-edit-integration.md) now
+provides Studio recording cells, storage-group/safety retention and an atomic
+native dispatch handoff. Shared driver fields, the lane-bearing manual owner,
+TaskTracker run owner and actual application dispatch remain lead integration
+work.
 
 Preparation accepts only that token, row indices and closed cell assignments.
 Resolve originals and consume a matching token atomically, then create a non-cloneable
@@ -322,8 +325,9 @@ cannot drop an acknowledged outcome.
 Initial automatic/manual preflight may use ordinary metadata while idle. Preparing
 new edits for manual continuation cannot promise fresh target inspection through
 those same paths: the pending helper correctly excludes them, and its existing
-owned checks do not establish fresh complete column/target metadata. Review and
-add a closed owner-scoped verification/read contract before enabling that workflow.
+owned checks do not establish fresh complete column/target metadata. The [closed single-read transport](snowflake-owned-edit-integration.md#pending-owner-metadata-transport)
+now exists, but complete bracketed freshness and the owner-scoped data refresh
+route remain required before enabling that workflow.
 Preserving old catalog revisions alone does not prove freshness. Commit requires
 the separate owned-session observation and disposition checks. Safety rollback
 uses the exact private same-session owner without requiring fresh pre-boundary
