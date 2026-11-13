@@ -8,6 +8,60 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Snowflake retirement observer (13 November 2026, local foundation)
+
+Base `bff100a`, existing task branch. Three reused `gpt-6.1-sol` high-effort
+agents review native snapshot/adapter contracts, implement the bounded observer,
+and independently review correctness. The lead owns shared wiring, the SQLite
+integration regression, documentation and serialized verification. No model
+fallback or global configuration change occurs.
+
+Integration review finds a lifecycle gap in the previous foundation: a weak
+helper identity cannot retrieve native reap proof once the last supervisor is
+gone, while the external shutdown task retains only its public shutdown report.
+This is a source-established prerequisite, not a reproduced enabled grid failure.
+The new opaque observer captures exact weak identity and private retirement/reaper
+watch receivers before disconnect. It can mint proof after supervisor destruction
+without retaining the driver, helper, or cleanup-root authority. Logical close,
+channel closure and dead weak identity do not substitute for actual reaping.
+The external driver exposes the observer for future native group ownership.
+
+| Evidence label | Actual result |
+| --- | --- |
+| `observer-process` | All 51 feature-enabled process cases pass, including explicitly selected ignored actual-child cases. Exit zero, 38.385 seconds including compilation, all 331 inputs unchanged. Six new cases cover actual last-supervisor drop, cancellation/timeout retry, no process/root retention, reused UUIDs, private flags and both closed-watch publication orders. Actual helpers use synthetic SDK data; internal watch guard fixtures do not claim actual reaping |
+| `observer-storage` | All eight native-child/real-SQLite retirement cases pass. Exit zero, 6.810 seconds, all 331 inputs unchanged. The new post-drop case refuses release while the original is reserved or captured, settles exact bytes, then releases only the local binding/credit as unknown without changing audits. Its owned shell/cat child performs no SDK or SQL work; archived batch evidence is synthetic |
+| `observer-validate` | Full pnpm validate passes: 1,038 frontend / 789 standard Rust cases, 146 intentional default fixture ignores, frontend formatting/contracts/TypeScript/build, Rust formatting, desktop compilation and strict all-target/all-feature Clippy. Exit zero, 256.005 seconds, all 559 inputs unchanged. The six new feature-enabled observer cases are explicitly run in the process command above. Existing ts-rs serde-attribute and proc-macro-error2 future-compatibility warnings remain |
+| independent review | Frozen source review finds no material issue in opaque issuance, sealed admission, exact physical identity, wait cancellation, non-retention, or original-obligation ordering. Graph transport/coverage calls fail with Transport closed; targeted current source is the bounded fallback, with no exhaustive graph claim |
+
+Exact commands, source hashes, exit status, timings and disk snapshots are in
+`.cache/verification/snowflake-retirement-observer/`. Focused reproduction uses
+the same three commands as the previous retirement checkpoint below; explicitly
+set `JOINERY_TEST_NODE` to the prepared local Node 24 executable for process cases.
+No Snowflake authentication, account reads/writes, fixture service startup,
+UI changes or normal release packaging are involved. The schema7 normal app stays preserved.
+This remains an internal prerequisite with no grid/CSV application dispatcher.
+
+The [next native integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
+records the reviewed sequence for retained snapshots, closed metadata codecs,
+one-use preparation, pre-reserved recording and group owners that survive tabs
+and disconnect. Pending-owner metadata refresh remains a protocol dependency;
+safety rollback must not depend on refreshing target metadata. These proposals
+are incomplete implementation work, and full replacement/owner acceptance
+remains open. The Site stays unpublished under the owner's explicit boundary.
+Documentation review corrects an ambiguity in the proposed integration: every
+retained original must settle; only an obligation without a retained original
+may use explicit no-original abandonment. Capture failure never authorizes
+discarding known evidence. The corrected wording is independently rechecked.
+Code and regression tests are committed locally as `926444d`; no push occurs.
+The final `final-source-and-storage.json` comparison confirms all 559 full-check
+and both 331-input focused scopes still match. The preserved normal executable
+remains 34,912,112 bytes with SHA-256
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+Free space is 198,847,275,008 bytes (about 185.2 GiB); debug artifacts remain
+about 9.1 GiB and release artifacts about 3.0 GiB. No build process remains.
+The previously approved 135.8 GiB cleanup is already consumed and is not repeated.
+Reduced debug profiles, serialized builds and the 20 GiB floor remain in force.
+
 ### Snowflake helper retirement (13 November 2026, local foundation)
 
 Base `fdcd6a1`, task branch `feat/datagrip-replacement`. Three reused

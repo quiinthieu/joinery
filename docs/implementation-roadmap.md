@@ -52,6 +52,15 @@ process cases pass, including a reproduced/corrected shared capture-admission
 gap; see the [retirement ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation).
 Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
 compilation and strict checks on unchanged source inputs.
+The follow-up native retirement observer now preserves exact proof after the
+last supervisor drops without retaining process/root authority. All 51 process
+and eight child/SQLite retirement cases pass, and full validation passes 1,038
+frontend / 789 standard Rust cases plus desktop/strict checks. See the
+[observer ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation).
+The [reviewed next native integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
+records the bounded snapshot/codec and typed adapter sequence; these remain
+unimplemented. Every retained original must settle; a recording failure must
+never select the no-original path to discard known evidence.
 The API has no application caller. Build a dedicated typed adapter and connect
 its initial pin, retained acknowledgement recording and post-reap release.
 The generic grid's committed-success return cannot represent pending work, and

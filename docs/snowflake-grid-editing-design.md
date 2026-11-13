@@ -245,6 +245,63 @@ would need its own reviewed guard and acknowledgement model. If used later,
 the default 2025_01 behavior can clear it after non-DML statements. The compiler
 does not choose or confer authority on either execution strategy.
 
+## Next native integration contract
+
+The source review on 13 November establishes the following proposed sequence;
+these APIs and application callers are not implemented by that review. Retain
+one native snapshot per target in a globally bounded store, with opaque tokens,
+exact physical helper identity, application session, full observed context,
+catalog/inspection revisions, retained relation and ordered column metadata.
+Move the exact lossless preview rows into that store; do not retain a second
+native result copy or accept browser originals. Replacing a preview, refreshing
+metadata, changing context, disconnecting or expiring the token revokes it.
+The proposed `drivers/snowflake_edit_snapshot.rs` owns private
+`NativeEditBinding`, `SnapshotStore::retain/prepare` and non-cloneable
+`PreparedSnowflakeEdits`; `SnapshotMutation` contains only row indices and
+closed assignments. The lead integrates preview retention and shared driver/IPC
+types. A separate `snowflake_external_grid.rs` adapter owns the lane-bearing
+`PreparedGridOperation` and mandatory admission/original-recording callbacks.
+Shared driver fields and Studio execution/outcome/group registries remain lead
+integration work, separate from these proposed module boundaries.
+
+Preparation accepts only that token, row indices and closed cell assignments.
+Resolve originals and consume the token atomically, then create a non-cloneable
+compiled plan that continues owning its resource reservation. Validate both text
+character and byte dimensions and corroborate closed NUMBER/BOOLEAN metadata;
+reject ambiguous defaults, identity or unsupported codecs explicitly. Proposed
+count/byte/expiry bounds require separate capacity acceptance and do not define
+the owner's workload. The existing compiler remains the final shape/overlap guard.
+
+The adapter must hold its lane from fresh preflight through durable admission
+and original capture, validate the entire encoded request against the transport
+frame before SQL, and serialize final dispatch with shutdown. Reserve outcome
+memory before spawning, reserve durable capacity and initial rollback credit,
+arm the outcome owner, and pin the exact helper before invoking the adapter.
+Retain exact compact evidence before callbacks, disconnect or publication.
+Persistence failure keeps the original bytes, gate and reservation for SQL-free
+retry. A successful driver call must never collapse pending work into generic
+committed success.
+
+Studio-owned outcome cells and manual-group owners must outlive tabs and
+disconnected sessions. Groups retain their lease, safety-slot ownership and a
+native retirement observer captured before dispatch. Reaping permits local
+release only after every retained original settles. An obligation with no
+retained original may instead be explicitly settled as no-original by its owner;
+that path must never discard known evidence. Reaping proves no remote rollback.
+Recovery, cancellation and shutdown must include these registries. Caller loss
+cannot drop an acknowledged outcome.
+
+Initial automatic/manual preflight may use ordinary metadata while idle. Preparing
+new edits for manual continuation cannot promise fresh target inspection through
+those same paths: the pending helper correctly excludes them, and its existing
+owned checks do not establish fresh complete column/target metadata. Review and
+add a closed owner-scoped verification/read contract before enabling that workflow.
+Preserving old catalog revisions alone does not prove freshness. Commit requires
+the separate owned-session observation and disposition checks. Safety rollback
+uses the exact private same-session owner without requiring fresh pre-boundary
+context/settings or an edit snapshot, then verifies post-boundary disposition.
+These dependencies do not make manual mode, broader codecs or CSV optional.
+
 ## Reproducible acceptance cases
 
 | Case | Required evidence |

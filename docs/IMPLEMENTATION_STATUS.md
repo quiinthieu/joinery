@@ -1,11 +1,25 @@
 # Implementation and release status
 
+## Retained reap proof (13 November 2026, local foundation)
+
+The opaque native retirement observer preserves proof after the last supervisor
+drops, retaining no driver, helper process or cleanup-root authority. All 51
+feature-enabled process and eight native-child/SQLite retirement cases pass;
+full validation passes 1,038 frontend and 789 standard Rust cases, desktop
+compilation and strict checks. The [ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation)
+records exact source scope, review and remaining gates. The API has no grid/CSV
+application caller. The [next integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
+remains proposed work, including native originals and owner-scoped pending
+refresh. No account activity or normal app packaging occurs; the prior runnable
+schema7 app is preserved. Replacement and owner acceptance remain incomplete.
+
 ## Helper retirement (13 November 2026, local foundation)
 
 An opaque identity pins a manual group to the exact physical helper, and native
-reap proof permits release only after its recording obligations are settled or
-explicitly abandoned. Uncertain outcomes remain unknown; originals and audits
-are preserved. Seven real-child/SQLite and 45 feature-enabled process cases pass.
+reap proof permits release only after every known original settles; only an
+obligation without a retained original can be explicitly abandoned. Uncertain
+outcomes remain unknown; originals and audits are preserved. Seven
+real-child/SQLite and 45 feature-enabled process cases pass.
 Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
 compilation and strict checks, with 146 intentional default fixture ignores.
 The [ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation)

@@ -1,5 +1,17 @@
 # DataGrip workflow comparison and Joinery evidence
 
+## Retained post-drop retirement proof
+
+The internal observer now preserves exact native reap proof after the supervisor
+is dropped, without retaining the process or cleanup root. All 51 process and
+eight child/SQLite retirement cases pass; full validation passes 1,038 frontend
+and 789 standard Rust cases plus desktop/strict checks. See the
+[source-scoped ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation).
+This closes a native lifetime prerequisite; grid/CSV dispatch, native edit
+snapshots, broader codecs, pending refresh, normal app/account and owner
+acceptance remain incomplete. The [reviewed next contract](snowflake-grid-editing-design.md#next-native-integration-contract)
+is proposed implementation, not additional verified capability.
+
 ## Helper retirement while the Studio remains alive
 
 The internal batch foundation now pins the exact physical helper at initial

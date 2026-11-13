@@ -120,6 +120,19 @@ a weak reference to the exact supervisor allocation and a canonical generation
 UUID. Reusing the same UUID for another physical helper cannot authorize release.
 Neither handle retains the helper process or supplies remote disposition proof.
 
+Capture `Supervisor::retirement_observer()` before relinquishing the supervisor;
+the external driver exposes the same native observer before disconnect. Its
+opaque `HelperRetirementObserver` retains only the exact weak identity and the
+private retirement/reaper watch receivers. Unlike a retained public cleanup
+report, it can issue the opaque proof after the last supervisor has dropped.
+Both the private sealed-retirement publication and actual-child
+`child_started && reaped` receipt remain mandatory. Channel closure or a dead
+weak identity alone grants no proof. It retains neither the driver/process nor
+cleanup-root removal authority; bounded waiting can be canceled or retried
+without losing the eventual proof. Capture it in the future Studio-owned manual
+group before dispatch, so removing a disconnected session cannot erase local
+retirement authority. This observer alone does not implement that registry.
+
 Pin the native identity against the initial `NewManual` reservation before
 dispatch. Pinning requires its exact current in-flight reservation, original
 owner/gate, ordinal one, zero prior pending batches and matching durable
@@ -133,8 +146,10 @@ identity and the matching reaped proof. Acquire the group's admission lock befor
 SQLite and retain it through commit and memory publication. Refuse release while
 any reservation, captured-but-unsettled original or volatile rollback obligation
 remains. The original execution task may still hold an acknowledgement after its
-helper exits; it must finish recording or explicitly abandon its own reservation
-first. Do not use whole-Studio dead-owner recovery for this case.
+helper exits; it must finish recording that known original first. Only an
+obligation with no retained original may use the explicit no-original abandonment
+path. Capture failure never authorizes discarding known evidence. Do not use
+whole-Studio dead-owner recovery for this case.
 
 Capture also acquires this shared group admission lock before SQLite. A second
 `Persistence` handle using the genuine reservation must not cross initial pin
