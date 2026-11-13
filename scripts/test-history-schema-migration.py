@@ -1,6 +1,6 @@
-"""Exercise real v6/v7 harness processes without accounts or database execution.
+"""Exercise real older/newer v6/v7/v8 harnesses without accounts or engine SQL.
 
-First preserve the v6 harness outside target/debug. This runner never builds,
+First preserve the older harness outside target/debug. This runner never builds,
 copies binaries, edits user state, or manufactures a schema version. A probe is
 available before the new harness exists; the full run requires both binaries.
 """
@@ -72,10 +72,16 @@ def assert_version(state, version):
     assert state["userVersion"] == version, state
     for table in METADATA_TABLES:
         assert f"{table}_v{version}" in state["tables"], state
-        other = 7 if version == 6 else 6
-        assert f"{table}_v{other}" not in state["tables"], state
-    if version == 7:
+        for other in (6, 7, 8):
+            if other != version:
+                assert f"{table}_v{other}" not in state["tables"], state
+    if version >= 7:
         assert "outcome_operations_v7" in state["tables"], state
+    if version >= 8:
+        for table in ("batch_operations_v8", "batch_captures_v8",
+                      "manual_transactions_v8", "manual_transaction_members_v8",
+                      "manual_transaction_bindings_v8"):
+            assert table in state["tables"], state
 
 
 class Harness:
@@ -155,7 +161,7 @@ class Harness:
         self.stderr.close()
 
 
-def run_case(old, new, directory):
+def run_case(old, new, directory, old_schema=6, new_schema=7):
     root = directory / "metadata"
     root.mkdir(mode=0o700)
     children = []
@@ -165,11 +171,14 @@ def run_case(old, new, directory):
         children.append(old_child)
         old_child.ready()
         before = snapshot(root)
-        assert_version(before, 6)
+        assert_version(before, old_schema)
         assert before["ownerFiles"], "The old Studio did not create an owner lease"
         assert before["rowCounts"]["history_owners_v6"] == 0
-        assert before["rowCounts"]["history_v6"] == 0
-        assert before["rowCounts"]["audit_v6"] == 0
+        assert before["rowCounts"][f"history_v{old_schema}"] == 0
+        assert before["rowCounts"][f"audit_v{old_schema}"] == 0
+        if old_schema >= 7:
+            assert before["rowCounts"]["outcome_operations_v7"] == 0
+            assert before["rowCounts"]["outcome_bindings_v7"] == 0
         result.update(oldPid=old_child.pid, oldIdle=before)
         if new is None:
             result["passed"] = True
@@ -195,7 +204,7 @@ def run_case(old, new, directory):
         children.append(upgraded)
         upgraded.ready()
         after = snapshot(root)
-        assert_version(after, 7)
+        assert_version(after, new_schema)
         result["newPid"] = upgraded.pid
         result["migrated"] = after
         upgraded.stop()
@@ -205,8 +214,8 @@ def run_case(old, new, directory):
         children.append(stale)
         result["oldAgainstNew"] = stale.rejected(NEWER_SCHEMA_ERROR, "Unsupported")
         final = snapshot(root)
-        assert final == before_old_reopen, "Old startup changed v7 metadata"
-        assert_version(final, 7)
+        assert final == before_old_reopen, "Old startup changed newer metadata"
+        assert_version(final, new_schema)
         result["unchangedAfterOldRejection"] = final
         result["passed"] = True
     except Exception as error:
@@ -225,6 +234,8 @@ def run_case(old, new, directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--old-harness", type=Path, required=True)
+    parser.add_argument("--old-schema", type=int, choices=(6, 7), default=6)
+    parser.add_argument("--new-schema", type=int, choices=(7, 8))
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--new-harness", type=Path)
     mode.add_argument("--probe-old", action="store_true")
@@ -232,6 +243,9 @@ def main():
     parser.add_argument("--output-dir", type=Path,
                         default=Path(".cache/verification/history-migration-v6"))
     args = parser.parse_args()
+    new_schema = args.new_schema if args.new_schema is not None else args.old_schema + 1
+    if new_schema <= args.old_schema:
+        parser.error("Migration verification requires a newer supported schema")
     old = binary_inventory(args.old_harness)
     new = binary_inventory(args.new_harness) if args.new_harness else None
     if new and old["sha256"] == new["sha256"]:
@@ -241,7 +255,8 @@ def main():
     runs = []
     for _ in range(args.runs):
         directory = Path(tempfile.mkdtemp(prefix="probe-" if args.probe_old else "migration-", dir=output))
-        row = run_case(Path(old["path"]), Path(new["path"]) if new else None, directory)
+        row = run_case(Path(old["path"]), Path(new["path"]) if new else None,
+                       directory, args.old_schema, new_schema)
         runs.append(row)
         print(json.dumps({"passed": row["passed"], "directory": str(directory),
                           "error": row.get("error")}), flush=True)
@@ -252,13 +267,14 @@ def main():
         assert binary_inventory(args.new_harness) == new, "New harness changed during verification"
     receipt = {
         "passed": len(runs) == args.runs and all(row["passed"] for row in runs),
-        "mode": "old-schema-probe" if args.probe_old else "actual-v6-v7-migration",
+        "mode": "old-schema-probe" if args.probe_old else f"actual-v{args.old_schema}-v{new_schema}-migration",
+        "oldSchema": args.old_schema, "newSchema": new_schema if new else None,
         "oldHarness": old, "newHarness": new, "runs": runs,
         "runnerSha256": sha256(Path(__file__).resolve()),
         "scope": "Actual isolated harness processes; metadata startup/bootstrap only. No engine connection, authentication, database SQL dispatch or account access.",
         "delayedStartupBeforeOwnerClaim": {
             "status": "not-proved",
-            "reason": "The preserved v6 harness has no exact post-Persistence/pre-owner-claim pause control. This runner does not manufacture PRAGMA versions or claim that race was exercised."},
+            "reason": "The preserved older harness has no exact post-Persistence/pre-owner-claim pause control. This runner does not manufacture PRAGMA versions or claim that race was exercised."},
     }
     path = output / ("old-probe.json" if args.probe_old else "migration.json")
     path.write_text(json.dumps(receipt, indent=2) + "\n")
