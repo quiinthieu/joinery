@@ -13,10 +13,22 @@ Ten actual PostgreSQL script cases, both actual owned-child crash cases, two
 preserved-v6/current-v7 migration cases and seven actual Chromium workflows pass.
 Independent review found no remaining material issue in its recorded scope.
 All 73 synthetic SDK and 27 offline runner cases pass (two optimized performance
-cases remain ignored). Packaging is next. The prior normal
-schema-6 app is separately preserved; source checks do not qualify its replacement.
+cases remain ignored). The normal SDK-bearing ARM64 app is packaged from clean
+`d6cfb2a`; resources, strict ad-hoc signature, original license bytes and guarded
+SDK 3.4.1 startup pass with zero authentication/SQL. It is local and uninstalled
+at `src-tauri/target/release/bundle/macos/Joinery.app`, version 0.1.0. The prior
+schema-6 app is separately preserved with its complete inventory unchanged.
 See the [ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
 for initial failures, corrections and the one browser-fixture source-pin difference.
+
+The 34,912,112-byte executable SHA-256 is
+`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`.
+Packaging took 280.927 seconds, with the recorded pre-existing LLVM
+stripping and ts-rs warnings. All 568 package source hashes match the corrected
+browser and both synthetic native suites; earlier full/database/migration scopes
+differ only in the documented browser assertion. After packaging, 192.0 GiB is
+free, debug artifacts occupy 9.07 GiB and release 3.05 GiB.
+The approved cleanup reclaimed 135.8 GiB; no further deletion occurred.
 
 Lifetime marker/owner/ticket/privacy collection, full-capacity/RSS evidence, the
 exact delayed-preclaim migration race, imported historical boundary details and

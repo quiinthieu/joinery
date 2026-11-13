@@ -38,6 +38,9 @@ installation or publication. The existing schema-6 normal app is preserved.
 | `outcomes-doc-links` / `outcomes-doc-review` | All 794 repository-relative Markdown path targets exist; fragments not exhaustively checked. Read-only seven-doc review found two stale baseline/memory descriptions and one schema-section pointer; corrected without removing acceptance gates. Exact new outcome-ledger anchor checked separately |
 | `outcomes-fixture-stopped` | Only the lead-owned isolated PostgreSQL container `joinery-recovery-1794497502-postgres-1` stopped after all database/browser checks. Unrelated logistics database remains running unchanged; no fixture deleted |
 | `outcomes-prior-app-preservation` | Clean schema-6 `f39dce3` app preserved with APFS copy-on-write before packaging. All 15,120 inventory entries match source and strict signatures pass. Executable SHA-256 remains `3162d333473fea17f7670816f4e2599957e208dfe2b18beaf2b7d7ecdd7e1b46`; regular-file inventory 242,617,575 bytes. Measured free-space decrease during the copy was 6,123,520 bytes; no artifact deleted or installed |
+| `outcomes-normal-package` | Normal SDK-bearing ARM64 app packages from clean `d6cfb2ac1a1800e960b9dc794f648f0d0871e465`, exit zero, 280.927 seconds, all 568 sources unchanged. Resource and SDK 3.4.1 guarded-startup checks pass with zero authentication/SQL. Existing nonfatal LLVM stripping and ts-rs attribute warnings remain |
+| `outcomes-app-artifact` | Version 0.1.0, 34,912,112-byte ARM64 executable, SHA-256 `0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`. Strict ad-hoc signature and exact source/Git/bundle license bytes pass. Production source matches all eight final scopes; browser fixture difference is recorded below. Prior schema-6 app retains all 15,120 inventory entries unchanged. Local and uninstalled; no normal UI, account or owner acceptance |
+| `outcomes-final-doc-review` | Read-only seven-document review confirms package identity, exact source qualifications and open acceptance gates. A blank line splitting the new package rows from their Markdown table was corrected. Final path check passes all 794 relative targets; fragments are not exhaustively checked. No application source changed after packaging |
 
 After the corrected run, fixtures use canonical UUIDs and assert Admitted plus
 Captured while atomic settlement fails, then exact completion/audit-once after
@@ -48,7 +51,8 @@ requires all concurrent opens to succeed. The closed descriptor decoder now
 avoids internally tagged generic buffering and rejects malformed arrays.
 Full validation, database, migration and browser checks now pass in their named
 scopes. The 73 synthetic SDK and 27 offline runner cases also pass; two separate optimized
-performance cases remain ignored. Normal packaging remains pending.
+performance cases remain ignored. The normal package passes its separately
+recorded resource/signature/license and guarded-startup checks.
 
 Source-pin comparison (`outcomes-source-pin-comparison.json`): the full-validation,
 PostgreSQL, process and migration
@@ -65,7 +69,7 @@ review then found no remaining material issue in storage, runtime, plain/encrypt
 restore and browser changes. Latest relevant graph generation is
 2026-11-13T06:20:52Z; reviewed paths report metadata-match/no recorded issue,
 with direct source checks for material claims. This is bounded Tier 2 evidence,
-not proof of completeness. Final package evidence remains pending. The
+not proof of completeness. Final package evidence is recorded above. The
 [contract](history-durable-outcomes-design.md) records unresolved lifetime,
 imported historical boundary, delayed-preclaim and packaged/account gates.
 

@@ -6,8 +6,10 @@ Schema-7 capture/settlement passes full validation (1,038 frontend / 720 standar
 Rust cases), actual PostgreSQL crash recovery, seven browser workflows and
 preserved-v6 migration checks. Independent review has no remaining material
 finding within scope. All 73 synthetic SDK and 27 offline runner cases pass;
-two optimized performance cases remain ignored. Packaging is next; the prior
-schema-6 `f39dce3` app is separately preserved. The
+two optimized performance cases remain ignored. The normal ARM64 app from clean
+`d6cfb2a` passes resources, strict ad-hoc signature, original licenses and guarded
+SDK startup with zero authentication/SQL. It is local and uninstalled. The prior
+schema-6 `f39dce3` app is separately preserved unchanged. The
 [ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
 records the one corrected-browser-fixture source-pin difference. The
 [contract and remaining gates](history-durable-outcomes-design.md) distinguish
@@ -38,7 +40,7 @@ new source or actual Snowflake behavior.
 | Plans and performance investigation          | Bounded estimated-plan and capture/comparison slices recorded below                                                                                                              | Live Snowflake plans/profiling and complete applicable DataGrip investigation workflows remain incomplete                                                   |
 | Schema changes and engine behavior           | Reviewed generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE; [DDL contract](snowflake-sdk-ddl-design.md)                                                                 | Account effects, broader objects/actions, schema diff/migrations, concurrent actors and engine-specific behavior remain incomplete                          |
 | Keyboard access and everyday usability       | Recorded browser keyboard/focus workflows and isolated native smoke checks                                                                                                       | Full daily keyboard walkthrough, canvas accessibility, assistive technology and hands-on macOS acceptance remain open                                       |
-| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `f39dce3` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL; all 562 source hashes match the six final check scopes | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
+| Installation, packaging and updates          | Normal SDK-bearing ARM64 bundle from clean `d6cfb2a` passes resources, strict ad-hoc signature, original license bytes and guarded helper startup with zero authentication/SQL; production source matches all eight final check scopes, with the documented one browser-fixture assertion difference in earlier receipts | Current app is local and uninstalled; supported installation/update, Developer ID/notarization and packaged UI/SSO/restart/owner acceptance remain open |
 
 The twelve areas above are not the complete baseline. AI/agent assistance,
 diagrams, data/full-text search and comparison, Git/Local History, settings sync,
@@ -67,7 +69,7 @@ not substitute for completing the rows.
 | Ownership and restore safety | Live locks protect pending rows; missing proofs remain unresolved; invalid proofs fail safely. Runtime completion/audit precede binding release. Restore excludes admission/privacy changes and strips imported ownership authority | Dead-owner fallback cannot reconstruct a missing audit payload. No same-user filesystem tamper resistance claim; lifetime proof/ticket/privacy budgets, durable failed completion payloads and full-capacity evidence remain required |
 
 See the [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
-The local, uninstalled package is clean `f39dce3`, schema 6. The preceding
+At this preceding checkpoint the local package is clean `f39dce3`, schema 6. The preceding
 `952758b` schema-5 app is separately preserved with unchanged inventory. Keep
 older apps separate from schema-6 evaluation roots. The following checkpoints are
 historical source-scoped evidence, not acceptance of the new source.

@@ -3,8 +3,10 @@
 Status: schema-7 storage/runtime implementation passes full validation, actual
 PostgreSQL crash recovery, browser restart/reopen and preserved-v6 migration
 checks. All 73 synthetic SDK and 27 offline runner cases pass; two optimized
-performance cases remain ignored. Packaging is next. The last verified normal
-app remains schema 6 at `f39dce3`, separately preserved.
+performance cases remain ignored. The normal SDK-bearing ARM64 app from clean
+`d6cfb2a` passes package/resource/signature/license and guarded helper-startup
+checks with zero authentication/SQL. It is local and uninstalled; normal UI,
+SSO and owner acceptance remain open. The prior schema-6 app is preserved.
 This is a required correctness prerequisite, not DataGrip replacement acceptance.
 
 The first source-stable core run (`outcomes-core-first`, 13 November 2026)
@@ -235,8 +237,9 @@ pre-owner-claim migration race remains unverified: that frozen harness has no
 pause hook for the exact interleaving. Do not infer it from a hand-built PRAGMA.
 
 No account, normal packaged UI/SSO/restart, installation or hands-on acceptance
-is established by this source increment. Existing schema-6 evidence must not be
-reported as proof of the schema-7 implementation.
+is established by these checks. Resource/signature and guarded helper-startup
+checks establish only their named package scope. Existing schema-6 evidence must
+not be reported as proof of the schema-7 implementation.
 
 Resource review checked JSON escaping against legal identity bounds: targets
 forbid control characters and have three components of at most 255 characters;

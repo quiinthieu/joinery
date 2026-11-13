@@ -5,8 +5,10 @@
 Schema-7 durable capture passes full validation, isolated PostgreSQL crash tests,
 actual browser restart/reopen and preserved-v6 migration checks. All 73 synthetic
 SDK and 27 offline runner cases pass; two optimized performance cases remain
-ignored. Packaging is next. The last verified schema-6 app is
-separately preserved. See [durable original outcomes](history-durable-outcomes-design.md)
+ignored. The normal SDK-bearing ARM64 app from clean `d6cfb2a` passes resource,
+signature, license and guarded SDK-startup checks with zero authentication/SQL.
+It is local and uninstalled; the previous schema-6 app is preserved unchanged.
+See [durable original outcomes](history-durable-outcomes-design.md)
 for the implemented contract and open acceptance gates; this is not replacement
 acceptance.
 
@@ -119,9 +121,9 @@ recreate a missing row or removed SQL.
 Full validation and both actual PostgreSQL child-process crash cases pass,
 including exact known completion after a failed history UPDATE. The
 [durable-outcome ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
-records completed browser/migration qualification. The normal app remains the
-schema-6 artifact until a separately verified package is recorded. The console
-publication-panic fallback preserves known status with unavailable duration when
+records completed browser/migration qualification and the clean-`d6cfb2a` normal
+app package. Normal packaged UI/SSO/restart and owner acceptance remain open.
+The console publication-panic fallback preserves known status with unavailable duration when
 the monotonic timer is unavailable. No recovery automatically reconnects or
 replays SQL.
 
@@ -132,8 +134,8 @@ carry a terminal status, measured duration or completed execution/DML/DDL
 evidence. An unknown completion cannot carry a measured duration. Schema 7 adds
 bounded original capture and physically fences cached schema-6 history/profile/
 audit writers. Preserve an original backup and use a separate evaluation metadata
-root; the last verified `f39dce3` app cannot open schema-7 metadata. Do not run older and newer
-builds against the same directory. Lease files are retained, and ticket/privacy/
+root; the preserved `f39dce3` schema-6 app cannot open schema-7 metadata. Do not
+run older and newer builds against the same directory. Lease files are retained, and ticket/privacy/
 owner lifetime budgets remain incomplete. The proof assumes Joinery's private
 directory and stable files; it does not defend against a same-user actor replacing
 an owner file with another valid inode.
@@ -186,9 +188,9 @@ review finds no material issue. Exact
 source scopes, commands, initial failures and corrections are
 recorded in the ledger. The preceding normal SDK-bearing ARM64 package from clean
 `f39dce3` passes resources, strict ad-hoc signature and guarded SDK startup with
-zero authentication/SQL. It is local and uninstalled at
-`src-tauri/target/release/bundle/macos/Joinery.app`. Its 562 captured source hashes
-match the six final validation/database/browser/native scopes. The previous
+zero authentication/SQL. It is preserved at
+`.cache/verification/reviewed-console/preserved-release-f39dce3/Joinery.app`.
+Its 562 captured source hashes match the six final validation/database/browser/native scopes. The previous
 `952758b` schema-5 app is separately preserved with its inventory unchanged;
 keep older apps and evaluation metadata roots separate.
 Normal packaged owner interaction and restart acceptance remain open.

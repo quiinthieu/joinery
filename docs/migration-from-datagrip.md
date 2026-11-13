@@ -4,8 +4,10 @@
 
 Schema-7 source passes full validation, actual PostgreSQL crash, browser and
 preserved-v6 migration checks. All 73 synthetic SDK and 27 offline runner cases
-pass; two optimized performance cases remain ignored. Packaging is next.
-The last verified normal app remains schema 6 at `f39dce3`. Use separate
+pass; two optimized performance cases remain ignored. The normal SDK-bearing
+ARM64 app from clean `d6cfb2a` passes resource/signature/license and guarded SDK
+startup checks with zero authentication/SQL. It is local and uninstalled. The
+previous schema-6 `f39dce3` app is preserved unchanged. Use separate
 throwaway metadata roots for source evaluation and keep an original backup;
 older apps cannot open the upgraded schema. Follow the
 [durable-outcome contract](history-durable-outcomes-design.md) for current
@@ -23,7 +25,7 @@ without executing it. Current source saves admitted history before
 dispatch and uses SQL-free completion tickets. Clear and profile opt-out prevent
 late completion from restoring removed text. Process-owned recovery has local
 SQLite and actual PostgreSQL crash coverage; full validation, browser and offline
-native checks pass within the ledger's recorded scopes. The local `f39dce3` package
+native checks pass within the ledger's recorded scopes. The local `d6cfb2a` package
 includes these changes; normal packaged owner interaction is still unaccepted.
 Configurable retention, full-capacity and actual Snowflake acceptance remain
 required.
@@ -46,7 +48,7 @@ explicit transaction boundaries and SQL-free receipt/result recovery. It is a
 locally verified implementation with a synthetic SDK, including durable refusal
 response-loss/restart recovery, native paged history and a bounded receipt panel.
 This does not establish real Snowflake effects, current packaged native UI behavior or daily
-replacement readiness. The normal SDK-bearing ARM64 bundle from clean `f39dce3`
+replacement readiness. The normal SDK-bearing ARM64 bundle from clean `d6cfb2a`
 passes resource/signature and guarded helper-startup checks. It is local and
 uninstalled at `src-tauri/target/release/bundle/macos/Joinery.app`; native UI/SSO
 acceptance remains open. See the ledger for its binary hash and build warning.
@@ -75,7 +77,7 @@ Expiry retires the console and preserves its original receipt. It does not prove
 server cancellation, rollback or freedom from charges, so reconcile without SQL
 and investigate an uncertain original before considering another submission.
 See the [query-limit contract](snowflake-console-query-limits.md) and current
-ledger for verification status. The current `f39dce3` bundle includes this setting;
+ledger for verification status. The current `d6cfb2a` bundle includes this setting;
 its native UI and actual account behavior still need acceptance.
 
 Current source upgrades local metadata to schema 7, adds independently durable
@@ -94,7 +96,7 @@ space. **Release retained result rows** separately releases process-local buffer
 after confirmation, preserving original decisions. The existing 10,000-decision
 limits remain. The new [encrypted metadata recovery workflow](encrypted-metadata-recovery.md)
 passes local browser and hidden native verification and is included in the
-current `f39dce3` package. Its recovery workflows were qualified locally at
+current `d6cfb2a` package. Its recovery workflows were qualified locally at
 `f9c1ce2`, before the later history increments. It adds
 separate backup passphrases, encrypted import/export, mandatory encrypted undo
 and bounded SQLite staging; full-capacity resource acceptance remains open.
@@ -542,7 +544,7 @@ authentication/SQL. Three hidden native runs passed 20 check categories with ten
 cleanup cycles each, and reviewed DML passed local browser/helper and shutdown
 checks. Those native results remain pinned to that checkpoint; they do not qualify
 actual Snowflake write or transaction effects. The current local package is the
-clean-`f39dce3` app described above, with its separate checks in the ledger. Normal
+clean-`d6cfb2a` app described above, with its separate checks in the ledger. Normal
 application account acceptance remains open. The app is not installed or released.
 
 Create a Snowflake profile with **External browser SSO**, the existing account

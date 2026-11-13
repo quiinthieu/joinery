@@ -8,8 +8,10 @@ bounded compact retry cells and current-only recovery now pass full validation
 seven browser workflows and preserved-v6 migration checks. Independent review
 found no remaining material issue in its scope. All 73 synthetic SDK and 27
 offline runner cases pass; two optimized performance cases remain ignored.
-Commit the reviewed increment and package from that clean feature commit.
-The prior schema-6 app is separately preserved. See the
+The reviewed increment is committed as `d6cfb2a`; its normal SDK-bearing ARM64
+app passes resource/signature/license and guarded SDK startup checks with zero
+authentication/SQL. It remains local and uninstalled. The prior schema-6 app is
+separately preserved unchanged. See the
 [ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
 for exact results, initial failures and source-pin qualifications.
 
@@ -37,7 +39,7 @@ no material issue. The normal SDK-bearing ARM64 app packages from clean `f39dce3
 in 263.887 seconds. Resources, strict ad-hoc signature, original license bytes and
 guarded SDK startup pass with zero authentication/SQL; see the
 [ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
-The local, uninstalled app now includes schema 6. All 562 source hashes match
+At this preceding checkpoint the local app includes schema 6. All 562 source hashes match
 the six final check receipts. The previous `952758b` schema-5 app is separately
 preserved with its inventory unchanged. Keep evaluation metadata separate from
 older builds. Normal packaged UI/SSO/restart and owner acceptance remain open.
