@@ -358,6 +358,7 @@ fn identity(file: &File) -> AppResult<(u64, u64)> {
 }
 
 struct Stage {
+    #[cfg(unix)]
     parent: Area,
     area: Area,
     name: String,
@@ -370,6 +371,7 @@ impl Stage {
         let area = parent.child(&name)?;
         let marker = area.file("stage-owner", true)?;
         let stage = Self {
+            #[cfg(unix)]
             parent,
             area,
             name,
@@ -598,6 +600,7 @@ fn cleanup_stages(parent: &Area, backups: &Area) -> AppResult<()> {
         }
         if owned {
             drop(Stage {
+                #[cfg(unix)]
                 parent: Area::root(&parent.path)?,
                 area,
                 name: name.to_owned(),

@@ -216,8 +216,11 @@ pub struct RelationConstraintTableReference {
     pub table: TableRef,
 }
 
+#[cfg(unix)]
 pub const MAX_PREVIEW_OFFSET: u32 = 1_000_000;
+#[cfg(unix)]
 pub const MAX_PREVIEW_FILTERS: usize = 16;
+#[cfg(unix)]
 pub const MAX_PREVIEW_FILTER_VALUE_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

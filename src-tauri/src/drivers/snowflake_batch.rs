@@ -399,6 +399,7 @@ fn optional_uuid(value: &Value) -> Result<Option<Uuid>, &'static str> {
 fn valid_owner(id: &Uuid) -> bool {
     matches!(id.get_version_num(), 1..=5) && id.get_variant() == uuid::Variant::RFC4122
 }
+#[cfg(any(unix, test))]
 fn expected(value: &Value) -> bool {
     object_keys(
         value,
@@ -449,6 +450,7 @@ impl BatchRequest {
 
     /// Called before serialization or queue admission. SQL/binds are validated
     /// here but deliberately never copied into retained protocol evidence.
+    #[cfg(any(unix, test))]
     pub fn parse(op: &str, payload: &Value) -> Result<Option<Self>, &'static str> {
         match op {
             "mutationBatch" => {
@@ -637,6 +639,7 @@ impl BatchEvidence {
             summary: None,
         }
     }
+    #[cfg(unix)]
     pub fn has_acknowledgement(&self) -> bool {
         self.steps.iter().any(|step| {
             matches!(
@@ -645,6 +648,7 @@ impl BatchEvidence {
             ) && step.phase >= StepPhase::Acknowledged
         })
     }
+    #[cfg(unix)]
     pub fn has_dispatch(&self) -> bool {
         !self.steps.is_empty()
     }

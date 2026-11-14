@@ -851,6 +851,10 @@ fn batch_foreign_captured_and_settled_backups_are_historical_only() {
             .unwrap();
         let historical = target.batch_evidence(r.operation_id()).unwrap().unwrap();
         assert_eq!(historical.as_bytes(), o.as_bytes());
+        assert_eq!(
+            historical.evidence().unwrap(),
+            decode(o.as_bytes()).unwrap().1
+        );
         assert!(historical.imported);
         assert_eq!(historical.settled, settled);
         let page = target
