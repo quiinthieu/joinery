@@ -759,6 +759,7 @@ impl Driver for Mysql {
                 active_context,
                 database,
                 role: Some(role),
+                warehouse: None,
                 search_path,
                 context_fingerprint: None,
                 transaction_observation: None,

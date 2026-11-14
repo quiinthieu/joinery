@@ -97,6 +97,74 @@ describe("plan snapshot identity", () => {
       ),
     ).toThrow("engine");
   });
+  it("captures and compares observed Snowflake plan snapshots across warehouse, role and schema identity", () => {
+    const snowflake = {
+      ...session,
+      engine: "snowflake",
+      serverVersion: "8.48.0",
+    } as SessionInfo;
+    const observedRuntime: SessionRuntimeState = {
+      sessionId: "s",
+      transactionMode: "autoCommit",
+      transactionState: "idle",
+      contextKind: "schema",
+      activeContext: "PUBLIC",
+      database: "LAB",
+      role: "ANALYST",
+      warehouse: "COMPUTE_WH",
+      searchPath: ["LAB.PUBLIC"],
+      contextFingerprint: "fp-lab-public-analyst-wh",
+      transactionObservation: {
+        status: "observed",
+        transactionId: null,
+        abortOnError: false,
+        usability: "unknown",
+      },
+    };
+    const planJson = '{"GlobalStats":{},"Operations":[[{"id":0,"operation":"Result"}]]}';
+    const baseline = planSourceForExecution(
+      prepared("EXPLAIN USING JSON\nSELECT * FROM LAB.PUBLIC.EVENTS"),
+      snowflake,
+      observedRuntime,
+    )!;
+    expect(baseline.comparisonUnavailable).toBeUndefined();
+    expect(baseline.context).toContain("COMPUTE_WH");
+    const store = new PlanSnapshotStore();
+    const { saved } = store.capture("tab-1", "sf-1", baseline, planJson);
+    expect(saved.raw).toBe(planJson);
+    expect(
+      planMismatch(
+        baseline,
+        planSourceForExecution(
+          prepared("EXPLAIN USING JSON\nSELECT * FROM LAB.PUBLIC.EVENTS"),
+          snowflake,
+          observedRuntime,
+        )!,
+      ),
+    ).toBeNull();
+    for (const mutated of [
+      { ...observedRuntime, warehouse: "LARGE_WH", contextFingerprint: "fp-large-wh" },
+      { ...observedRuntime, role: "ADMIN", contextFingerprint: "fp-admin" },
+      { ...observedRuntime, activeContext: "ANALYTICS", contextFingerprint: "fp-analytics" },
+    ]) {
+      expect(
+        planMismatch(
+          baseline,
+          planSourceForExecution(
+            prepared("EXPLAIN USING JSON\nSELECT * FROM LAB.PUBLIC.EVENTS"),
+            snowflake,
+            mutated,
+          )!,
+        ),
+      ).toBe("Different observed session context");
+    }
+    const missingWarehouse = planSourceForExecution(
+      prepared("EXPLAIN USING JSON\nSELECT * FROM LAB.PUBLIC.EVENTS"),
+      snowflake,
+      { ...observedRuntime, warehouse: undefined },
+    )!;
+    expect(missingWarehouse.comparisonUnavailable).toContain("warehouse");
+  });
   it("compares MariaDB generated estimates and actuals using the observed session", () => {
     const maria = { ...session, engine: "mysql", serverVersion: "11.4.13-MariaDB" } as SessionInfo;
     const estimated = planSourceForExecution(

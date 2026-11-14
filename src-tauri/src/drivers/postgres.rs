@@ -661,6 +661,7 @@ impl Driver for Postgres {
             active_context: active_postgres_schema(&identity.search_path),
             database: identity.database,
             role: Some(identity.role),
+            warehouse: None,
             search_path: identity.search_path,
             context_fingerprint: identity.context_fingerprint,
             transaction_observation: None,

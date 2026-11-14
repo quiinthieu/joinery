@@ -107,6 +107,8 @@ beforeEach(() => {
     sessionContexts: {},
     sessionContextRevision: {},
     sessionContextAuthorities: {},
+    snowflakeContextAuthorities: {},
+    snowflakeContextExpanded: {},
     sessionContextSwitching: {},
     sessionTransactionPending: {},
     sessionMetadataRefreshRequired: {},
@@ -2879,4 +2881,95 @@ test("session reattachment and reconnect clear transient DDL notices", () => {
   useStudio.getState().updateTab(tabId, { snowflakeDdlResult: ddlResult() });
   useStudio.getState().resetConnectionResults("profile");
   expect(useStudio.getState().tabs[0].snowflakeDdlResult).toBeUndefined();
+});
+
+test("Snowflake session context catalog switches role, warehouse, database and schema with one-use authority and preserves session on pre-ACK SQL rejection", async () => {
+  useSdkSession();
+  const initialState: SessionRuntimeState = {
+    ...sdkRuntime(),
+    database: "DB",
+    role: "ROLE",
+    warehouse: "WH",
+    activeContext: "PUBLIC",
+    contextFingerprint: "fp-initial",
+  };
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: initialState,
+    availableRoles: ["ANALYST", "ROLE"],
+    availableWarehouses: ["LARGE_WH", "WH"],
+    availableDatabases: ["ANALYTICS_DB", "DB"],
+    availableSchemas: ["OTHER", "PUBLIC"],
+    revision: "ctx-rev-1",
+  });
+  expect(await useStudio.getState().refreshSnowflakeSessionContexts(session.id, true)).toBe(true);
+  expect(useStudio.getState().snowflakeContextExpanded[session.id]).toBe(true);
+  expect(useStudio.getState().snowflakeContextAuthorities[session.id]?.revision).toBe("ctx-rev-1");
+
+  const switchedWarehouseState: SessionRuntimeState = {
+    ...initialState,
+    warehouse: "LARGE_WH",
+    contextFingerprint: "fp-large-wh",
+  };
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: switchedWarehouseState,
+    availableRoles: ["ANALYST", "ROLE"],
+    availableWarehouses: ["LARGE_WH", "WH"],
+    availableDatabases: ["ANALYTICS_DB", "DB"],
+    availableSchemas: ["OTHER", "PUBLIC"],
+    revision: "ctx-rev-2",
+  });
+  await useStudio
+    .getState()
+    .switchSnowflakeSessionContext(session.id, { kind: "warehouse", warehouse: "LARGE_WH" });
+  expect(client.call).toHaveBeenLastCalledWith("switch_snowflake_context", {
+    sessionId: session.id,
+    request: {
+      revision: "ctx-rev-1",
+      contextFingerprint: "fp-initial",
+      target: { kind: "warehouse", warehouse: "LARGE_WH" },
+    },
+  });
+  expect(useStudio.getState().sessionStates[session.id]?.warehouse).toBe("LARGE_WH");
+
+  // Pre-ACK database error rejects the switch without retiring the SSO session, while consuming the revision.
+  vi.mocked(client.call).mockRejectedValueOnce({
+    code: "database",
+    message: "Snowflake rejected the context switch",
+  });
+  await expect(
+    useStudio
+      .getState()
+      .switchSnowflakeSessionContext(session.id, { kind: "role", role: "ANALYST" }),
+  ).rejects.toMatchObject({ code: "database" });
+  expect(useStudio.getState().sessions.profile?.id).toBe(session.id);
+  expect(useStudio.getState().snowflakeContextAuthorities[session.id]).toBeUndefined();
+
+  // Subsequent refreshSessionContexts automatically uses snowflake_session_contexts once expanded.
+  vi.mocked(client.call).mockResolvedValueOnce({
+    state: switchedWarehouseState,
+    availableRoles: ["ANALYST", "ROLE"],
+    availableWarehouses: ["LARGE_WH", "WH"],
+    availableDatabases: ["ANALYTICS_DB", "DB"],
+    availableSchemas: ["OTHER", "PUBLIC"],
+    revision: "ctx-rev-3",
+  });
+  expect(await useStudio.getState().refreshSessionContexts(session.id, true)).toBe(true);
+  expect(client.call).toHaveBeenLastCalledWith("snowflake_session_contexts", {
+    sessionId: session.id,
+  });
+
+  // connectionClosed retires the session and purges snowflakeContextAuthorities + snowflakeContextExpanded.
+  vi.mocked(client.call).mockRejectedValueOnce({
+    code: "connectionClosed",
+    message: "Unverified post-ACK readback",
+  });
+  await expect(
+    useStudio.getState().switchSnowflakeSessionContext(session.id, {
+      kind: "database",
+      database: "ANALYTICS_DB",
+    }),
+  ).rejects.toMatchObject({ code: "connectionClosed" });
+  expect(useStudio.getState().sessions.profile).toBeUndefined();
+  expect(useStudio.getState().snowflakeContextAuthorities[session.id]).toBeUndefined();
+  expect(useStudio.getState().snowflakeContextExpanded[session.id]).toBeUndefined();
 });

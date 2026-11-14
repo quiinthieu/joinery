@@ -33,6 +33,7 @@ fn runtime() -> SessionRuntimeState {
         active_context: Some(SCHEMA.into()),
         database: DATABASE.into(),
         role: Some("ROLE".into()),
+        warehouse: Some("WH".into()),
         search_path: vec!["SANDBOX.BILLIE_TESTING".into()],
         context_fingerprint: Some("fingerprint".into()),
         transaction_observation: Some(TransactionObservation::Observed {

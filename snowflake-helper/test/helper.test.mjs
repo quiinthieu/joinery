@@ -1469,3 +1469,118 @@ test("real snowflake-sdk Column extraction preserves SQL null, boolean lowercase
     ],
   );
 });
+
+test("switchContext switches role, warehouse, database and schema with readback verification and updates currentDatabase", async () => {
+  const s = await pinned();
+  const baseExpected = {
+    user: "FIXTURE",
+    role: "ANALYST",
+    database: "TEST",
+    schema: "PUBLIC",
+    warehouse: "WH_XS",
+    session: "opaque-session",
+  };
+  // 1) Switch role -> ANALYST
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", "ANALYST", "TEST", "PUBLIC", "WH_XS", "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const roleId = s.send("switchContext", {
+    kind: "role",
+    role: "ANALYST",
+    expected: { ...baseExpected, role: null, warehouse: null },
+  });
+  for (let i = 0; i < 6 && !s.terminal(roleId); i++) await tick();
+  assert.equal(s.terminal(roleId)?.ok, true);
+  assert.equal(s.terminal(roleId).result.role, "ANALYST");
+  assert(s.calls.some((c) => c?.sqlText === 'USE ROLE "ANALYST"'));
+
+  // 2) Switch warehouse -> WH_LG
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", "ANALYST", "TEST", "PUBLIC", "WH_LG", "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const whId = s.send("switchContext", {
+    kind: "warehouse",
+    warehouse: "WH_LG",
+    expected: baseExpected,
+  });
+  for (let i = 0; i < 6 && !s.terminal(whId); i++) await tick();
+  assert.equal(s.terminal(whId)?.ok, true);
+  assert.equal(s.terminal(whId).result.warehouse, "WH_LG");
+  assert(s.calls.some((c) => c?.sqlText === 'USE WAREHOUSE "WH_LG"'));
+
+  // 3) Switch database -> ANALYTICS (updates currentDatabase!)
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", "ANALYST", "ANALYTICS", "PUBLIC", "WH_LG", "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const dbId = s.send("switchContext", {
+    kind: "database",
+    database: "ANALYTICS",
+    schema: null,
+    expected: { ...baseExpected, warehouse: "WH_LG" },
+  });
+  for (let i = 0; i < 6 && !s.terminal(dbId); i++) await tick();
+  assert.equal(s.terminal(dbId)?.ok, true);
+  assert.equal(s.terminal(dbId).result.database, "ANALYTICS");
+  assert(s.calls.some((c) => c?.sqlText === 'USE DATABASE "ANALYTICS"'));
+
+  // 4) Subsequent switchSchema on ANALYTICS succeeds because currentDatabase updated, while old TEST is rejected!
+  const staleDbId = s.send("switchSchema", switchPayload({ database: "TEST", schema: "OTHER" }));
+  assert.equal(s.terminal(staleDbId)?.error.code, "invalidInput");
+
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", "ANALYST", "ANALYTICS", "MART", "WH_LG", "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const schemaId = s.send("switchContext", {
+    kind: "schema",
+    database: "ANALYTICS",
+    schema: "MART",
+    expected: { ...baseExpected, database: "ANALYTICS", warehouse: "WH_LG" },
+  });
+  for (let i = 0; i < 6 && !s.terminal(schemaId); i++) await tick();
+  assert.equal(s.terminal(schemaId)?.ok, true);
+  assert.equal(s.terminal(schemaId).result.schema, "MART");
+
+  // 5) Definitive pre-USE SQL rejection (e.g. ungranted role) preserves helper session
+  s.connection.nextError = { sqlState: "42501", message: "Role not granted" };
+  const deniedRoleId = s.send("switchContext", {
+    kind: "role",
+    role: "ACCOUNTADMIN",
+    expected: { ...baseExpected, database: "ANALYTICS", schema: "MART", warehouse: "WH_LG" },
+  });
+  for (let i = 0; i < 6 && !s.terminal(deniedRoleId); i++) await tick();
+  assert.equal(s.terminal(deniedRoleId)?.error.code, "database");
+  assert.equal(s.retired(), 0);
+
+  // 6) Post-USE readback mismatch retires helper with connectionClosed
+  s.streams.push(
+    Readable.from([], { objectMode: true }),
+    Readable.from([["FIXTURE", "WRONG_ROLE", "ANALYTICS", "MART", "WH_LG", "opaque-session"]], {
+      objectMode: true,
+    }),
+  );
+  s.columnSets.push([], ["user", "role", "database", "schema", "warehouse", "session"]);
+  const badId = s.send("switchContext", {
+    kind: "role",
+    role: "SYSADMIN",
+    expected: { ...baseExpected, database: "ANALYTICS", schema: "MART", warehouse: "WH_LG" },
+  });
+  for (let i = 0; i < 6 && !s.terminal(badId); i++) await tick();
+  assert.equal(s.terminal(badId)?.error.code, "connectionClosed");
+  assert.equal(s.retired(), 1);
+});

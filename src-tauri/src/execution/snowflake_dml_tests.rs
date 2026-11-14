@@ -40,6 +40,7 @@ fn sdk_dml_fixture(
         active_context: Some("PUBLIC".into()),
         database: "DB".into(),
         role: Some("ROLE".into()),
+        warehouse: Some("WH".into()),
         search_path: vec!["DB.PUBLIC".into()],
         context_fingerprint: Some("synthetic-context".into()),
         transaction_observation: Some(TransactionObservation::Observed {

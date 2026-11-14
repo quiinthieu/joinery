@@ -1030,6 +1030,26 @@ pub async fn switch_session_schema(
 }
 
 #[tauri::command]
+pub async fn snowflake_session_contexts(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    resume_metadata: Option<bool>,
+) -> AppResult<SnowflakeContextCatalog> {
+    studio
+        .snowflake_session_contexts(&session_id, resume_metadata.unwrap_or(false))
+        .await
+}
+
+#[tauri::command]
+pub async fn switch_snowflake_context(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SwitchSnowflakeContextRequest,
+) -> AppResult<SnowflakeContextCatalog> {
+    studio.switch_snowflake_context(&session_id, &request).await
+}
+
+#[tauri::command]
 pub async fn set_transaction_mode(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

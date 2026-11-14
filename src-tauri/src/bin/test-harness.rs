@@ -780,6 +780,24 @@ async fn rpc(
                     )
                     .await?
             ),
+            "snowflake_session_contexts" => json!(
+                studio
+                    .snowflake_session_contexts(
+                        &arg::<String>(&args, "sessionId")?,
+                        args.get("resumeMetadata")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    )
+                    .await?
+            ),
+            "switch_snowflake_context" => json!(
+                studio
+                    .switch_snowflake_context(
+                        &arg::<String>(&args, "sessionId")?,
+                        &arg(&args, "request")?
+                    )
+                    .await?
+            ),
             "prepare_transaction_control" => json!(studio.prepare_transaction_control(
                 &arg::<String>(&args, "sessionId")?, &arg(&args, "request")?
             )?),

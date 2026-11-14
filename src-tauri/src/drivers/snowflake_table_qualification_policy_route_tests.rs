@@ -420,6 +420,7 @@ impl Route {
             active_context: Some(SCHEMA.into()),
             database: DATABASE.into(),
             role: self.context.role.clone(),
+            warehouse: self.context.warehouse.clone(),
             search_path: self
                 .context
                 .search_path

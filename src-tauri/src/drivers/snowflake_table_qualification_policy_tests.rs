@@ -394,6 +394,7 @@ fn original_ddl_ack() -> crate::domain::SnowflakeDdlResult {
             active_context: Some(SCHEMA.into()),
             database: "SANDBOX".into(),
             role: Some("QUALIFICATION".into()),
+            warehouse: Some("WH".into()),
             search_path: vec!["SANDBOX.BILLIE_TESTING".into()],
             context_fingerprint: Some("original-fingerprint".into()),
             transaction_observation: Some(TransactionObservation::Observed {

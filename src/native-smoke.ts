@@ -9,6 +9,7 @@ import type {
   ResultInfo,
   TableChanges,
   SwitchSchemaRequest,
+  SwitchSnowflakeContextRequest,
   TransactionControlRequest,
 } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -226,6 +227,18 @@ export async function runNativeSmoke() {
             schema: "PUBLIC",
             contextFingerprint: "obsolete",
           } satisfies SwitchSchemaRequest,
+        },
+      ],
+      ["snowflake_session_contexts", { sessionId: "missing-native-fixture" }],
+      [
+        "switch_snowflake_context",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            contextFingerprint: "obsolete",
+            target: { kind: "role", role: "ANALYST" },
+          } satisfies SwitchSnowflakeContextRequest,
         },
       ],
       [

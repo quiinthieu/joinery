@@ -2315,6 +2315,9 @@ pub struct SessionRuntimeState {
     pub active_context: Option<String>,
     pub database: String,
     pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warehouse: Option<String>,
     pub search_path: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -2345,6 +2348,52 @@ pub struct SwitchSchemaRequest {
     pub database: String,
     pub schema: String,
     pub context_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeContextCatalog {
+    pub state: SessionRuntimeState,
+    pub available_roles: Vec<String>,
+    pub available_warehouses: Vec<String>,
+    pub available_databases: Vec<String>,
+    pub available_schemas: Vec<String>,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SnowflakeContextTarget {
+    Role {
+        role: String,
+    },
+    Warehouse {
+        warehouse: String,
+    },
+    Database {
+        database: String,
+        #[serde(default)]
+        #[ts(optional)]
+        schema: Option<String>,
+    },
+    Schema {
+        database: String,
+        schema: String,
+    },
+}
+
+/// One-use authority for a Snowflake role, warehouse, database, or schema switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchSnowflakeContextRequest {
+    pub revision: String,
+    pub context_fingerprint: String,
+    pub target: SnowflakeContextTarget,
 }
 
 fn default_true() -> bool {

@@ -435,6 +435,35 @@ fn parse_policy(result: &MetadataResult) -> AppResult<bool> {
     }
 }
 
+pub(crate) const SHOW_ROLES_SQL: &str = "SHOW ROLES";
+pub(crate) const SHOW_WAREHOUSES_SQL: &str = "SHOW WAREHOUSES";
+pub(crate) const SHOW_DATABASES_SQL: &str = "SHOW DATABASES";
+pub(crate) const SHOW_CONTEXT_LIMIT: usize = 1000;
+pub(crate) const SHOW_CONTEXT_MAX_BYTES: usize = 1024 * 1024;
+
+pub(crate) fn parse_show_names(result: &MetadataResult) -> AppResult<Vec<String>> {
+    validate_result(result, SHOW_CONTEXT_LIMIT, SHOW_CONTEXT_MAX_BYTES)?;
+    let mut indices = result
+        .columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.name.eq_ignore_ascii_case("name"));
+    let (name_index, column) = indices.next().ok_or_else(malformed)?;
+    if indices.next().is_some() || column.kind != ColumnKind::Text {
+        return Err(malformed());
+    }
+    let mut names = Vec::with_capacity(result.rows.len());
+    let mut seen = HashSet::new();
+    for row in &result.rows {
+        let name = required_identifier(&row[name_index])?;
+        if seen.insert(name.to_owned()) {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
 /// One component, never a caller-supplied SQL expression or dotted path.
 pub(crate) fn quote_identifier(value: &str) -> AppResult<String> {
     validate_identifier(value)?;
@@ -1517,6 +1546,34 @@ mod tests {
             .collect();
         assert_code(
             parse_resolved_columns(&table, input),
+            ErrorCode::ResultLimitReached,
+        );
+    }
+
+    #[test]
+    fn show_names_extracts_sorts_deduplicates_and_rejects_malformed_rows() {
+        let valid = result(
+            &["created_on", "name", "owner"],
+            vec![
+                text_row(&["2026-01-01", "WH_LG", "SYSADMIN"]),
+                text_row(&["2026-01-01", "COMPUTE_WH", "SYSADMIN"]),
+                text_row(&["2026-01-01", "WH_LG", "SYSADMIN"]),
+            ],
+        );
+        assert_eq!(
+            parse_show_names(&valid).unwrap(),
+            vec!["COMPUTE_WH".to_string(), "WH_LG".to_string()]
+        );
+        assert_eq!(
+            parse_show_names(&result(&["created_on", "NAME"], Vec::new())).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_code(
+            parse_show_names(&result(&["created_on", "owner"], Vec::new())),
+            ErrorCode::ResultLimitReached,
+        );
+        assert_code(
+            parse_show_names(&result(&["name"], vec![vec![None]])),
             ErrorCode::ResultLimitReached,
         );
     }

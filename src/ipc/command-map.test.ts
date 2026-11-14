@@ -16,6 +16,7 @@ import type {
   RelationConstraintMappings,
   RelationPreview,
   SchemaDdlPlan,
+  SnowflakeContextCatalog,
   SnowflakeGridResult,
   TableSchema,
 } from "./generated";
@@ -151,6 +152,21 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     });
     expectTypeOf(finishGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
 
+    const snowflakeContextsPromise = typedClient.call("snowflake_session_contexts", {
+      sessionId: "session-1",
+    });
+    expectTypeOf(snowflakeContextsPromise).toEqualTypeOf<Promise<SnowflakeContextCatalog>>();
+
+    const switchSnowflakeContextPromise = typedClient.call("switch_snowflake_context", {
+      sessionId: "session-1",
+      request: {
+        revision: "rev-1",
+        contextFingerprint: "fp-1",
+        target: { kind: "warehouse", warehouse: "COMPUTE_WH" },
+      },
+    });
+    expectTypeOf(switchSnowflakeContextPromise).toEqualTypeOf<Promise<SnowflakeContextCatalog>>();
+
     await Promise.all([
       bootstrapPromise,
       definitionPromise,
@@ -166,8 +182,10 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       cancelGridPromise,
       pendingPreviewPromise,
       finishGridPromise,
+      snowflakeContextsPromise,
+      switchSnowflakeContextPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(14);
+    expect(callMock).toHaveBeenCalledTimes(16);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -268,6 +286,17 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
         transactionId: "tx-1",
         // @ts-expect-error — finish_snowflake_grid_transaction rejects arbitrary SQL actions
         action: "savepoint",
+      });
+
+      void c.call("switch_snowflake_context", {
+        sessionId: "session-1",
+        request: {
+          revision: "rev-1",
+          contextFingerprint: "fp-1",
+          target: { kind: "role", role: "ANALYST" },
+          // @ts-expect-error — switch_snowflake_context never accepts caller SQL
+          sql: "USE ROLE ACCOUNTADMIN",
+        },
       });
     };
 

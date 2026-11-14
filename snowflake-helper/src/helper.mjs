@@ -180,6 +180,7 @@ export class Helper {
         "context",
         "query",
         "switchSchema",
+        "switchContext",
         "transaction",
         "dml",
         "ddl",
@@ -281,6 +282,7 @@ export class Helper {
         "query",
         "context",
         "switchSchema",
+        "switchContext",
         "transaction",
         "dml",
         "ddl",
@@ -342,6 +344,7 @@ export class Helper {
     )
       return this.finish(r, "invalidInput");
     this.expectedProfile = { ...p };
+    this.currentDatabase = p.database;
     this.currentSchema = p.schema;
     this.state = "connecting";
     this.connectRequest = r;
@@ -370,6 +373,11 @@ export class Helper {
       this.state = "failed";
       this.finish(r, "database");
     }
+  }
+  activeDatabase() {
+    return this.currentDatabase !== undefined
+      ? this.currentDatabase
+      : this.expectedProfile?.database;
   }
   validateWork(r) {
     const p = r.payload;
@@ -536,11 +544,53 @@ export class Helper {
         !nullableIdentifier(p.expected.warehouse) ||
         !text(p.expected.session, 1024) ||
         !p.expected.session.isWellFormed() ||
-        p.database !== this.expectedProfile.database ||
+        p.database !== this.activeDatabase() ||
         (this.identityPin &&
           (p.expected.user !== this.identityPin.user ||
             p.expected.session !== this.identityPin.session))
       ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      return true;
+    }
+    if (r.op === "switchContext") {
+      if (
+        !p ||
+        typeof p !== "object" ||
+        Array.isArray(p) ||
+        typeof p.kind !== "string" ||
+        !["role", "warehouse", "database", "schema"].includes(p.kind) ||
+        !exact(p.expected, ["user", "role", "database", "schema", "warehouse", "session"]) ||
+        !identifier(p.expected.user) ||
+        !nullableIdentifier(p.expected.role) ||
+        !nullableIdentifier(p.expected.database) ||
+        !nullableIdentifier(p.expected.schema) ||
+        !nullableIdentifier(p.expected.warehouse) ||
+        !text(p.expected.session, 1024) ||
+        !p.expected.session.isWellFormed() ||
+        !this.identityPin ||
+        p.expected.user !== this.identityPin.user ||
+        p.expected.session !== this.identityPin.session
+      ) {
+        this.finish(r, "invalidInput");
+        return false;
+      }
+      const validTarget =
+        (p.kind === "role" && exact(p, ["kind", "role", "expected"]) && identifier(p.role)) ||
+        (p.kind === "warehouse" &&
+          exact(p, ["kind", "warehouse", "expected"]) &&
+          identifier(p.warehouse)) ||
+        (p.kind === "database" &&
+          exact(p, ["kind", "database", "schema", "expected"]) &&
+          identifier(p.database) &&
+          nullableIdentifier(p.schema)) ||
+        (p.kind === "schema" &&
+          exact(p, ["kind", "database", "schema", "expected"]) &&
+          identifier(p.database) &&
+          identifier(p.schema) &&
+          p.database === this.activeDatabase());
+      if (!validTarget) {
         this.finish(r, "invalidInput");
         return false;
       }
@@ -677,6 +727,7 @@ export class Helper {
         this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
         this.finish(r, null, { action: r.payload.action, ...this.idsFor(a) });
       } else {
+        if (r.op === "switchContext" && !this.validateWork(r)) return;
         this.send(r, "phase", { phase: "dispatching" });
         if (r.op === "switchSchema")
           await this.execute(
@@ -686,6 +737,20 @@ export class Helper {
             false,
             true,
           );
+        else if (r.op === "switchContext") {
+          const p = r.payload;
+          const useSql =
+            p.kind === "role"
+              ? `USE ROLE ${quoteIdentifier(p.role)}`
+              : p.kind === "warehouse"
+                ? `USE WAREHOUSE ${quoteIdentifier(p.warehouse)}`
+                : p.kind === "database"
+                  ? p.schema !== null
+                    ? `USE SCHEMA ${quoteIdentifier(p.database)}.${quoteIdentifier(p.schema)}`
+                    : `USE DATABASE ${quoteIdentifier(p.database)}`
+                  : `USE SCHEMA ${quoteIdentifier(p.database)}.${quoteIdentifier(p.schema)}`;
+          await this.execute(a, useSql, [], false, true);
+        }
         if (this.retired || this.done.has(r)) return;
         const result = await this.execute(a, CONTEXT_SQL, [], false);
         const row = result.values?.[0];
@@ -720,6 +785,36 @@ export class Helper {
             row[5] !== r.payload.expected.session)
         )
           throw error("database");
+        if (r.op === "switchContext") {
+          const p = r.payload;
+          if (row[0] !== p.expected.user || row[5] !== p.expected.session) throw error("database");
+          if (p.kind === "role" && row[1] !== p.role) throw error("database");
+          if (
+            p.kind === "warehouse" &&
+            (row[1] !== p.expected.role ||
+              row[2] !== p.expected.database ||
+              row[3] !== p.expected.schema ||
+              row[4] !== p.warehouse)
+          )
+            throw error("database");
+          if (
+            p.kind === "database" &&
+            (row[1] !== p.expected.role ||
+              row[2] !== p.database ||
+              (p.schema !== null && row[3] !== p.schema) ||
+              row[4] !== p.expected.warehouse)
+          )
+            throw error("database");
+          if (
+            p.kind === "schema" &&
+            (row[1] !== p.expected.role ||
+              row[2] !== p.database ||
+              row[3] !== p.schema ||
+              row[4] !== p.expected.warehouse)
+          )
+            throw error("database");
+          this.currentDatabase = row[2];
+        }
         this.identityPin ??= { user: row[0], session: row[5] };
         this.currentSchema = row[3];
         this.send(r, "phase", { phase: "acknowledged", ...this.idsFor(a) });
@@ -754,6 +849,7 @@ export class Helper {
         r.op === "setup" ||
         r.op === "context" ||
         r.op === "switchSchema" ||
+        (r.op === "switchContext" && (a.useAcknowledged || !a.knownFailure)) ||
         a.boundaryAcknowledged ||
         a.dmlAcknowledged ||
         a.ddlAcknowledged ||

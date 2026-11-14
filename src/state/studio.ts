@@ -31,6 +31,8 @@ import type {
   TransactionControlResult,
   SnowflakeDmlResult,
   SnowflakeDdlResult,
+  SnowflakeContextCatalog,
+  SnowflakeContextTarget,
   SnowflakeGridFinishAction,
   SnowflakeGridResult,
   TransactionControlAuthority,
@@ -248,6 +250,8 @@ interface StudioState {
   sessionContexts: Record<string, string[]>;
   sessionContextRevision: Record<string, number>;
   sessionContextAuthorities: Record<string, SessionContextOptions>;
+  snowflakeContextAuthorities: Record<string, SnowflakeContextCatalog>;
+  snowflakeContextExpanded: Record<string, boolean>;
   sessionContextSwitching: Record<string, boolean>;
   sessionTransactionPending: Record<string, boolean>;
   sessionMetadataRefreshRequired: Record<string, boolean>;
@@ -292,9 +296,11 @@ interface StudioState {
   disconnectQuerySession(sessionId: string): Promise<void>;
   updateSessionLatency(sessionId: string, latencyMs: number): void;
   refreshSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
+  refreshSnowflakeSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
   invalidateSessionContextAuthority(sessionId: string): void;
   isSessionContextPending(sessionId: string): boolean;
   switchSessionContext(sessionId: string, target: string): Promise<void>;
+  switchSnowflakeSessionContext(sessionId: string, target: SnowflakeContextTarget): Promise<void>;
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
   rollbackTransaction(sessionId: string): Promise<void>;
@@ -653,6 +659,7 @@ function sessionRuntimeContextChanged(
     (previous.activeContext !== next.activeContext ||
       previous.database !== next.database ||
       previous.role !== next.role ||
+      (previous.warehouse ?? null) !== (next.warehouse ?? null) ||
       JSON.stringify(previous.searchPath) !== JSON.stringify(next.searchPath) ||
       (previous.contextFingerprint ?? null) !== (next.contextFingerprint ?? null))
   );
@@ -690,6 +697,8 @@ function purgeSessionRuntimeMaps(
     | "sessionContexts"
     | "sessionContextRevision"
     | "sessionContextAuthorities"
+    | "snowflakeContextAuthorities"
+    | "snowflakeContextExpanded"
     | "sessionContextSwitching"
     | "sessionTransactionPending"
     | "sessionMetadataRefreshRequired"
@@ -703,6 +712,8 @@ function purgeSessionRuntimeMaps(
   const sessionContexts = { ...state.sessionContexts };
   const sessionContextRevision = { ...state.sessionContextRevision };
   const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+  const snowflakeContextAuthorities = { ...state.snowflakeContextAuthorities };
+  const snowflakeContextExpanded = { ...state.snowflakeContextExpanded };
   const sessionContextSwitching = { ...state.sessionContextSwitching };
   const sessionTransactionPending = { ...state.sessionTransactionPending };
   const sessionMetadataRefreshRequired = { ...state.sessionMetadataRefreshRequired };
@@ -720,6 +731,8 @@ function purgeSessionRuntimeMaps(
     delete sessionSnowflakeGridPending[id];
     delete sessionSnowflakeGridTransactions[id];
     delete sessionContextAuthorities[id];
+    delete snowflakeContextAuthorities[id];
+    delete snowflakeContextExpanded[id];
     delete sessionStates[id];
     delete sessionContexts[id];
     delete sessionContextRevision[id];
@@ -729,6 +742,8 @@ function purgeSessionRuntimeMaps(
     sessionContexts,
     sessionContextRevision,
     sessionContextAuthorities,
+    snowflakeContextAuthorities,
+    snowflakeContextExpanded,
     sessionContextSwitching,
     sessionTransactionPending,
     sessionMetadataRefreshRequired,
@@ -857,6 +872,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionContexts: {},
   sessionContextRevision: {},
   sessionContextAuthorities: {},
+  snowflakeContextAuthorities: {},
+  snowflakeContextExpanded: {},
   sessionContextSwitching: {},
   sessionTransactionPending: {},
   sessionMetadataRefreshRequired: {},
@@ -1672,9 +1689,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     contextRequests.delete(sessionId);
     set((state) => {
       const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+      const snowflakeContextAuthorities = { ...state.snowflakeContextAuthorities };
       delete sessionContextAuthorities[sessionId];
+      delete snowflakeContextAuthorities[sessionId];
       return {
         sessionContextAuthorities,
+        snowflakeContextAuthorities,
         sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
       };
     });
@@ -1710,6 +1730,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       return false;
     }
     const sdk = hasSdkObservation(get(), sessionId);
+    if (
+      sdk &&
+      get().snowflakeContextExpanded[sessionId] &&
+      !(throwOnError && get().sessionDdlCatalogRefreshRequired[sessionId])
+    ) {
+      return get().refreshSnowflakeSessionContexts(sessionId, throwOnError);
+    }
     get().invalidateSessionContextAuthority(sessionId);
     const request = beginContextRequest(sessionId);
     const previous = get().sessionStates[sessionId];
@@ -1788,6 +1815,131 @@ export const useStudio = create<StudioState>((set, get) => ({
                 sessionContextAuthorities: {
                   ...state.sessionContextAuthorities,
                   [sessionId]: options,
+                },
+              }
+            : {}),
+          ...(contextChanged
+            ? {
+                sessionContextRevision: {
+                  ...state.sessionContextRevision,
+                  [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                },
+              }
+            : {}),
+        };
+      });
+      return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
+    } finally {
+      finishContextRequest(sessionId, request);
+    }
+  },
+  async refreshSnowflakeSessionContexts(sessionId, throwOnError = false) {
+    if (isSnowflakeConsoleSession(get(), sessionId)) {
+      if (throwOnError) assertOrdinarySession(sessionId);
+      return false;
+    }
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    ) {
+      if (throwOnError)
+        throw new Error("Finish or roll back the open Snowflake grid transaction first");
+      return false;
+    }
+    if (get().sessionMetadataRefreshRequired[sessionId] && !throwOnError) return false;
+    if (get().sessionTransactionPending[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the transaction action to finish first");
+      return false;
+    }
+    if (get().sessionContextSwitching[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the schema change to finish first");
+      return false;
+    }
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    const previous = get().sessionStates[sessionId];
+    try {
+      if (isSessionActive(get(), sessionId)) {
+        set((state) => ({
+          snowflakeContextExpanded: { ...state.snowflakeContextExpanded, [sessionId]: true },
+          sessionStates: {
+            ...state.sessionStates,
+            [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+          },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+        }));
+      }
+      let catalog: SnowflakeContextCatalog;
+      try {
+        catalog = await client.call("snowflake_session_contexts", {
+          sessionId,
+          ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
+            ? { resumeMetadata: true }
+            : {}),
+        });
+        if (!catalog?.state || catalog.state.sessionId !== sessionId || !catalog.revision)
+          throw new Error("Session observation is unavailable");
+      } catch (error) {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+          return false;
+        const { code } = asAppError(error);
+        if (code === "connectionClosed" || code === "outcomeUnknown") {
+          get().retireSession(sessionId);
+        } else {
+          set((state) => ({
+            sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+            sessionStates: {
+              ...state.sessionStates,
+              [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+            },
+            ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
+              ? {
+                  sessionContextRevision: {
+                    ...state.sessionContextRevision,
+                    [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                  },
+                }
+              : {}),
+          }));
+        }
+        if (throwOnError) throw error;
+        return false;
+      }
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+        return false;
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        const runtime = catalog.state;
+        const contextChanged = sessionRuntimeContextChanged(previous, runtime);
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: catalog.availableSchemas },
+          snowflakeContextAuthorities: {
+            ...state.snowflakeContextAuthorities,
+            [sessionId]: catalog,
+          },
+          ...(runtime.database
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: {
+                    state: runtime,
+                    available: catalog.availableSchemas,
+                    revision: catalog.revision,
+                  },
+                },
+              }
+            : {}),
+          ...(throwOnError
+            ? {
+                sessionMetadataRefreshRequired: {
+                  ...state.sessionMetadataRefreshRequired,
+                  [sessionId]: false,
+                },
+                sessionDdlCatalogRefreshRequired: {
+                  ...state.sessionDdlCatalogRefreshRequired,
+                  [sessionId]: false,
                 },
               }
             : {}),
@@ -1889,6 +2041,111 @@ export const useStudio = create<StudioState>((set, get) => ({
       const { code } = asAppError(error);
       if (sdk && (code === "connectionClosed" || code === "outcomeUnknown"))
         get().retireSession(sessionId);
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      if (schemaSwitchRequests.get(sessionId) === request) {
+        schemaSwitchRequests.delete(sessionId);
+        set((state) => ({
+          sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: false },
+        }));
+      }
+    }
+  },
+  async switchSnowflakeSessionContext(sessionId, target) {
+    assertOrdinarySession(sessionId);
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    )
+      throw new Error("Finish or roll back the open Snowflake grid transaction first");
+    const authority = get().snowflakeContextAuthorities[sessionId];
+    const runtime = get().sessionStates[sessionId];
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionContextSwitching[sessionId])
+      throw new Error("Wait for the schema change to finish first");
+    const targetAllowed =
+      authority !== undefined &&
+      (target.kind === "role"
+        ? authority.availableRoles.includes(target.role)
+        : target.kind === "warehouse"
+          ? authority.availableWarehouses.includes(target.warehouse)
+          : target.kind === "database"
+            ? authority.availableDatabases.includes(target.database)
+            : Boolean(target.database) &&
+              authority.state.database === target.database &&
+              authority.availableSchemas.includes(target.schema));
+    if (
+      !authority?.revision ||
+      !authority.state.contextFingerprint ||
+      authority.state !== runtime ||
+      runtime.transactionState !== "idle" ||
+      runtime.transactionObservation?.status !== "observed" ||
+      runtime.transactionObservation.transactionId !== null ||
+      !targetAllowed
+    ) {
+      throw new Error("Refresh session context before selecting an available Snowflake context");
+    }
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    schemaSwitchRequests.set(sessionId, request);
+    set((state) => ({
+      snowflakeContextExpanded: { ...state.snowflakeContextExpanded, [sessionId]: true },
+      sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: true },
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    try {
+      const catalog = await client.call("switch_snowflake_context", {
+        sessionId,
+        request: {
+          revision: authority.revision,
+          contextFingerprint: authority.state.contextFingerprint,
+          target,
+        },
+      });
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      if (catalog.state.sessionId !== sessionId || !catalog.revision)
+        throw new Error("Snowflake context switch observation is unavailable");
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: catalog.state },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: catalog.availableSchemas },
+          snowflakeContextAuthorities: {
+            ...state.snowflakeContextAuthorities,
+            [sessionId]: catalog,
+          },
+          ...(catalog.state.database
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: {
+                    state: catalog.state,
+                    available: catalog.availableSchemas,
+                    revision: catalog.revision,
+                  },
+                },
+              }
+            : {}),
+          sessionContextRevision: {
+            ...state.sessionContextRevision,
+            [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+          },
+        };
+      });
+    } catch (error) {
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
       throw error;
     } finally {
       finishContextRequest(sessionId, request);

@@ -1944,7 +1944,7 @@ impl Studio {
         // unavailable observation must never fall back to frontend cached state.
         if matches!(stored.action, Action::Sql { .. })
             && stored.plan.statements.len() == 1
-            && [
+            && ([
                 "EXPLAIN (FORMAT JSON)\n",
                 "EXPLAIN (ANALYZE, FORMAT JSON)\n",
                 "EXPLAIN FORMAT=JSON\n",
@@ -1953,6 +1953,10 @@ impl Studio {
             ]
             .iter()
             .any(|prefix| stored.plan.statements[0].sql.starts_with(prefix))
+                || (stored.plan.statements[0]
+                    .sql
+                    .starts_with("EXPLAIN USING JSON\n")
+                    && snowflake_dml::sdk_profile(&session.profile)))
         {
             let state = if token.is_cancelled() || session.closed.load(Ordering::Acquire) {
                 None
@@ -2481,6 +2485,170 @@ impl Studio {
         // The driver already verified and published coherent options. A second
         // options read would add eleven SQL executions and revoke this revision.
         Ok(options)
+    }
+
+    pub async fn snowflake_session_contexts(
+        &self,
+        session_id: &str,
+        resume_metadata: bool,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let session = self.session(session_id)?;
+        let revision = session.metadata_gate.lock().revision.clone();
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session
+            .metadata_gate
+            .lock()
+            .check(Some(&revision), resume_metadata)?;
+        if resume_metadata && session.metadata_gate.lock().catalog_required {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "DDL metadata remains paused; explicitly reconcile the catalog to resume",
+            )
+            .with_completion_invalidated());
+        }
+        #[cfg(unix)]
+        if resume_metadata {
+            let _ = self.flush_snowflake_grid_outcomes();
+        }
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        self.ddl_preflights.lock().remove(&session.info.id);
+        let catalog = session
+            .driver
+            .snowflake_session_contexts(&session.info.id)
+            .await;
+        if catalog.is_err() && session.info.capabilities.relation_browsing {
+            *session.observed_runtime.lock() = None;
+            *session.completion.lock() = None;
+            session.driver.invalidate_relation_catalog();
+            self.plans
+                .lock()
+                .retain(|_, plan| plan.plan.session_id != session.info.id);
+        }
+        let catalog = catalog.inspect_err(|_| {
+            if session.driver.is_closed() {
+                self.disconnect(&session.info.id);
+            }
+        })?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        if resume_metadata
+            && (!matches!(
+                catalog.state.transaction_observation,
+                Some(TransactionObservation::Observed { .. })
+            ) || (!catalog.state.database.is_empty()
+                && !matches!(
+                    catalog.state.transaction_control_authority,
+                    Some(TransactionControlAuthority::Observed { .. })
+                )))
+        {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "The session could not be coherently observed; metadata remains paused",
+            )
+            .with_completion_invalidated());
+        }
+        if resume_metadata {
+            session.metadata_gate.lock().held = false;
+        }
+        self.publish_observed_runtime(&session, &catalog.state);
+        Ok(catalog)
+    }
+
+    pub async fn switch_snowflake_context(
+        &self,
+        session_id: &str,
+        request: &SwitchSnowflakeContextRequest,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let session = self.session(session_id)?;
+        let gate_revision = session.metadata_gate.lock().revision.clone();
+        if session.active_run.lock().is_some() {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "Wait for the running query to finish first",
+            ));
+        }
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        session
+            .metadata_gate
+            .lock()
+            .check(Some(&gate_revision), false)?;
+        #[cfg(unix)]
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        self.ddl_preflights.lock().remove(&session.info.id);
+        *session.observed_runtime.lock() = None;
+        *session.completion.lock() = None;
+        session.driver.invalidate_relation_catalog();
+        self.plans
+            .lock()
+            .retain(|_, plan| plan.plan.session_id != session.info.id);
+        let catalog = session
+            .driver
+            .switch_snowflake_context(session_id, request)
+            .await
+            .inspect_err(|_| {
+                if session.driver.is_closed() {
+                    self.disconnect(&session.info.id);
+                }
+            })?;
+        if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+            return Err(AppError::new(
+                ErrorCode::ConnectionClosed,
+                "This database session is disconnected",
+            ));
+        }
+        if catalog.state.session_id != session.info.id || catalog.revision.is_empty() {
+            return Err(AppError::internal(
+                "Invalid Snowflake context switch observation",
+            ));
+        }
+        self.publish_observed_runtime(&session, &catalog.state);
+        let audit_target = match &request.target {
+            SnowflakeContextTarget::Role { role } => format!("role:{role}"),
+            SnowflakeContextTarget::Warehouse { warehouse } => format!("warehouse:{warehouse}"),
+            SnowflakeContextTarget::Database { database, schema } => match schema {
+                Some(schema) => format!("database:{database}.{schema}"),
+                None => format!("database:{database}"),
+            },
+            SnowflakeContextTarget::Schema { database, schema } => {
+                format!("schema:{database}.{schema}")
+            }
+        };
+        let _ = self.persistence.audit(
+            &session.profile.id,
+            "switch-snowflake-context",
+            &audit_target,
+            "completed",
+        );
+        Ok(catalog)
     }
 
     pub async fn set_transaction_mode(
@@ -6148,6 +6316,7 @@ mod browse_classification_tests {
                 active_context: Some("public".into()),
                 database: "fixture".into(),
                 role: Some("reader".into()),
+                warehouse: None,
                 search_path: vec!["public".into()],
                 context_fingerprint: None,
                 transaction_observation: None,
@@ -6440,6 +6609,7 @@ mod browse_classification_tests {
             active_context: Some("PUBLIC".into()),
             database: "DB".into(),
             role: None,
+            warehouse: None,
             search_path: vec!["DB.PUBLIC".into()],
             context_fingerprint: Some("context".into()),
             transaction_observation: Some(TransactionObservation::Unavailable),

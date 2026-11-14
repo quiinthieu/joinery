@@ -162,6 +162,8 @@ fn build_desktop() {
             "session_contexts",
             "switch_session_context",
             "switch_session_schema",
+            "snowflake_session_contexts",
+            "switch_snowflake_context",
             "prepare_transaction_control",
             "execute_transaction_control",
             "execute_snowflake_dml",

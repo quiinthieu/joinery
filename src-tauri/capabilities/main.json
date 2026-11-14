@@ -106,6 +106,8 @@
     "allow-session-contexts",
     "allow-switch-session-context",
     "allow-switch-session-schema",
+    "allow-snowflake-session-contexts",
+    "allow-switch-snowflake-context",
     "allow-prepare-transaction-control",
     "allow-execute-transaction-control",
     "allow-execute-snowflake-dml",

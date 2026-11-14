@@ -1002,6 +1002,7 @@ impl Operation {
             "connect"
                 | "context"
                 | "switchSchema"
+                | "switchContext"
                 | "transaction"
                 | "dml"
                 | "ddl"
@@ -1280,7 +1281,7 @@ impl Supervisor {
         }
         if (op == "context" && impact != Impact::Read)
             || (op == "connect" && impact != Impact::Control)
-            || ((op == "switchSchema") != (impact == Impact::ContextChange))
+            || (is_context_switch_op(op) != (impact == Impact::ContextChange))
         {
             return Err("invalid non-statement impact");
         }
@@ -1361,6 +1362,7 @@ impl Supervisor {
                                     "query"
                                         | "context"
                                         | "switchSchema"
+                                        | "switchContext"
                                         | "transaction"
                                         | "dml"
                                         | "ddl"
@@ -1622,6 +1624,7 @@ impl Inner {
                     || matches!(
                         pending.op.as_str(),
                         "switchSchema"
+                            | "switchContext"
                             | "transaction"
                             | "dml"
                             | "ddl"
@@ -1733,6 +1736,7 @@ impl Inner {
                     | "query"
                     | "context"
                     | "switchSchema"
+                    | "switchContext"
                     | "transaction"
                     | "dml"
                     | "ddl"
@@ -1751,7 +1755,7 @@ impl Inner {
         if !valid_transaction_impact(op, &payload, impact) {
             return Err("invalid transaction impact");
         }
-        if (op == "switchSchema") != (impact == Impact::ContextChange) {
+        if is_context_switch_op(op) != (impact == Impact::ContextChange) {
             return Err("invalid context-change impact");
         }
         let batch = BatchRequest::parse(op, &payload)
@@ -2031,6 +2035,7 @@ impl Inner {
                                 | "mutationRead"
                                 | "context"
                                 | "switchSchema"
+                                | "switchContext"
                                 | "transaction"
                                 | "dml"
                                 | "ddl"
@@ -2045,7 +2050,7 @@ impl Inner {
                     if !validate_latest_statement(pending, &event) {
                         return false;
                     }
-                    if pending.op == "switchSchema"
+                    if is_context_switch_op(&pending.op)
                         && (pending.use_acknowledged.is_none()
                             || pending.statements.len() != 2
                             || event.get("sdkRequestId").and_then(Value::as_str).is_none())
@@ -2214,7 +2219,7 @@ impl Inner {
                 true
             }
             Some("useAcknowledged") => {
-                if pending.op != "switchSchema"
+                if !is_context_switch_op(&pending.op)
                     || !pending.accepted
                     || pending.phase != Phase::Dispatching
                     || pending.use_acknowledged.is_some()
@@ -2236,6 +2241,7 @@ impl Inner {
                             | "mutationRead"
                             | "context"
                             | "switchSchema"
+                            | "switchContext"
                             | "transaction"
                             | "dml"
                             | "ddl"
@@ -2245,7 +2251,11 @@ impl Inner {
                     return false;
                 }
                 pending.statement_events += 1;
-                let limit = if pending.op == "switchSchema" { 4 } else { 2 };
+                let limit = if is_context_switch_op(&pending.op) {
+                    4
+                } else {
+                    2
+                };
                 pending.statement_events <= limit && update_statement(pending, &event)
             }
             Some("columns") => {
@@ -2354,7 +2364,7 @@ impl Inner {
                     }
                 }
                 if ok
-                    && pending.op == "switchSchema"
+                    && is_context_switch_op(&pending.op)
                     && event.get("sdkRequestId").and_then(Value::as_str).is_none()
                 {
                     return false;
@@ -2443,6 +2453,7 @@ impl Inner {
                             | "mutationRead"
                             | "context"
                             | "switchSchema"
+                            | "switchContext"
                             | "transaction"
                             | "dml"
                             | "ddl"
@@ -2768,8 +2779,13 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
             ack.statement = existing.clone();
         }
     } else {
-        if pending.statements.len() >= if pending.op == "switchSchema" { 2 } else { 1 }
-            || (pending.op == "switchSchema"
+        if pending.statements.len()
+            >= if is_context_switch_op(&pending.op) {
+                2
+            } else {
+                1
+            }
+            || (is_context_switch_op(&pending.op)
                 && pending.statements.len() == 1
                 && pending.use_acknowledged.is_none())
         {
@@ -2781,6 +2797,10 @@ fn update_statement(pending: &mut Pending, event: &Value) -> bool {
         });
     }
     true
+}
+
+fn is_context_switch_op(op: &str) -> bool {
+    matches!(op, "switchSchema" | "switchContext")
 }
 
 fn local_report(result: Value) -> Report {

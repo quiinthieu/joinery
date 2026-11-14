@@ -247,6 +247,8 @@ pub fn run() {
             commands::session_contexts,
             commands::switch_session_context,
             commands::switch_session_schema,
+            commands::snowflake_session_contexts,
+            commands::switch_snowflake_context,
             commands::prepare_transaction_control,
             commands::execute_transaction_control,
             commands::execute_snowflake_dml,

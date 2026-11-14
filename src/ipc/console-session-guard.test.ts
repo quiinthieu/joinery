@@ -15,6 +15,8 @@ test("authoritative console seal fences delayed direct and nested commands perma
     "processes",
     "execute_transaction_control",
     "switch_session_schema",
+    "snowflake_session_contexts",
+    "switch_snowflake_context",
     "unknown_future_metadata",
   ]) {
     expect(() => assertConsoleCommandAllowed(command, { sessionId: id })).toThrow(

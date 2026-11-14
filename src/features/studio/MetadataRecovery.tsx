@@ -163,6 +163,8 @@ export function MetadataRecovery({ onBusy }: { onBusy(busy: boolean): void }) {
       sessionContexts: {},
       sessionContextRevision: {},
       sessionContextAuthorities: {},
+      snowflakeContextAuthorities: {},
+      snowflakeContextExpanded: {},
       sessionContextSwitching: {},
       sessionTransactionPending: {},
       sessionMetadataRefreshRequired: {},

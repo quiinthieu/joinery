@@ -800,6 +800,7 @@ impl Driver for Snowflake {
             active_context: Some(schema),
             database: self.database.clone(),
             role: Some(self.role.clone()),
+            warehouse: Some(self.warehouse.clone()),
             search_path: vec![qualified_schema],
             context_fingerprint: None,
             transaction_observation: None,

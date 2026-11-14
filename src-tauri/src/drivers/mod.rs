@@ -313,6 +313,25 @@ pub trait Driver: Send + Sync {
             "Revision-bound schema switching is unavailable for this engine",
         ))
     }
+    async fn snowflake_session_contexts(
+        &self,
+        _session_id: &str,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake session context catalog is unavailable for this engine",
+        ))
+    }
+    async fn switch_snowflake_context(
+        &self,
+        _session_id: &str,
+        _request: &SwitchSnowflakeContextRequest,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake role, warehouse and database switching is unavailable for this engine",
+        ))
+    }
     /// Pure validation only; this cannot consume authority or submit SQL.
     fn validate_snowflake_dml(&self, _request: &SnowflakeDmlRequest) -> AppResult<()> {
         Err(AppError::new(

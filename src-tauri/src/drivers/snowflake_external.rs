@@ -96,6 +96,19 @@ struct SessionOptionsSnapshot {
 }
 
 #[derive(Default)]
+struct ContextCatalogState {
+    revision: String,
+    snapshot: Option<ContextCatalogSnapshot>,
+}
+struct ContextCatalogSnapshot {
+    sample: ObservationSample,
+    roles: Vec<String>,
+    warehouses: Vec<String>,
+    databases: Vec<String>,
+    schemas: Vec<String>,
+}
+
+#[derive(Default)]
 struct TransactionAuthorityState {
     generation: String,
     grant: Option<TransactionGrant>,
@@ -171,9 +184,11 @@ pub struct SnowflakeExternal {
     // Permanent once claimed; releasing a run never reenables ordinary probes.
     console_mode: Mutex<Option<String>>,
     active: Mutex<Option<Active>>,
+    active_database: Mutex<Option<String>>,
     browsing: Mutex<BrowseState>,
     edit_snapshots: Arc<super::snowflake_edit_snapshot::SnapshotStore>,
     session_options: Mutex<SessionOptionsState>,
+    context_catalog: Mutex<ContextCatalogState>,
     transaction_authority: Mutex<TransactionAuthorityState>,
     ddl_authority: Mutex<DdlAuthorityState>,
     closed: CancellationToken,
@@ -356,9 +371,11 @@ impl SnowflakeExternal {
             grid: grid::State::default(),
             console_mode: Mutex::new(None),
             active: Mutex::new(None),
+            active_database: Mutex::new(Some(profile.database.clone())),
             browsing: Mutex::new(BrowseState::default()),
             edit_snapshots: edit_snapshots::shared_store(),
             session_options: Mutex::new(SessionOptionsState::default()),
+            context_catalog: Mutex::new(ContextCatalogState::default()),
             transaction_authority: Mutex::new(TransactionAuthorityState::default()),
             ddl_authority: Mutex::new(DdlAuthorityState::default()),
             closed: CancellationToken::new(),
@@ -550,7 +567,13 @@ impl SnowflakeExternal {
                 .lock()
                 .snapshot
                 .as_ref()
-                .is_some_and(|snapshot| snapshot.sample.context != observed);
+                .is_some_and(|snapshot| snapshot.sample.context != observed)
+                || self
+                    .context_catalog
+                    .lock()
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.sample.context != observed);
             if changed {
                 self.invalidate_session_options();
             }
@@ -754,11 +777,19 @@ impl SnowflakeExternal {
         {
             return Err(stale_transaction());
         }
+        let active_database = self.require_active_database()?;
         crate::safety::snowflake_dml::compile(
             &request.sql,
             Some(&request.parameters),
-            &self.profile.database,
+            &active_database,
         )
+    }
+
+    fn require_active_database(&self) -> AppResult<String> {
+        self.active_database
+            .lock()
+            .clone()
+            .ok_or_else(stale_session_options)
     }
 
     fn require_ddl_policy(&self) -> AppResult<()> {
@@ -781,7 +812,10 @@ impl SnowflakeExternal {
     }
 
     fn require_ddl_session_sample(&self, sample: &ObservationSample) -> AppResult<()> {
-        if sample.context.database.as_deref() != Some(self.profile.database.as_str()) {
+        let Some(active_database) = self.active_database.lock().clone() else {
+            return Err(stale_ddl());
+        };
+        if sample.context.database.as_deref() != Some(active_database.as_str()) {
             return Err(stale_ddl());
         }
         if !sample.autocommit || sample.transaction_id.is_some() {
@@ -794,6 +828,7 @@ impl SnowflakeExternal {
     }
 
     fn compile_ddl_action(&self, action: &SnowflakeDdlAction) -> AppResult<CompiledDdlAction> {
+        let active_database = self.active_database.lock().clone().ok_or_else(stale_ddl)?;
         match action {
             SnowflakeDdlAction::CreateTable {
                 database,
@@ -819,8 +854,8 @@ impl SnowflakeExternal {
                     comment: None,
                 };
                 let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
-                if database != &self.profile.database {
+                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                if database != &active_database {
                     return Err(stale_ddl());
                 }
                 Ok((canonical, None, None))
@@ -843,8 +878,8 @@ impl SnowflakeExternal {
                     column: column.to_table_column_draft(),
                 };
                 let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
-                if target.database != self.profile.database {
+                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                if target.database != active_database {
                     return Err(stale_ddl());
                 }
                 if inspected_columns
@@ -878,8 +913,8 @@ impl SnowflakeExternal {
                     cascade: false,
                 };
                 let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &self.profile.database)?;
-                if target.database != self.profile.database {
+                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                if target.database != active_database {
                     return Err(stale_ddl());
                 }
                 Ok((canonical, Some((browse_ctx, target)), None))
@@ -894,6 +929,7 @@ impl SnowflakeExternal {
         target: Option<&BrowseRelation>,
         inspected_columns: Option<&[crate::relation_inspection::ColumnInspection]>,
     ) -> AppResult<()> {
+        let active_database = self.active_database.lock().clone().ok_or_else(stale_ddl)?;
         match action {
             SnowflakeDdlAction::CreateTable {
                 database,
@@ -901,7 +937,7 @@ impl SnowflakeExternal {
                 name,
                 ..
             } => {
-                if database != &self.profile.database
+                if database != &active_database
                     || context.database.as_deref() != Some(database.as_str())
                 {
                     return Err(stale_ddl());
@@ -1089,6 +1125,10 @@ impl SnowflakeExternal {
             revision: revision.clone(),
             snapshot: None,
         };
+        *self.context_catalog.lock() = ContextCatalogState {
+            revision: revision.clone(),
+            snapshot: None,
+        };
         self.revoke_ddl_grant();
         revision
     }
@@ -1100,8 +1140,22 @@ impl SnowflakeExternal {
         }
     }
 
+    fn invalidate_context_catalog_revision(&self, revision: &str) {
+        let mut catalog = self.context_catalog.lock();
+        if catalog.revision == revision {
+            *catalog = ContextCatalogState::default();
+        }
+    }
+
     fn require_session_options_revision(&self, revision: &str) -> AppResult<()> {
         if self.session_options.lock().revision != revision {
+            return Err(stale_session_options());
+        }
+        Ok(())
+    }
+
+    fn require_context_catalog_revision(&self, revision: &str) -> AppResult<()> {
+        if self.context_catalog.lock().revision != revision {
             return Err(stale_session_options());
         }
         Ok(())
@@ -1110,6 +1164,7 @@ impl SnowflakeExternal {
     /// Called with the SDK lane held. Five fixed, bounded reads form one sample;
     /// they do not change parameters, start a transaction or repair an observation.
     async fn session_sample(&self) -> AppResult<ObservationSample> {
+        let active_database = self.require_active_database()?;
         let [
             context_read,
             policy_read,
@@ -1121,7 +1176,7 @@ impl SnowflakeExternal {
         let policy = self.read_spec(&policy_read).await?;
         let observed = metadata::parse_context(&context, &policy)?;
         self.require_session_identity(&observed)?;
-        if observed.database.as_deref() != Some(self.profile.database.as_str()) {
+        if observed.database.as_deref() != Some(active_database.as_str()) {
             return Err(stale_session_options());
         }
         let autocommit = self.read_spec(&autocommit_read).await?;
@@ -1135,6 +1190,96 @@ impl SnowflakeExternal {
             &transaction,
         )?;
         Ok(sample)
+    }
+
+    async fn snowflake_context_sample(&self) -> AppResult<ObservationSample> {
+        let expected_database = self.active_database.lock().clone();
+        let [
+            context_read,
+            policy_read,
+            autocommit_read,
+            abort_read,
+            transaction_read,
+        ] = session::sample_reads();
+        let context = self.read_spec(&context_read).await?;
+        let policy = self.read_spec(&policy_read).await?;
+        let observed = metadata::parse_context(&context, &policy)?;
+        self.require_session_identity(&observed)?;
+        if observed.database != expected_database {
+            return Err(stale_session_options());
+        }
+        let autocommit = self.read_spec(&autocommit_read).await?;
+        let abort_on_error = self.read_spec(&abort_read).await?;
+        let transaction = self.read_spec(&transaction_read).await?;
+        session::parse_sample(
+            &context,
+            &policy,
+            &autocommit,
+            &abort_on_error,
+            &transaction,
+        )
+    }
+
+    async fn read_context_lists(
+        &self,
+        context: &LiveContext,
+    ) -> AppResult<(Vec<String>, Vec<String>, Vec<String>, Vec<String>)> {
+        let roles_rows = self
+            .metadata_read(
+                metadata::SHOW_ROLES_SQL,
+                metadata::SHOW_CONTEXT_LIMIT + 1,
+                metadata::SHOW_CONTEXT_MAX_BYTES,
+            )
+            .await?;
+        let mut roles = metadata::parse_show_names(&roles_rows)?;
+        if let Some(active_role) = &context.role
+            && !roles.contains(active_role)
+        {
+            roles.push(active_role.clone());
+            roles.sort();
+        }
+        let warehouses_rows = self
+            .metadata_read(
+                metadata::SHOW_WAREHOUSES_SQL,
+                metadata::SHOW_CONTEXT_LIMIT + 1,
+                metadata::SHOW_CONTEXT_MAX_BYTES,
+            )
+            .await?;
+        let mut warehouses = metadata::parse_show_names(&warehouses_rows)?;
+        if let Some(active_wh) = &context.warehouse
+            && !warehouses.contains(active_wh)
+        {
+            warehouses.push(active_wh.clone());
+            warehouses.sort();
+        }
+        let databases_rows = self
+            .metadata_read(
+                metadata::SHOW_DATABASES_SQL,
+                metadata::SHOW_CONTEXT_LIMIT + 1,
+                metadata::SHOW_CONTEXT_MAX_BYTES,
+            )
+            .await?;
+        let mut databases = metadata::parse_show_names(&databases_rows)?;
+        if let Some(active_db) = &context.database
+            && !databases.contains(active_db)
+        {
+            databases.push(active_db.clone());
+            databases.sort();
+        }
+        let mut schemas = if context.database.is_some() {
+            let rows = self.read_spec(&metadata::schemas_read(context)?).await?;
+            metadata::parse_schemas(context, &rows)?
+        } else {
+            Vec::new()
+        };
+        if let Some(active_schema) = &context.schema
+            && active_schema != "INFORMATION_SCHEMA"
+            && !schemas.contains(active_schema)
+        {
+            schemas.push(active_schema.clone());
+            schemas.sort();
+        }
+        Ok((roles, warehouses, databases, schemas))
     }
 
     fn observed_session_state(&self, sample: &ObservationSample) -> AppResult<SessionRuntimeState> {
@@ -1158,6 +1303,44 @@ impl SnowflakeExternal {
                 .clone()
                 .ok_or_else(stale_session_options)?,
             role: sample.context.role.clone(),
+            warehouse: sample.context.warehouse.clone(),
+            search_path: sample
+                .context
+                .search_path
+                .iter()
+                .map(|path| path.raw.clone())
+                .collect(),
+            context_fingerprint: Some(sample.context.fingerprint()?),
+            transaction_control_authority: None,
+            transaction_observation: Some(TransactionObservation::Observed {
+                transaction_id: sample.transaction_id.clone(),
+                abort_on_error: sample.abort_on_error,
+                usability: TransactionUsability::Unknown,
+            }),
+        })
+    }
+
+    fn observed_context_catalog_state(
+        &self,
+        sample: &ObservationSample,
+    ) -> AppResult<SessionRuntimeState> {
+        Ok(SessionRuntimeState {
+            session_id: self.session_id.clone(),
+            transaction_mode: if sample.autocommit {
+                TransactionMode::AutoCommit
+            } else {
+                TransactionMode::Manual
+            },
+            transaction_state: if sample.transaction_id.is_some() {
+                TransactionState::InTransaction
+            } else {
+                TransactionState::Idle
+            },
+            context_kind: SessionContextKind::Schema,
+            active_context: sample.context.schema.clone(),
+            database: sample.context.database.clone().unwrap_or_default(),
+            role: sample.context.role.clone(),
+            warehouse: sample.context.warehouse.clone(),
             search_path: sample
                 .context
                 .search_path
@@ -1183,6 +1366,7 @@ impl SnowflakeExternal {
             active_context: None,
             database: String::new(),
             role: None,
+            warehouse: None,
             search_path: vec![],
             context_fingerprint: None,
             transaction_observation: Some(TransactionObservation::Unavailable),
@@ -1353,7 +1537,9 @@ impl SnowflakeExternal {
 
     async fn browse_context(&self, expected: Option<&LiveContext>) -> AppResult<LiveContext> {
         let context = self.live_metadata_context().await?;
-        if context.database.as_deref() != Some(self.profile.database.as_str())
+        let active_database = self.active_database.lock().clone();
+        if active_database.is_none()
+            || context.database != active_database
             || expected.is_some_and(|expected| *expected != context)
         {
             return Err(stale_browse().with_completion_invalidated());
@@ -2304,6 +2490,10 @@ impl Driver for SnowflakeExternal {
             let snapshot = options.snapshot.take().ok_or_else(stale_session_options)?;
             let generation = uuid::Uuid::new_v4().to_string();
             options.revision = generation.clone();
+            *self.context_catalog.lock() = ContextCatalogState {
+                revision: generation.clone(),
+                snapshot: None,
+            };
             (snapshot, generation)
         };
         self.invalidate_relation_catalog();
@@ -2314,10 +2504,11 @@ impl Driver for SnowflakeExternal {
         };
         let result = self
             .metadata_operation(async {
+                let active_database = self.require_active_database()?;
                 metadata::quote_identifier(&request.database)?;
                 metadata::quote_identifier(&request.schema)?;
                 if request.context_fingerprint != snapshot.sample.context.fingerprint()?
-                    || request.database != self.profile.database
+                    || request.database != active_database
                     || snapshot.sample.context.database.as_deref()
                         != Some(request.database.as_str())
                     || snapshot.sample.transaction_id.is_some()
@@ -2566,6 +2757,441 @@ impl Driver for SnowflakeExternal {
         result
     }
 
+    async fn snowflake_session_contexts(
+        &self,
+        session_id: &str,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        self.require_ordinary_mode()?;
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        let revision = self.invalidate_session_options();
+        let generation = self.revoke_transaction_grant();
+        let result = self
+            .metadata_operation_inner(async {
+                self.require_context_catalog_revision(&revision)?;
+                self.require_transaction_generation(&generation)?;
+                let before = self.snowflake_context_sample().await?;
+                let (roles, warehouses, databases, schemas) =
+                    self.read_context_lists(&before.context).await?;
+                let after = self.snowflake_context_sample().await?;
+                if session::compare_samples(Some(&before), Some(&after))
+                    != SampleConsistency::Stable
+                {
+                    return Err(stale_session_options());
+                }
+                let state = if after.context.database.is_some() {
+                    self.publish_transaction_sample(&after, &generation)?
+                } else {
+                    self.observed_context_catalog_state(&after)?
+                };
+                let mut catalog = self.context_catalog.lock();
+                if catalog.revision != revision || self.is_closed() {
+                    return Err(stale_session_options());
+                }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
+                catalog.snapshot = Some(ContextCatalogSnapshot {
+                    sample: after.clone(),
+                    roles: roles.clone(),
+                    warehouses: warehouses.clone(),
+                    databases: databases.clone(),
+                    schemas: schemas.clone(),
+                });
+                if after.context.database.is_some() {
+                    *self.session_options.lock() = SessionOptionsState {
+                        revision: revision.clone(),
+                        snapshot: Some(SessionOptionsSnapshot {
+                            sample: after,
+                            available: schemas.clone(),
+                        }),
+                    };
+                }
+                Ok(SnowflakeContextCatalog {
+                    state,
+                    available_roles: roles,
+                    available_warehouses: warehouses,
+                    available_databases: databases,
+                    available_schemas: schemas,
+                    revision: revision.clone(),
+                })
+            })
+            .await
+            .inspect_err(|_| {
+                self.invalidate_context_catalog_revision(&revision);
+                self.invalidate_session_options_revision(&revision);
+                self.invalidate_relation_catalog();
+            })
+            .map_err(AppError::with_completion_invalidated);
+        if let Err(error) = &result {
+            self.observer_failed(&generation, error);
+        }
+        result
+    }
+
+    async fn switch_snowflake_context(
+        &self,
+        session_id: &str,
+        request: &SwitchSnowflakeContextRequest,
+    ) -> AppResult<SnowflakeContextCatalog> {
+        self.require_unrestricted()?;
+        if session_id != self.session_id {
+            return Err(AppError::invalid("Invalid Snowflake session"));
+        }
+        let (snapshot, generation) = {
+            let mut catalog = self.context_catalog.lock();
+            if catalog.revision != request.revision {
+                return Err(stale_session_options().with_completion_invalidated());
+            }
+            let snapshot = catalog.snapshot.take().ok_or_else(stale_session_options)?;
+            let generation = uuid::Uuid::new_v4().to_string();
+            catalog.revision = generation.clone();
+            *self.session_options.lock() = SessionOptionsState {
+                revision: generation.clone(),
+                snapshot: None,
+            };
+            (snapshot, generation)
+        };
+        self.revoke_ddl_grant();
+        self.invalidate_relation_catalog();
+        let mut lease = SchemaSwitchLease {
+            driver: self,
+            operation: None,
+            published: false,
+        };
+        let result = self
+            .metadata_operation(async {
+                if request.context_fingerprint != snapshot.sample.context.fingerprint()?
+                    || snapshot.sample.transaction_id.is_some()
+                {
+                    return Err(stale_session_options());
+                }
+                match &request.target {
+                    SnowflakeContextTarget::Role { role } => {
+                        metadata::quote_identifier(role)?;
+                        if !snapshot.roles.contains(role) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Warehouse { warehouse } => {
+                        metadata::quote_identifier(warehouse)?;
+                        if !snapshot.warehouses.contains(warehouse) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Database { database, schema } => {
+                        metadata::quote_identifier(database)?;
+                        if let Some(schema) = schema {
+                            metadata::quote_identifier(schema)?;
+                        }
+                        if !snapshot.databases.contains(database) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Schema { database, schema } => {
+                        metadata::quote_identifier(database)?;
+                        metadata::quote_identifier(schema)?;
+                        if snapshot.sample.context.database.as_deref() != Some(database.as_str())
+                            || !snapshot.schemas.contains(schema)
+                        {
+                            return Err(stale_session_options());
+                        }
+                    }
+                }
+                self.require_context_catalog_revision(&generation)?;
+                let before = self.snowflake_context_sample().await?;
+                if before != snapshot.sample || before.transaction_id.is_some() {
+                    return Err(stale_session_options());
+                }
+                match &request.target {
+                    SnowflakeContextTarget::Role { role } => {
+                        let rows = self
+                            .metadata_read(
+                                metadata::SHOW_ROLES_SQL,
+                                metadata::SHOW_CONTEXT_LIMIT + 1,
+                                metadata::SHOW_CONTEXT_MAX_BYTES,
+                            )
+                            .await?;
+                        let mut live_roles = metadata::parse_show_names(&rows)?;
+                        if let Some(active) = &before.context.role
+                            && !live_roles.contains(active)
+                        {
+                            live_roles.push(active.clone());
+                        }
+                        if !live_roles.contains(role) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Warehouse { warehouse } => {
+                        let rows = self
+                            .metadata_read(
+                                metadata::SHOW_WAREHOUSES_SQL,
+                                metadata::SHOW_CONTEXT_LIMIT + 1,
+                                metadata::SHOW_CONTEXT_MAX_BYTES,
+                            )
+                            .await?;
+                        let mut live_warehouses = metadata::parse_show_names(&rows)?;
+                        if let Some(active) = &before.context.warehouse
+                            && !live_warehouses.contains(active)
+                        {
+                            live_warehouses.push(active.clone());
+                        }
+                        if !live_warehouses.contains(warehouse) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Database { database, .. } => {
+                        let rows = self
+                            .metadata_read(
+                                metadata::SHOW_DATABASES_SQL,
+                                metadata::SHOW_CONTEXT_LIMIT + 1,
+                                metadata::SHOW_CONTEXT_MAX_BYTES,
+                            )
+                            .await?;
+                        let mut live_databases = metadata::parse_show_names(&rows)?;
+                        if let Some(active) = &before.context.database
+                            && !live_databases.contains(active)
+                        {
+                            live_databases.push(active.clone());
+                        }
+                        if !live_databases.contains(database) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Schema { schema, .. } => {
+                        let rows = self
+                            .read_spec(&metadata::schemas_read(&before.context)?)
+                            .await?;
+                        let live_schemas = metadata::parse_schemas(&before.context, &rows)?;
+                        if !live_schemas.contains(schema) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                }
+                let expected = json!({
+                    "user": before.context.principal,
+                    "role": before.context.role,
+                    "database": before.context.database,
+                    "schema": before.context.schema,
+                    "warehouse": before.context.warehouse,
+                    "session": before.context.session_id,
+                });
+                let payload = match &request.target {
+                    SnowflakeContextTarget::Role { role } => {
+                        json!({ "kind": "role", "role": role, "expected": expected })
+                    }
+                    SnowflakeContextTarget::Warehouse { warehouse } => {
+                        json!({ "kind": "warehouse", "warehouse": warehouse, "expected": expected })
+                    }
+                    SnowflakeContextTarget::Database { database, schema } => {
+                        json!({ "kind": "database", "database": database, "schema": schema, "expected": expected })
+                    }
+                    SnowflakeContextTarget::Schema { database, schema } => {
+                        json!({ "kind": "schema", "database": database, "schema": schema, "expected": expected })
+                    }
+                };
+                {
+                    let catalog = self.context_catalog.lock();
+                    if catalog.revision != generation || self.is_closed() {
+                        return Err(stale_session_options());
+                    }
+                    #[cfg(all(unix, feature = "test-harness"))]
+                    self.check_metadata_observer()?;
+                    lease.operation = Some(
+                        self.process
+                            .request(
+                                "switch-context",
+                                "switchContext",
+                                payload,
+                                Impact::ContextChange,
+                            )
+                            .map_err(control_error)?,
+                    );
+                }
+                let report = {
+                    let operation = lease.operation.as_mut().ok_or_else(protocol_error)?;
+                    *self.active.lock() = Some(Active {
+                        token: operation.token(),
+                        terminal: operation.terminal_receiver(),
+                    });
+                    let _active = ActiveLease(&self.active);
+                    operation.wait().await
+                };
+                if !report.ok
+                    && report.use_acknowledged.is_none()
+                    && report.certainty == Certainty::ServerTerminal
+                    && report.error_code.as_deref() == Some("database")
+                {
+                    lease.published = true;
+                    return Err(AppError::new(
+                        ErrorCode::Database,
+                        "Snowflake rejected the context switch; check privileges and refresh context options",
+                    ));
+                }
+                check_report(&report)?;
+                if report.use_acknowledged.is_none() {
+                    return Err(protocol_error());
+                }
+                let readback = report.result.as_ref().ok_or_else(protocol_error)?;
+                if readback.get("user") != Some(&json!(before.context.principal))
+                    || readback.get("session") != Some(&json!(before.context.session_id))
+                {
+                    return Err(protocol_error());
+                }
+                match &request.target {
+                    SnowflakeContextTarget::Role { role } => {
+                        if readback.get("role") != Some(&json!(role)) {
+                            return Err(protocol_error());
+                        }
+                    }
+                    SnowflakeContextTarget::Warehouse { warehouse } => {
+                        if readback.get("role") != Some(&json!(before.context.role))
+                            || readback.get("database") != Some(&json!(before.context.database))
+                            || readback.get("schema") != Some(&json!(before.context.schema))
+                            || readback.get("warehouse") != Some(&json!(warehouse))
+                        {
+                            return Err(protocol_error());
+                        }
+                    }
+                    SnowflakeContextTarget::Database { database, schema } => {
+                        if readback.get("role") != Some(&json!(before.context.role))
+                            || readback.get("database") != Some(&json!(database))
+                            || schema
+                                .as_ref()
+                                .is_some_and(|s| readback.get("schema") != Some(&json!(s)))
+                            || readback.get("warehouse") != Some(&json!(before.context.warehouse))
+                        {
+                            return Err(protocol_error());
+                        }
+                    }
+                    SnowflakeContextTarget::Schema { database, schema } => {
+                        if readback.get("role") != Some(&json!(before.context.role))
+                            || readback.get("database") != Some(&json!(database))
+                            || readback.get("schema") != Some(&json!(schema))
+                            || readback.get("warehouse") != Some(&json!(before.context.warehouse))
+                        {
+                            return Err(protocol_error());
+                        }
+                    }
+                }
+                let next_database = match readback.get("database") {
+                    Some(Value::String(db)) => Some(db.clone()),
+                    Some(Value::Null) => None,
+                    _ => return Err(protocol_error()),
+                };
+                *self.active_database.lock() = next_database;
+                self.require_context_catalog_revision(&generation)?;
+                let after = self.snowflake_context_sample().await?;
+                if after.transaction_id.is_some()
+                    || after.autocommit != before.autocommit
+                    || after.abort_on_error != before.abort_on_error
+                {
+                    return Err(stale_session_options());
+                }
+                match &request.target {
+                    SnowflakeContextTarget::Role { role } => {
+                        if after.context.role.as_deref() != Some(role.as_str()) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Warehouse { warehouse } => {
+                        if after.context.warehouse.as_deref() != Some(warehouse.as_str()) {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Database { database, schema } => {
+                        if after.context.database.as_deref() != Some(database.as_str())
+                            || schema.as_ref().is_some_and(|s| {
+                                after.context.schema.as_deref() != Some(s.as_str())
+                            })
+                        {
+                            return Err(stale_session_options());
+                        }
+                    }
+                    SnowflakeContextTarget::Schema { database, schema } => {
+                        if after.context.database.as_deref() != Some(database.as_str())
+                            || after.context.schema.as_deref() != Some(schema.as_str())
+                        {
+                            return Err(stale_session_options());
+                        }
+                    }
+                }
+                let (roles, warehouses, databases, schemas) =
+                    self.read_context_lists(&after.context).await?;
+                let verified = self.snowflake_context_sample().await?;
+                if session::compare_samples(Some(&after), Some(&verified))
+                    != SampleConsistency::Stable
+                {
+                    return Err(stale_session_options());
+                }
+                let tx_generation = self.revoke_transaction_grant();
+                let state = if verified.context.database.is_some() {
+                    self.publish_transaction_sample(&verified, &tx_generation)?
+                } else {
+                    self.observed_context_catalog_state(&verified)?
+                };
+                let revision = uuid::Uuid::new_v4().to_string();
+                let mut catalog = self.context_catalog.lock();
+                if catalog.revision != generation || self.is_closed() {
+                    return Err(stale_session_options());
+                }
+                #[cfg(all(unix, feature = "test-harness"))]
+                self.check_metadata_observer()?;
+                *catalog = ContextCatalogState {
+                    revision: revision.clone(),
+                    snapshot: Some(ContextCatalogSnapshot {
+                        sample: verified.clone(),
+                        roles: roles.clone(),
+                        warehouses: warehouses.clone(),
+                        databases: databases.clone(),
+                        schemas: schemas.clone(),
+                    }),
+                };
+                if verified.context.database.is_some() {
+                    *self.session_options.lock() = SessionOptionsState {
+                        revision: revision.clone(),
+                        snapshot: Some(SessionOptionsSnapshot {
+                            sample: verified,
+                            available: schemas.clone(),
+                        }),
+                    };
+                }
+                Ok(SnowflakeContextCatalog {
+                    state,
+                    available_roles: roles,
+                    available_warehouses: warehouses,
+                    available_databases: databases,
+                    available_schemas: schemas,
+                    revision,
+                })
+            })
+            .await;
+        match result {
+            Ok(catalog) => {
+                lease.published = true;
+                Ok(catalog)
+            }
+            Err(error) => {
+                self.invalidate_context_catalog_revision(&generation);
+                self.invalidate_session_options_revision(&generation);
+                if let Some(operation) = &lease.operation
+                    && !lease.published
+                {
+                    let acknowledged = operation.use_acknowledged().is_some();
+                    self.start_shutdown();
+                    if acknowledged {
+                        return Err(AppError::new(
+                            ErrorCode::ConnectionClosed,
+                            "Snowflake acknowledged the context change, but its final session context could not be verified. The session was closed; reconnect before continuing.",
+                        )
+                        .with_completion_invalidated());
+                    }
+                }
+                Err(error.with_completion_invalidated())
+            }
+        }
+    }
+
     fn invalidate_relation_catalog(&self) {
         {
             let mut state = self.browsing.lock();
@@ -2664,7 +3290,7 @@ impl Driver for SnowflakeExternal {
             let catalog = BrowseCatalog {
                 revision: revision.clone(),
                 identity: context.completion_identity()?,
-                database: self.profile.database.clone(),
+                database: context.database.clone().ok_or_else(stale_browse)?,
                 relations: summaries,
             };
             if serde_json::to_vec(&catalog)
@@ -3563,7 +4189,7 @@ const file = name => new URL(name, import.meta.url);
 // coercion in the production template. This models routing, not Snowflake typing.
 const normalizedContextSql = 'SELECT CURRENT_USER() AS PRINCIPAL, CURRENT_ROLE() AS ROLE_NAME, CURRENT_DATABASE() AS DATABASE_NAME, CURRENT_SCHEMA() AS SCHEMA_NAME, CURRENT_WAREHOUSE() AS WAREHOUSE_NAME, CURRENT_SESSION() AS SESSION_ID, TO_VARCHAR(CURRENT_SCHEMAS()) AS SEARCH_PATH, CURRENT_SECONDARY_ROLES() AS SECONDARY_ROLES';
 const oldContextSql = normalizedContextSql.replace('TO_VARCHAR(CURRENT_SCHEMAS())', 'TO_JSON(CURRENT_SCHEMAS())');
-let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, definitionSeen = false, constraintsSeen = false, checksSeen = false, mappingSeen = false, currentTransaction = null;
+let sequence = 0, contextReads = 0, transactionReads = 0, previousSettings = '', currentRole = 'ROLE', currentWarehouse = 'WH', currentDatabase = 'DB', currentSchema = 'PUBLIC', switched = false, boundarySeen = false, dmlSeen = false, ddlSeen = false, definitionSeen = false, constraintsSeen = false, checksSeen = false, mappingSeen = false, currentTransaction = null;
 const uuid = n => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 const sdk = { createConnection() {
   appendFileSync(file('connections'), '1');
@@ -3598,7 +4224,10 @@ const sdk = { createConnection() {
       const constraints = sql.includes('.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC ');
       const checks = sql.includes('.INFORMATION_SCHEMA.CHECK_CONSTRAINTS ');
       const mappingKind = sql.startsWith('SHOW PRIMARY KEYS IN TABLE ') ? 'Primary' : sql.startsWith('SHOW UNIQUE KEYS IN TABLE ') ? 'Unique' : sql.startsWith('SHOW IMPORTED KEYS IN TABLE ') ? 'Foreign' : null;
-      const use = sql.startsWith('USE SCHEMA ');
+      const showRoles = sql === 'SHOW ROLES';
+      const showWarehouses = sql === 'SHOW WAREHOUSES';
+      const showDatabases = sql === 'SHOW DATABASES';
+      const use = /^(USE SCHEMA|USE ROLE|USE WAREHOUSE|USE DATABASE) /u.test(sql);
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
       const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE) /u.test(sql);
@@ -3621,14 +4250,45 @@ const sdk = { createConnection() {
           boundarySeen = true;
         }
         names = []; rows = [];
+      } else if (showRoles) {
+        names = ['created_on', 'name'];
+        rows = value('roles', ['ROLE', 'ANALYST']).map(r => ['2026-01-01', r]);
+      } else if (showWarehouses) {
+        names = ['name', 'state'];
+        rows = value('warehouses', ['WH', 'LARGE_WH']).map(w => [w, 'STARTED']);
+      } else if (showDatabases) {
+        names = ['created_on', 'name'];
+        rows = value('databases', ['DB', 'ANALYTICS_DB']).map(d => ['2026-01-01', d]);
       } else if (use) {
-        const parts = /^USE SCHEMA "((?:[^"]|"")*)"\."((?:[^"]|"")*)"$/u.exec(sql);
-        if (!parts || parts[1] !== 'DB') throw new Error('unexpected fixture switch SQL');
-        if (!settings.failUse) { currentSchema = parts[2].replaceAll('""','"'); switched = true; }
+        if (sql.startsWith('USE SCHEMA ')) {
+          const parts = /^USE SCHEMA "((?:[^"]|"")*)"\."((?:[^"]|"")*)"$/u.exec(sql);
+          if (!parts || parts[1].replaceAll('""','"') !== currentDatabase) throw new Error('unexpected fixture switch SQL');
+          if (!settings.failUse) { currentSchema = parts[2].replaceAll('""','"'); switched = true; }
+        } else if (sql.startsWith('USE ROLE ')) {
+          const parts = /^USE ROLE "((?:[^"]|"")*)"$/u.exec(sql);
+          if (!parts) throw new Error('unexpected fixture USE ROLE SQL');
+          if (!settings.failUse) {
+            currentRole = parts[1].replaceAll('""','"');
+            if (settings.roleClearsDatabase) { currentDatabase = null; currentSchema = null; }
+            switched = true;
+          }
+        } else if (sql.startsWith('USE WAREHOUSE ')) {
+          const parts = /^USE WAREHOUSE "((?:[^"]|"")*)"$/u.exec(sql);
+          if (!parts) throw new Error('unexpected fixture USE WAREHOUSE SQL');
+          if (!settings.failUse) { currentWarehouse = parts[1].replaceAll('""','"'); switched = true; }
+        } else if (sql.startsWith('USE DATABASE ')) {
+          const parts = /^USE DATABASE "((?:[^"]|"")*)"$/u.exec(sql);
+          if (!parts) throw new Error('unexpected fixture USE DATABASE SQL');
+          if (!settings.failUse) {
+            currentDatabase = parts[1].replaceAll('""','"');
+            currentSchema = value('databaseDefaultSchema', 'PUBLIC');
+            switched = true;
+          }
+        }
         names = []; rows = [];
       } else if (sql.startsWith('SELECT CURRENT_USER(),')) {
         names = ['U','R','D','S','W','ID'];
-        rows = [['SERVER_USER',value('role','ROLE'),'DB',settings.badReadback ? 'WRONG' : currentSchema,value('warehouse','WH'),'SESSION']];
+        rows = [['SERVER_USER',value('role',currentRole),currentDatabase,settings.badReadback ? 'WRONG' : currentSchema,value('warehouse',currentWarehouse),'SESSION']];
       } else if (sql === 'SELECT CURRENT_VERSION()') {
         rows = [['synthetic-version']];
       } else if (unsupportedContext) {
@@ -3636,7 +4296,7 @@ const sdk = { createConnection() {
       } else if (context) {
         contextReads++;
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
-        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterRole',value('role','ROLE')) : value('role','ROLE'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterDatabase',value('database','DB')) : value('database','DB'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterWarehouse',value('warehouse','WH')) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse','WH'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',JSON.stringify(['DB.' + currentSchema])),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
+        rows = [[value('principal','SERVER_USER'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterRole',value('role',currentRole)) : value('role',currentRole),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterDatabase',value('database',currentDatabase)) : value('database',currentDatabase),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSchema',currentSchema) : value('schema',currentSchema),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterWarehouse',value('warehouse',currentWarehouse)) : settings.contextDrift && contextReads >= 2 ? 'CHANGED' : value('warehouse',currentWarehouse),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSession',value('session','SESSION')) : value('session','SESSION'),value('searchPath',currentDatabase && currentSchema ? JSON.stringify([currentDatabase + '.' + currentSchema]) : '[]'),(switched || boundarySeen || dmlSeen || ddlSeen) ? value('afterSecondaryRoles','{"roles":"","value":"ALL"}') : '{"roles":"","value":"ALL"}']];
       } else if (sql.startsWith('SHOW PARAMETERS LIKE ')) {
         parameter = sql.split("'")[1];
         names = ['key','value','default','level'];
@@ -3679,7 +4339,7 @@ const sdk = { createConnection() {
         rows = value('definitionRows',[[value('definition','create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);')]]);
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
-        rows = value('schemas',navigation ? ['PUBLIC',navigationSchema] : ['OTHER','PUBLIC']).map(name => ['DB',name]);
+        rows = value('schemas',navigation ? ['PUBLIC',navigationSchema] : ['OTHER','PUBLIC']).map(name => [currentDatabase ?? 'DB',name]);
       } else if (relations) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','CREATED','LAST_DDL'];
         const schema = sql.includes("TABLE_SCHEMA = 'OTHER'") ? 'OTHER' : 'PUBLIC';
@@ -4067,12 +4727,22 @@ process.stdin.on('end', retire);
                 sql.starts_with("SELECT ")
                     || [
                         metadata::QUOTED_IDENTIFIER_POLICY_SQL,
+                        metadata::SHOW_ROLES_SQL,
+                        metadata::SHOW_WAREHOUSES_SQL,
+                        metadata::SHOW_DATABASES_SQL,
                         session::AUTOCOMMIT_SQL,
                         session::ABORT_ON_ERROR_SQL,
                     ]
                     .contains(&sql.as_str())
                     || mapping_reads.iter().any(|read| sql == read.sql())
-                    || sql.starts_with("USE SCHEMA \"DB\".")
+                    || [
+                        "USE SCHEMA \"",
+                        "USE ROLE \"",
+                        "USE WAREHOUSE \"",
+                        "USE DATABASE \"",
+                    ]
+                    .iter()
+                    .any(|prefix| sql.starts_with(prefix))
                     || sql.starts_with("DESCRIBE TABLE ")
                     || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
                     || [
@@ -6331,5 +7001,154 @@ process.stdin.on('end', retire);
             assert!(h.driver.validate_snowflake_ddl(&request).is_err());
             h.finish().await;
         }
+    }
+
+    #[tokio::test]
+    async fn snowflake_session_contexts_and_switch_context_cover_role_warehouse_database_schema_and_pre_ack_rejection()
+     {
+        let h = Harness::open().await;
+        let catalog = h
+            .driver
+            .snowflake_session_contexts("observer-session")
+            .await
+            .unwrap();
+        assert_eq!(catalog.available_roles, vec!["ANALYST", "ROLE"]);
+        assert_eq!(catalog.available_warehouses, vec!["LARGE_WH", "WH"]);
+        assert_eq!(catalog.available_databases, vec!["ANALYTICS_DB", "DB"]);
+        assert_eq!(catalog.available_schemas, vec!["OTHER", "PUBLIC"]);
+        assert_eq!(catalog.state.warehouse.as_deref(), Some("WH"));
+
+        // Switch warehouse with one-use revision.
+        let after_wh = h
+            .driver
+            .switch_snowflake_context(
+                "observer-session",
+                &SwitchSnowflakeContextRequest {
+                    revision: catalog.revision.clone(),
+                    context_fingerprint: catalog.state.context_fingerprint.clone().unwrap(),
+                    target: SnowflakeContextTarget::Warehouse {
+                        warehouse: "LARGE_WH".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_wh.state.warehouse.as_deref(), Some("LARGE_WH"));
+        // Replaying the consumed revision is rejected.
+        assert_eq!(
+            h.driver
+                .switch_snowflake_context(
+                    "observer-session",
+                    &SwitchSnowflakeContextRequest {
+                        revision: catalog.revision,
+                        context_fingerprint: catalog.state.context_fingerprint.unwrap(),
+                        target: SnowflakeContextTarget::Warehouse {
+                            warehouse: "WH".into(),
+                        },
+                    },
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        // Pre-ACK USE ROLE rejection preserves the external-browser SSO session.
+        h.settings(json!({"failUse": true}));
+        let rejected = h
+            .driver
+            .switch_snowflake_context(
+                "observer-session",
+                &SwitchSnowflakeContextRequest {
+                    revision: after_wh.revision,
+                    context_fingerprint: after_wh.state.context_fingerprint.unwrap(),
+                    target: SnowflakeContextTarget::Role {
+                        role: "ANALYST".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(rejected.code, ErrorCode::Database);
+        assert!(!h.driver.is_closed());
+
+        // Refresh after pre-ACK rejection, then switch role that clears active database,
+        // and recover by switching database and schema.
+        h.settings(json!({"roleClearsDatabase": true}));
+        let refreshed = h
+            .driver
+            .snowflake_session_contexts("observer-session")
+            .await
+            .unwrap();
+        let after_role = h
+            .driver
+            .switch_snowflake_context(
+                "observer-session",
+                &SwitchSnowflakeContextRequest {
+                    revision: refreshed.revision,
+                    context_fingerprint: refreshed.state.context_fingerprint.unwrap(),
+                    target: SnowflakeContextTarget::Role {
+                        role: "ANALYST".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_role.state.role.as_deref(), Some("ANALYST"));
+        assert_eq!(after_role.state.database, "");
+        assert!(after_role.available_schemas.is_empty());
+
+        let after_db = h
+            .driver
+            .switch_snowflake_context(
+                "observer-session",
+                &SwitchSnowflakeContextRequest {
+                    revision: after_role.revision,
+                    context_fingerprint: after_role.state.context_fingerprint.unwrap(),
+                    target: SnowflakeContextTarget::Database {
+                        database: "ANALYTICS_DB".into(),
+                        schema: None,
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_db.state.database, "ANALYTICS_DB");
+        assert_eq!(after_db.state.active_context.as_deref(), Some("PUBLIC"));
+
+        let after_schema = h
+            .driver
+            .switch_snowflake_context(
+                "observer-session",
+                &SwitchSnowflakeContextRequest {
+                    revision: after_db.revision,
+                    context_fingerprint: after_db.state.context_fingerprint.unwrap(),
+                    target: SnowflakeContextTarget::Schema {
+                        database: "ANALYTICS_DB".into(),
+                        schema: "OTHER".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(after_schema.state.database, "ANALYTICS_DB");
+        assert_eq!(after_schema.state.active_context.as_deref(), Some("OTHER"));
+        assert!(!h.driver.is_closed());
+        let use_queries: Vec<_> = h
+            .queries()
+            .into_iter()
+            .filter(|sql| sql.starts_with("USE "))
+            .collect();
+        assert_eq!(
+            use_queries,
+            vec![
+                "USE WAREHOUSE \"LARGE_WH\"",
+                "USE ROLE \"ANALYST\"",
+                "USE ROLE \"ANALYST\"",
+                "USE DATABASE \"ANALYTICS_DB\"",
+                "USE SCHEMA \"ANALYTICS_DB\".\"OTHER\"",
+            ]
+        );
+        h.finish().await;
     }
 }

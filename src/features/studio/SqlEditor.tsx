@@ -341,6 +341,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const contextAuthority = useStudio((s) =>
     props.sessionId ? s.sessionContextAuthorities[props.sessionId] : undefined,
   );
+  const snowflakeContextAuthority = useStudio((s) =>
+    props.sessionId ? s.snowflakeContextAuthorities[props.sessionId] : undefined,
+  );
+  const snowflakeContextExpanded = useStudio((s) =>
+    props.sessionId ? s.snowflakeContextExpanded[props.sessionId] === true : false,
+  );
   const contextSwitchPending = useStudio((s) =>
     props.sessionId ? s.sessionContextSwitching[props.sessionId] === true : false,
   );
@@ -1238,6 +1244,29 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         ? [currentContext, ...availableContexts]
         : availableContexts
       : [];
+  const isSnowflakeSdkEditor =
+    !consoleMode &&
+    props.engine === "snowflake" &&
+    Boolean(props.sessionId) &&
+    runtimeState !== undefined &&
+    runtimeState.transactionObservation !== undefined;
+  const snowflakeContextReady =
+    isSnowflakeSdkEditor &&
+    snowflakeContextExpanded &&
+    !switchingContext &&
+    !metadataBlocked &&
+    Boolean(snowflakeContextAuthority?.revision) &&
+    snowflakeContextAuthority?.state === runtimeState &&
+    runtimeState.transactionState === "idle" &&
+    runtimeState.transactionObservation?.status === "observed" &&
+    runtimeState.transactionObservation.transactionId === null;
+  const currentRole = runtimeState?.role ?? "";
+  const currentWarehouse = runtimeState?.warehouse ?? "";
+  const currentDatabase = runtimeState?.database ?? "";
+  const roleOptions = snowflakeContextAuthority?.availableRoles ?? [];
+  const warehouseOptions = snowflakeContextAuthority?.availableWarehouses ?? [];
+  const databaseOptions = snowflakeContextAuthority?.availableDatabases ?? [];
+  const snowflakeSchemaOptions = snowflakeContextAuthority?.availableSchemas ?? [];
   const showContextSwitcher =
     !consoleMode &&
     Boolean(props.sessionId) &&
@@ -1252,54 +1281,216 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       {props.engine !== "redis" &&
         (props.sessionId || paramSlots.length > 0 || props.value.trim()) && (
           <div className="editor-context-row">
-            {showContextSwitcher && (
-              <select
-                className="context-switcher"
-                aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
-                title={
-                  runtimeState?.transactionObservation !== undefined && !contextAuthority
-                    ? "Refresh completion context to select a schema"
-                    : undefined
-                }
-                value={currentContext}
-                disabled={
-                  switchingContext ||
-                  metadataBlocked ||
-                  (runtimeState?.transactionObservation !== undefined &&
-                    (!contextAuthority?.revision ||
-                      contextAuthority.state !== runtimeState ||
-                      runtimeState.transactionState !== "idle" ||
-                      runtimeState.transactionObservation.status !== "observed" ||
-                      runtimeState.transactionObservation.transactionId !== null))
-                }
-                onChange={(event) => {
-                  const target = event.target.value;
-                  if (!target || !props.sessionId || target === currentContext) return;
-                  setSwitchingContext(true);
-                  void useStudio
-                    .getState()
-                    .switchSessionContext(props.sessionId, target)
-                    .catch((error) => useStudio.getState().notify(messageOf(error)))
-                    .finally(() => setSwitchingContext(false));
-                }}
-              >
-                {!currentContext && <option value="">No active context</option>}
-                {currentContext && !contextOptions.includes(currentContext) && (
-                  <option value={currentContext} disabled>
-                    {currentContext} (unavailable)
-                  </option>
+            {isSnowflakeSdkEditor && snowflakeContextExpanded ? (
+              <>
+                <select
+                  className="context-switcher"
+                  aria-label="Active role"
+                  value={currentRole}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const role = event.target.value;
+                    if (!role || !props.sessionId || role === currentRole) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, { kind: "role", role })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentRole && <option value="">No active role</option>}
+                  {currentRole && !roleOptions.includes(currentRole) && (
+                    <option value={currentRole} disabled>
+                      {currentRole} (unavailable)
+                    </option>
+                  )}
+                  {roleOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active warehouse"
+                  value={currentWarehouse}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const warehouse = event.target.value;
+                    if (!warehouse || !props.sessionId || warehouse === currentWarehouse) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "warehouse",
+                        warehouse,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentWarehouse && <option value="">No active warehouse</option>}
+                  {currentWarehouse && !warehouseOptions.includes(currentWarehouse) && (
+                    <option value={currentWarehouse} disabled>
+                      {currentWarehouse} (unavailable)
+                    </option>
+                  )}
+                  {warehouseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active database"
+                  value={currentDatabase}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const database = event.target.value;
+                    if (!database || !props.sessionId || database === currentDatabase) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "database",
+                        database,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentDatabase && <option value="">No active database</option>}
+                  {currentDatabase && !databaseOptions.includes(currentDatabase) && (
+                    <option value={currentDatabase} disabled>
+                      {currentDatabase} (unavailable)
+                    </option>
+                  )}
+                  {databaseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active schema"
+                  value={currentContext}
+                  disabled={!snowflakeContextReady || !currentDatabase}
+                  onChange={(event) => {
+                    const schema = event.target.value;
+                    if (
+                      !schema ||
+                      !props.sessionId ||
+                      !currentDatabase ||
+                      schema === currentContext
+                    )
+                      return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "schema",
+                        database: currentDatabase,
+                        schema,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentContext && (
+                    <option value="">
+                      {currentDatabase ? "No active context" : "No active database"}
+                    </option>
+                  )}
+                  {currentContext && !snowflakeSchemaOptions.includes(currentContext) && (
+                    <option value={currentContext} disabled>
+                      {currentContext} (unavailable)
+                    </option>
+                  )}
+                  {snowflakeSchemaOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                {!snowflakeContextAuthority && !metadataBlocked && (
+                  <span>Refresh to change context</span>
                 )}
-                {contextOptions.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
+              </>
+            ) : (
+              <>
+                {showContextSwitcher && (
+                  <select
+                    className="context-switcher"
+                    aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                    title={
+                      runtimeState?.transactionObservation !== undefined && !contextAuthority
+                        ? "Refresh completion context to select a schema"
+                        : undefined
+                    }
+                    value={currentContext}
+                    disabled={
+                      switchingContext ||
+                      metadataBlocked ||
+                      (runtimeState?.transactionObservation !== undefined &&
+                        (!contextAuthority?.revision ||
+                          contextAuthority.state !== runtimeState ||
+                          runtimeState.transactionState !== "idle" ||
+                          runtimeState.transactionObservation.status !== "observed" ||
+                          runtimeState.transactionObservation.transactionId !== null))
+                    }
+                    onChange={(event) => {
+                      const target = event.target.value;
+                      if (!target || !props.sessionId || target === currentContext) return;
+                      setSwitchingContext(true);
+                      void useStudio
+                        .getState()
+                        .switchSessionContext(props.sessionId, target)
+                        .catch((error) => useStudio.getState().notify(messageOf(error)))
+                        .finally(() => setSwitchingContext(false));
+                    }}
+                  >
+                    {!currentContext && <option value="">No active context</option>}
+                    {currentContext && !contextOptions.includes(currentContext) && (
+                      <option value={currentContext} disabled>
+                        {currentContext} (unavailable)
+                      </option>
+                    )}
+                    {contextOptions.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {showContextSwitcher &&
+                  runtimeState?.transactionObservation !== undefined &&
+                  !contextAuthority &&
+                  !metadataBlocked && <span>Refresh to change schema</span>}
+                {isSnowflakeSdkEditor && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    style={{ flexShrink: 0 }}
+                    aria-label="Load Snowflake session contexts"
+                    disabled={switchingContext || metadataBlocked}
+                    onClick={() => {
+                      if (!props.sessionId) return;
+                      setSwitchingContext(true);
+                      void useStudio
+                        .getState()
+                        .refreshSnowflakeSessionContexts(props.sessionId, true)
+                        .catch((error) => useStudio.getState().notify(messageOf(error)))
+                        .finally(() => setSwitchingContext(false));
+                    }}
+                  >
+                    Role / Warehouse / DB
+                  </button>
+                )}
+              </>
             )}
-            {showContextSwitcher &&
-              runtimeState?.transactionObservation !== undefined &&
-              !contextAuthority &&
-              !metadataBlocked && <span>Refresh to change schema</span>}
             <div
               aria-live="polite"
               aria-atomic="true"

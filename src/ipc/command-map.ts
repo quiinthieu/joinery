@@ -68,7 +68,9 @@ import type {
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
+  SnowflakeContextCatalog,
   SwitchSchemaRequest,
+  SwitchSnowflakeContextRequest,
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
@@ -557,6 +559,14 @@ export interface JoineryCommandMap {
   switch_session_schema: {
     args: { sessionId: string; request: SwitchSchemaRequest };
     result: SessionContextOptions;
+  };
+  snowflake_session_contexts: {
+    args: { sessionId: string; resumeMetadata?: boolean };
+    result: SnowflakeContextCatalog;
+  };
+  switch_snowflake_context: {
+    args: { sessionId: string; request: SwitchSnowflakeContextRequest };
+    result: SnowflakeContextCatalog;
   };
   prepare_transaction_control: {
     args: { sessionId: string; request: TransactionControlRequest };
