@@ -48,13 +48,23 @@ No phase below may be started until the owner explicitly approves:
   local evaluation directory) so schema-8 SQLite migrations and encrypted
   recovery tests never touch existing local profiles or history without an
   explicit backup.
-- **Profile configuration:** create one isolated **Staging** (`Confirm` Safe
-  Mode) Snowflake profile with:
-  - Authentication: `externalBrowser`
-  - Initial database / schema: `SANDBOX` / `BILLIE_TESTING`
-  - Console query limit: `300` seconds
-  - Explicit opt-ins enabled for qualification: `reviewedDml`, `reviewedDdl`,
-    `transactionControls`, and `consoleScripts`
+- **Profile configuration:** create **two** isolated **Staging** (`Confirm` Safe
+  Mode) Snowflake profiles in the disposable data root (because enabling
+  `reviewedConsole` intentionally seals that session against ordinary metadata,
+  grid, and generated-DDL routes):
+  1. **Interactive SDK profile (`Joinery Qual Interactive`)** — used for Phases
+     1, 2.1, 3, 4, 5.1, 6, 7, and 8:
+     - Authentication: `externalBrowser`
+     - Initial database / schema: `SANDBOX` / `BILLIE_TESTING`
+     - Explicit opt-ins: `reviewedDml = true`, `reviewedDdl = true`,
+       `reviewedConsole = false`
+  2. **Retained SQL console profile (`Joinery Qual Console`)** — used for Phase
+     2.2 (parent PK + FK DDL) and Phase 5.2 (multi-statement session variables,
+     `RESULT_SCAN(LAST_QUERY_ID())`, and receipt recovery):
+     - Authentication: `externalBrowser`
+     - Initial database / schema: `SANDBOX` / `BILLIE_TESTING`
+     - Explicit opt-ins: `reviewedConsole = true`,
+       `reviewedConsoleTimeoutSeconds = 300`
 
 ## 3. Disposable objects created and dropped
 
@@ -64,7 +74,7 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
 | Object                                                      | Type                                                                          | Purpose                                                                                                                                                                | Teardown                  |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
 | `"SANDBOX"."BILLIE_TESTING"."JOINERY_QUAL_<RUN>_PARENT"`    | Base table (with declared `PRIMARY KEY`)                                      | Parent target for `ObjectInspectorView` foreign-key column mapping, referenced-table jump, and `EXPLAIN USING JSON` join plan diff                                     | `DROP TABLE ... RESTRICT` |
-| `"SANDBOX"."BILLIE_TESTING"."JOINERY_QUAL_<RUN>_ALL_TYPES"` | Base table (14 columns across all lossless codecs + declared FK to `_PARENT`) | Reviewed DDL column operations, lossless inline grid editing, server sort/filter/offset paging, `<ReviewDialog>` cancel recovery, and 1,200-row multi-batch CSV import | `DROP TABLE ... RESTRICT` |
+| `"SANDBOX"."BILLIE_TESTING"."JOINERY_QUAL_<RUN>_ALL_TYPES"` | Base table (15 columns across all lossless codecs + declared FK to `_PARENT`) | Reviewed DDL column operations, lossless inline grid editing, server sort/filter/offset paging, `<ReviewDialog>` cancel recovery, and 1,200-row multi-batch CSV import | `DROP TABLE ... RESTRICT` |
 | `"SANDBOX"."BILLIE_TESTING"."JOINERY_QUAL_<RUN>_SUMMARY_V"` | View                                                                          | Reviewed `CREATE VIEW` / `DROP VIEW`, `ObjectInspectorView` view DDL and dependency inspection                                                                         | `DROP VIEW ...`           |
 
 ## 4. Ordered execution phases and statement budgets
@@ -137,7 +147,7 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
   3. In `SqlEditor`, verify Snowflake SQL keyword/function completion
      (`QUALIFY`, `ILIKE`, `PARSE_JSON`, `OBJECT_CONSTRUCT`), quoted column
      completions, semi-structured path syntax (`PAYLOAD:tier::STRING`), and
-     `"Inspect SQL columns"` (`completion_schema`) live column verification.
+     `"Inspect SQL columns"` (`inspection_schema`) live column verification.
 - **Statement budget:** `<= 25` bounded `SHOW` / `DESCRIBE` / `GET_DDL` /
   `INFORMATION_SCHEMA` reads.
 
@@ -165,7 +175,8 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
      collation-sensitive text) and a single-row `DELETE`, confirming exact
      affected-row count `1` and whole-original predicate matching.
   6. Switch transaction mode to **Manual** and import a synthetic **1,200-row**
-     CSV file (`3` sequential batches: `500` + `500` + `200` rows) into
+     CSV file (automatically partitioned into frame- and row-bounded batches of
+     `<= 500` rows and `< 1 MiB` helper frame each) into
      `"JOINERY_QUAL_<RUN>_ALL_TYPES"`:
      - Verify multi-batch progress and the **Pending Snowflake grid transaction**
        banner.

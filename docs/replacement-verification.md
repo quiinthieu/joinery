@@ -15,16 +15,19 @@ Base `d2d6eb3`, feature branch `feat/datagrip-replacement`, commits `682b1ed`,
 
 1. **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`)**:
    - Expanded `drivers/snowflake_mutations.rs`, `snowflake_edit_snapshot.rs`
-     (`8 MiB` per-snapshot / `32 MiB` global ceiling, `MAX_COLUMNS = 1000`), and
+     (`8 MiB` per-snapshot / `32 MiB` global ceiling, `MAX_COLUMNS = 1000`,
+     `MAX_UNIT_SQL_BYTES = 786_432`), `drivers/snowflake_batch.rs`, and
      `snowflake-helper/src/mutation-batch.mjs` (`MAX_TOTAL_BINDS = 2000`,
-     `MAX_UNITS = 500`) across `TEXT`/`VARCHAR`, `BOOLEAN`, exact
-     `NUMBER(1..=38, 0..=38)` (including `NUMBER(38, 38)`), finite `FLOAT`/`DOUBLE`
-     (`TO_BINARY(TO_VARCHAR(col), 'UTF-8')` predicate preserving `-0.0` vs `0.0`),
-     even-hex `BINARY`, `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, and
-     `VARIANT`/`ARRAY`/`OBJECT` (`PARSE_JSON`).
+     `MAX_UNITS = 500`, `768 KiB` unit SQL) across `TEXT`/`VARCHAR`, `BOOLEAN`,
+     exact `NUMBER(1..=38, 0..=38)` (including `NUMBER(38, 38)`), IEEE-754
+     `FLOAT`/`DOUBLE` (`IS NOT DISTINCT FROM CAST(? AS FLOAT)` supporting finite
+     and `NaN`/`+-Infinity` wire values), even-hex `BINARY`, `DATE`, `TIME(0..9)`,
+     `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, and `VARIANT`/`ARRAY`/`OBJECT` (`PARSE_JSON`).
    - Added `cancel_snowflake_grid_plan` across Studio, Tauri IPC, desktop ACL, and
      `RelationBrowser.tsx` so cancelling `<ReviewDialog>` restores the linear
-     `editSnapshotId` without discarding staged edits or forcing a reload.
+     `editSnapshotId` without discarding staged edits or forcing a reload, while
+     clearing consumed snapshots after any dispatched batch (including rejected
+     manual continuations).
    - Added `normalize_wire_booleans` in `drivers/snowflake_external.rs` (wired
      into `stream_bounded`, `grid_freshness.rs`, and `console.rs`) so
      `snowflake-sdk` `3.4.1` `fetchAsString` `"TRUE"`/`"FALSE"` values on
@@ -34,9 +37,11 @@ Base `d2d6eb3`, feature branch `feat/datagrip-replacement`, commits `682b1ed`,
 2. **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`)**:
    - Extended `PreviewRelationRequest`, `snowflake_browsing.rs`,
      `snowflake-helper/src/mutation-read.mjs`, and `NativeEditBinding` with
-     `PreviewSlice` (`offset`, multi-column `ORDER BY ... ASC/DESC NULLS
+     `PreviewSlice` (`offset`, single-column `ORDER BY ... ASC/DESC NULLS
 FIRST/LAST`, and typed column filters), paginated staged inserts, and
-     multi-batch RFC-4180 CSV staging up to `100,000` rows in `500`-row batches.
+     multi-batch RFC-4180 CSV staging up to `100,000` rows dynamically
+     partitioned within `<= 500` rows, `8 MiB` compiler budget, and `< 1 MiB`
+     helper wire frame.
    - Updated `AttemptOwner` workspace layout checks (`51ae8d1`) for schema-8
      `profiles_v8` and lockfiles.
 3. **Guarded context switching, observed `EXPLAIN USING JSON` diff, Object Explorer, 8 DDL actions, and SQL authoring (`a05306a`, `ff131ef`, `7434818`)**:
@@ -49,8 +54,9 @@ FIRST/LAST`, and typed column filters), paginated staged inserts, and
      overloaded functions/procedures), 8 reviewed Snowflake DDL actions
      (`CreateTable`, `AddColumn`, `AlterColumnNullability`, `RenameColumn`,
      `DropColumn`, `DropTable`, `CreateView`, `DropView`), Snowflake SQL `:path`
-     completion + live `completion_schema` column diagnostics (`ff131ef`), and
-     end-to-end Playwright workflow coverage in
+     completion + live `inspection_schema` zero-row column diagnostics on
+     `SnowflakeExternal` (preserving `Unsupported` on permission-filtered OAuth
+     `Snowflake`), and end-to-end Playwright workflow coverage in
      `tests/e2e/snowflake-datagrip-workflows.spec.ts` (`7434818`).
 
 Reproduce serially with pinned Rust and `JOINERY_TEST_NODE` pointing to the

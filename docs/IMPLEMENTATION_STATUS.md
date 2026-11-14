@@ -7,20 +7,23 @@ Commits `682b1ed..318bb7a` complete the local schema-8 Snowflake DataGrip
 Apache-2.0 `snowflake-sdk` `3.4.1` and pinned Node `24.22.2` helper:
 
 - **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`)**:
-  Expanded `drivers/snowflake_mutations.rs`, `SnapshotStore` (`8 MiB` per-snapshot /
-  `32 MiB` global budget), and helper `mutationBatch` (`2,000` scalar binds /
-  `500` units) across `TEXT`/`VARCHAR`, `BOOLEAN` (with SDK wire `"TRUE"`/`"FALSE"`
-  normalized to canonical `"true"`/`"false"` in `SnowflakeExternal` while
-  preserving `TEXT` literals), exact `NUMBER(1..=38, 0..=38)` (including
-  `NUMBER(38, 38)`), finite `FLOAT`/`DOUBLE` (`-0.0` vs `0.0` preserved via
-  `TO_BINARY(TO_VARCHAR(...))`), even-hex `BINARY`, `DATE`, `TIME(0..9)`,
+  Expanded `drivers/snowflake_mutations.rs`, `drivers/snowflake_batch.rs`,
+  `SnapshotStore` (`8 MiB` per-snapshot / `32 MiB` global budget, `768 KiB` unit
+  SQL), and helper `mutationBatch` (`2,000` scalar binds / `500` units) across
+  `TEXT`/`VARCHAR`, `BOOLEAN` (with SDK wire `"TRUE"`/`"FALSE"` normalized to
+  canonical `"true"`/`"false"` in `SnowflakeExternal` while preserving `TEXT`
+  literals), exact `NUMBER(1..=38, 0..=38)` (including `NUMBER(38, 38)`), IEEE-754
+  `FLOAT`/`DOUBLE` (`IS NOT DISTINCT FROM CAST(? AS FLOAT)` supporting finite and
+  `NaN`/`+-Infinity` wire values), even-hex `BINARY`, `DATE`, `TIME(0..9)`,
   `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, and `VARIANT`/`ARRAY`/`OBJECT`, plus
-  `cancel_snowflake_grid_plan` to restore linear edit snapshots on review cancel.
+  `cancel_snowflake_grid_plan` to restore linear edit snapshots on review cancel
+  and clear consumed snapshots after rejected manual continuations.
 - **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`)**:
-  Added `PreviewRelationRequest` `offset`, multi-column `ORDER BY ... ASC/DESC
+  Added `PreviewRelationRequest` `offset`, single-column `ORDER BY ... ASC/DESC
 NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   `NativeEditBinding`), paginated inline staged inserts, and multi-batch RFC-4180
-  CSV import queueing up to `100,000` rows in `500`-row batches.
+  CSV import queueing up to `100,000` rows dynamically partitioned within `<= 500`
+  rows and `< 1 MiB` helper wire frames.
 - **Guarded `ROLE`/`WAREHOUSE`/`DATABASE`/`SCHEMA` switching and observed `EXPLAIN USING JSON` plan diff (`a05306a`)**:
   Added `snowflake_session_contexts` and `switch_snowflake_context` with readback
   verification and metadata refresh, plus observed Snowflake `EXPLAIN USING JSON`
@@ -33,8 +36,8 @@ NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   expanded reviewed Snowflake DDL to 8 actions (`CreateTable`, `AddColumn`,
   `AlterColumnNullability`, `RenameColumn`, `DropColumn`, `DropTable`,
   `CreateView`, `DropView`), and added Snowflake SQL `:path` semi-structured
-  completion, string/comment suppression, and live `completion_schema` column
-  diagnostics.
+  completion, string/comment suppression, and live `inspection_schema` zero-row
+  column diagnostics on `SnowflakeExternal`.
 - **Qualification workspace schema-8 alignment and E2E browser coverage (`51ae8d1`, `7434818`)**:
   Updated `AttemptOwner` workspace layout checks for schema-8 `profiles_v8` and
   lockfiles, and verified `26/26` Snowflake Playwright E2E browser workflows across

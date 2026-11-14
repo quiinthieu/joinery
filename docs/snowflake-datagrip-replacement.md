@@ -39,13 +39,15 @@ DataGrip-replacement workflow surface across the bundled Apache-2.0
   (`682b1ed`, `a794426`): Inline cell editing, whole-original row deletion,
   paginated new-row insertion, `<ReviewDialog>` cancel recovery
   (`cancel_snowflake_grid_plan`), server-side `PreviewSlice` pagination
-  (`OFFSET`), multi-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, typed
+  (`OFFSET`), single-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, typed
   column filters, and multi-batch RFC-4180 CSV staging up to `100,000` rows in
-  `500`-row batches (`2,000` scalar binds per batch) across base/temporary
-  tables up to `1,000` columns and all lossless Snowflake scalar/temporal/binary/
-  semi-structured types (`TEXT`/`VARCHAR`, `BOOLEAN` with wire `"TRUE"`/`"FALSE"`
-  normalization, `NUMBER(1..=38, 0..=38)`, finite `FLOAT`/`DOUBLE`, `BINARY`,
-  `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, `VARIANT`/`ARRAY`/`OBJECT`).
+  frame- and row-bounded batches (`<= 500` rows, `<= 2,000` scalar binds,
+  `<= 768 KiB` unit SQL, and `< 1 MiB` helper frame per batch) across
+  base/temporary tables up to `1,000` columns and all lossless Snowflake
+  scalar/temporal/binary/semi-structured types (`TEXT`/`VARCHAR`, `BOOLEAN` with
+  wire `"TRUE"`/`"FALSE"` normalization, `NUMBER(1..=38, 0..=38)`, IEEE-754
+  `FLOAT`/`DOUBLE`, `BINARY`, `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`,
+  `VARIANT`/`ARRAY`/`OBJECT`).
 - **Guarded session context switching and observed `EXPLAIN USING JSON` plans**
   (`a05306a`): Same-connection inventory and guarded `USE ROLE`,
   `USE WAREHOUSE`, `USE DATABASE`, and `USE SCHEMA` switching with readback
@@ -61,7 +63,7 @@ DataGrip-replacement workflow surface across the bundled Apache-2.0
   `DropTable`, `CreateView`, `DropView`) gated on idle `AUTOCOMMIT=true` with
   post-execution metadata reconciliation; and Snowflake SQL dialect authoring
   with semi-structured `:path` completion, `$$` / single-quote literal context
-  suppression, and live `completion_schema` unknown-column diagnostics.
+  suppression, and live `inspection_schema` unknown-column diagnostics.
 - **Durable outcomes, retained console, and million-row results**: Schema-8
   durable original capture/settlement, SQL-free batch archive, protected manual
   transaction rollback, configurable query limits up to 24 hours, encrypted
@@ -82,7 +84,7 @@ acceptance remain open gates.
 | Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | SDK profile route, retained helper lifecycle, and schema-8 macOS bundle locally verified; live account SSO and hands-on native acceptance gated on [sandbox plan](snowflake-sandbox-qualification-plan.md)                                                                                                                                          |
 | Session context                | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested                               | Same-connection observations plus guarded `ROLE`, `WAREHOUSE`, `DATABASE`, and `SCHEMA` switching with readback and metadata refresh locally verified (`a05306a`, `7434818`); live account continuity open                                                                                                                                          |
 | Metadata and search            | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes                                                         | `ObjectExplorer` / `ObjectInspector` locally verified across tables, views, materialized views, sequences, and overloaded functions/procedures with PK/UQ/FK/CHECK inspection, view dependencies, and `GET_DDL` (`ff131ef`, `7434818`); live account catalog shapes open                                                                            |
-| SQL editing                    | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools                                  | Snowflake dialect keywords/functions, table/alias/CTE + `VARIANT` `:path` completion, string/comment suppression, live `completion_schema` column diagnostics, parameters, formatting, and snippets locally verified (`ff131ef`, `7434818`); daily owner acceptance open                                                                            |
+| SQL editing                    | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools                                  | Snowflake dialect keywords/functions, table/alias/CTE + `VARIANT` `:path` completion, string/comment suppression, live `inspection_schema` column diagnostics, parameters, formatting, and snippets locally verified (`ff131ef`, `7434818`); daily owner acceptance open                                                                            |
 | Execution                      | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes                                                                | Parameterized reads, reviewed DML/DDL, configurable 1–86,400s query limits, and retained mixed-SQL console locally verified; live account execution and interruption checks open                                                                                                                                                                    |
 | Results and data movement      | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data      | Disk-backed 1,000,000-row store/export, SDK 3.4.1 1,000,000-row compressed chunk loopback, server-paged/sorted/filtered relation browsing, and multi-batch RFC-4180 CSV import up to `100,000` rows locally verified (`a794426`, `7434818`); live account million-row & RSS acceptance open                                                         |
 | Data editing                   | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap                                            | Reviewed `RelationBrowser` inline cell editing, row delete/insert, `<ReviewDialog>` cancel recovery, pending preview continuation, and Commit/Rollback locally verified across lossless scalar/temporal/binary/JSON codecs up to `1,000` columns (`682b1ed`, `a794426`, `7434818`); spatial types remain read-only; live account qualification open |

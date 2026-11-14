@@ -4,16 +4,17 @@
 
 Commits `682b1ed..HEAD` complete the local schema-8 Snowflake workflow surface
 across lossless editable grid codecs up to `1,000` columns (`TEXT`/`VARCHAR`,
-`BOOLEAN`, `NUMBER(1..=38, 0..=38)`, finite `FLOAT`/`DOUBLE`, `BINARY`, `DATE`,
+`BOOLEAN`, `NUMBER(1..=38, 0..=38)`, IEEE-754 `FLOAT`/`DOUBLE`, `BINARY`, `DATE`,
 `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, `VARIANT`/`ARRAY`/`OBJECT`),
 `<ReviewDialog>` cancel recovery (`cancel_snowflake_grid_plan`), server-side
-relation pagination (`OFFSET`), multi-column `ORDER BY` sorting, typed column
-filtering, multi-batch RFC-4180 CSV staging up to `100,000` rows, guarded
-`ROLE`/`WAREHOUSE`/`DATABASE`/`SCHEMA` context switching, observed
+relation pagination (`OFFSET`), single-column `ORDER BY` sorting, typed column
+filtering, frame-bounded multi-batch RFC-4180 CSV staging up to `100,000` rows,
+guarded `ROLE`/`WAREHOUSE`/`DATABASE`/`SCHEMA` context switching, observed
 `EXPLAIN USING JSON` plan capture & diff, `ObjectExplorer` / `ObjectInspector`
 across tables, views, materialized views, sequences, and overloaded
 functions/procedures, 8 reviewed Snowflake DDL actions, and Snowflake SQL
-completion & live column diagnostics. All `26` Snowflake Playwright E2E browser
+completion & live `inspection_schema` column diagnostics. All `26` Snowflake
+Playwright E2E browser
 workflows, full `pnpm validate`, `136` offline qualification tests, and schema-8
 macOS `Joinery.app` bundle checks pass; live account qualification remains gated
 on explicit owner approval of the
