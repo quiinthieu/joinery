@@ -31,101 +31,67 @@ records connector alternatives and the expanded latest-release inventory.
 
 ## Current application boundary
 
-The current runnable local app is the schema-7 `d6cfb2a` package. It reserves
-outcome capacity before dispatch, captures compact original completion evidence
-before secondary writes/callbacks, and settles history/audit/owner state atomically.
-Captured originals recover after process death without reconnecting or replaying
-SQL; work that died before capture remains truthfully unknown. Separate bounded
-rollback capacity remains available when ordinary recording is pending. Lifetime
-reclamation, full-capacity memory behavior and normal packaged/account/owner
-acceptance remain open. See the [current source-scoped evidence](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification).
+Schema-8 source (`682b1ed..HEAD`) now implements the complete local Snowflake
+DataGrip-replacement workflow surface across the bundled Apache-2.0
+`snowflake-sdk` `3.4.1` and pinned Node `24.22.2` helper:
 
-The next application gap under implementation is
-[safe Snowflake grid editing and CSV import](snowflake-grid-editing-design.md).
-Standard-table keys are not enforced; the generic grid's committed-success
-contract cannot be reused for pending Snowflake transactions. The ordered work
-starts with a closed mutation compiler, then an owned typed batch runtime,
-application staging/review/submit/commit/rollback and actual-account acceptance.
-The compiler alone does not enable editing. All applicable DataGrip capabilities
-remain required, including standard/keyless tables and manual transactions.
+- **Lossless editable grid, paging/sorting/filtering, and multi-batch CSV import**
+  (`682b1ed`, `a794426`): Inline cell editing, whole-original row deletion,
+  paginated new-row insertion, `<ReviewDialog>` cancel recovery
+  (`cancel_snowflake_grid_plan`), server-side `PreviewSlice` pagination
+  (`OFFSET`), multi-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, typed
+  column filters, and multi-batch RFC-4180 CSV staging up to `100,000` rows in
+  `500`-row batches (`2,000` scalar binds per batch) across base/temporary
+  tables up to `1,000` columns and all lossless Snowflake scalar/temporal/binary/
+  semi-structured types (`TEXT`/`VARCHAR`, `BOOLEAN` with wire `"TRUE"`/`"FALSE"`
+  normalization, `NUMBER(1..=38, 0..=38)`, finite `FLOAT`/`DOUBLE`, `BINARY`,
+  `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, `VARIANT`/`ARRAY`/`OBJECT`).
+- **Guarded session context switching and observed `EXPLAIN USING JSON` plans**
+  (`a05306a`): Same-connection inventory and guarded `USE ROLE`,
+  `USE WAREHOUSE`, `USE DATABASE`, and `USE SCHEMA` switching with readback
+  verification and automatic metadata/completion reconciliation, plus live
+  `EXPLAIN USING JSON` operator-tree parsing (`QueryEvent::PlanContext`) and
+  plan snapshot capture/comparison in `SqlEditor`.
+- **Object Explorer, broader reviewed DDL/migrations, and SQL authoring**
+  (`ff131ef`): `ObjectExplorer` / `ObjectInspector` (`database_objects` and
+  `object_details`) across tables, views, materialized views, sequences, and
+  overloaded user functions/procedures with FK constraint mappings, view
+  dependencies, and `GET_DDL`; 8 reviewed Snowflake DDL actions (`CreateTable`,
+  `AddColumn`, `AlterColumnNullability`, `RenameColumn`, `DropColumn`,
+  `DropTable`, `CreateView`, `DropView`) gated on idle `AUTOCOMMIT=true` with
+  post-execution metadata reconciliation; and Snowflake SQL dialect authoring
+  with semi-structured `:path` completion, `$$` / single-quote literal context
+  suppression, and live `completion_schema` unknown-column diagnostics.
+- **Durable outcomes, retained console, and million-row results**: Schema-8
+  durable original capture/settlement, SQL-free batch archive, protected manual
+  transaction rollback, configurable query limits up to 24 hours, encrypted
+  metadata backup/restore, and disk-backed 1,000,000-row paging/export.
 
-Application profiles now select explicitly between the stateful SDK external-browser
-route and the existing local-application OAuth/SQL API route. New profiles choose
-external browser; missing mode on an existing profile defaults to its prior OAuth
-route. No automatic fallback occurs. Ordinary SDK execution stays read-only;
-strict single INSERT/UPDATE/DELETE uses a separate reviewed opt-in and typed path.
-Typed transaction controls use their own boundary policy. The SDK route currently
-also supports separately opted-in generated CREATE TABLE, nullable ADD COLUMN
-and DROP TABLE through the [dedicated DDL workflow](snowflake-sdk-ddl-design.md).
-This subset requires review in every writable Safe Mode, exact-target DROP confirmation,
-idle-session admission and explicit coherent metadata reconciliation afterward.
-It does not establish complete Snowflake DDL or account mutation effects.
-The SDK route currently
-advertises SQL and cancellation. Subsequent same-session completion is implemented
-with [separate qualification](snowflake-sdk-metadata-design.md). The later
-[browsing slice](snowflake-sdk-browsing-design.md) implements a revision-bound
-relation catalog, column inspection and bounded read-only preview locally.
-The [session observer](snowflake-sdk-session-observation.md) now implements
-bounded settings/activity observations and explicit Unknown states locally;
-the corrected helper-only 24-read account observation passes on its recorded
-source. Normal app and changed-source qualification remain open.
-The [typed switch transport](snowflake-sdk-session-design.md) now has separate
-USE/readback acknowledgement and retirement handling with local regression
-coverage. Its guarded application adapter, typed IPC and schema selector are now
-locally qualified, including browser and hidden native checks. The selector requires a
-fresh observed idle session and an exact revision-bound target; refresh is
-explicit when intervening work revokes that authority. No account switching or
-additional account authorization is established.
-Complete object/constraint inspection, generic editable browsing, schema/session
-switching, broader writes, DDL and complete transaction workflows remain incomplete.
-The [reviewed DML workflow](snowflake-sdk-dml-design.md) and explicit boundaries
-are locally implemented; none qualifies actual account mutation effects. The owner
-requested the [disposable setup proposal](snowflake-disposable-setup.md). Its
-approved single account attempt passed SSO and initial observations, then stopped
-on definitive CREATE DATABASE rejection without creating a schema or table.
-That approval is consumed. The owner now permits new tables under
-`SANDBOX.BILLIE_TESTING`; the [existing-schema lifecycle proposal](snowflake-existing-schema-qualification.md)
-now has a tested offline definition, physical SQL/resource gates, raw census and
-creation-marker interception, retained runner, complete artifact envelope and
-one-use consumption. The consumed runner's full copied-runtime S=1 test passes;
-S=32 initially fails the three-second admission gate; the accelerated-source
-rerun now passes all 32 phases / 610 requests with 751 successful admissions.
-The same-source S=1 rerun also passes 32 phases / 393 requests with 525 successful
-admissions. Combined verification passes 204 module tests, 679 frontend tests and
-467 standard Rust tests plus strict checks, with 129 fixtures ignored. The fixed account command,
-exclusive private-file lifecycle and construction exclusively from bound roots
-remain open before emitting a concrete reviewed plan and obtaining fresh
-possible-billing approval. These are internal qualification results, not new
-externally qualified application workflows.
-The preceding
-SDK integration qualification passes, including all 143 browser workflows,
-124 actual local database fixtures and the packaged SDK runtime checks. These
-checks do not qualify the actual account workflow. See
-[integration evidence](snowflake-sdk-integration.md).
-
-Local tests cover persisted modes, backup/restore, immutable runtime/source pins,
-retained child cleanup and pending-auth cancellation/shutdown. The native opt-in
-resource route passes package/startup verification and 19 hidden native checks
-with ten cleanup cycles. Historical SQL API
-browser-SSO canaries do not establish the required SDK account behavior.
+Live Snowflake account execution remains strictly unexecuted pending explicit
+owner review and approval of the bounded
+[`SANDBOX.BILLIE_TESTING` qualification plan](snowflake-sandbox-qualification-plan.md).
+The prior schema-7 `d6cfb2a` app bundle is preserved separately while the
+uninstalled schema-8 `Joinery.app` bundle is verified locally; Developer ID
+signing/notarization, `/Applications` installation, and hands-on owner
+acceptance remain open gates.
 
 ## Required workflow inventory
 
-| Area | Observable replacement acceptance | Current state |
-|---|---|---|
-| Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | SDK profile route implemented; local lifecycle checks pass; actual account and native package acceptance open |
-| Session context | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested | SDK same-connection observations locally qualified with explicit Unknown and nullable role. Guarded schema selection locally qualified; account switching, database/role/warehouse switching, temporary/session objects and account continuity remain unqualified or incomplete |
-| Metadata and search | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes | Partial catalog pilot; exact object inventory and live qualification open |
-| SQL editing | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools | Bounded common editor; full Snowflake feature inventory/qualification open |
-| Execution | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes | Read execution plus strict reviewed SQL INSERT/UPDATE/DELETE locally implemented; broader write/batch/session semantics and remote outcomes remain open |
-| Results and data movement | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data | Shared store passes actual PostgreSQL million-row paging/export and browser acceptance with opt-in bounded temporary storage. The synthetic-SDK Snowflake helper/driver/store/full-CSV bridge passes one million rows and an independent export hash. Actual SDK 3.4.1 loopback qualification separately passes one million rows across 100 compressed chunks plus cancellation. Native preference/restart checks pass. Actual account retention/types/performance and complete packaged-app memory remain unqualified |
-| Data editing | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap | SQL-name reviewed DML is locally implemented. The [native generated-edit adapter](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback) adds exact original binding, freshness and cardinality checks, private manual ownership and protected recording recovery. Studio dispatch/staging/CSV, broader codecs, full conflict/identity qualification and account effects remain incomplete; no accepted narrowing |
-| Transactions | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully | Explicit typed controls and recovery locally qualified on `929ae06`. Reviewed DML and the separate three-action generated DDL route are now locally implemented; DDL requires idle AUTOCOMMIT=true state and is not rollbackable. SDK AUTOCOMMIT changes and broader DDL remain unavailable. Actual account effects and complete transaction workflow remain primary blockers |
-| History and scripts | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart | Common library exists; Snowflake lifecycle/native acceptance open |
-| Performance | Appropriate Snowflake estimated/actual plans, query history/profile/timing and required monitoring/cancellation workflow | Synthetic estimated logical plans; live features and full inventory open |
-| Schema and engine behavior | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks | Reviewed SQL DML and generated CREATE TABLE/nullable ADD COLUMN/exact-target DROP are locally integrated with typed native routes, revision-bound admission and explicit metadata reconciliation. The separate fixed disposable setup runner confers no application DDL authority. Actual account effects, complete metadata, broader object operations and engine semantics remain incomplete |
-| Everyday macOS use | Full applicable keyboard/accessibility workflows, native installation/update/startup/quit/relaunch, secure credential/session lifecycle and local persistence | macOS bundle/build smoke exists; normal packaged and owner acceptance open |
-| Other DataGrip facilities | Identify remaining applicable features in current official documentation, including integrations/AI where provided by the non-commercial context; explicitly track provider/entitlement limits | Required applicability inventory open; not silently optional |
+| Area                           | Observable replacement acceptance                                                                                                                                                                                        | Current state                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Connections and authentication | Existing account externalbrowser SSO; correct original account/host identity, TLS validation, browser cancellation/timeouts, expired login, explicit reconnect and logout; no credential leakage or automatic SQL replay | SDK profile route, retained helper lifecycle, and schema-8 macOS bundle locally verified; live account SSO and hands-on native acceptance gated on [sandbox plan](snowflake-sandbox-qualification-plan.md)                                                                                                                                          |
+| Session context                | Observe current user/role/warehouse/database/schema; switch each deliberately, update metadata/completion, retain temporary/session objects and variables; isolate consoles when requested                               | Same-connection observations plus guarded `ROLE`, `WAREHOUSE`, `DATABASE`, and `SCHEMA` switching with readback and metadata refresh locally verified (`a05306a`, `7434818`); live account continuity open                                                                                                                                          |
+| Metadata and search            | Browse/find and inspect every required Snowflake object type with DDL/keys/dependencies, bounded paging, denied-role behavior and refresh after external changes                                                         | `ObjectExplorer` / `ObjectInspector` locally verified across tables, views, materialized views, sequences, and overloaded functions/procedures with PK/UQ/FK/CHECK inspection, view dependencies, and `GET_DDL` (`ff131ef`, `7434818`); live account catalog shapes open                                                                            |
+| SQL editing                    | Snowflake-aware completion, quoted identifiers and semi-structured expressions, parameters, diagnostics, formatting, navigation/refactoring and all applicable DataGrip authoring tools                                  | Snowflake dialect keywords/functions, table/alias/CTE + `VARIANT` `:path` completion, string/comment suppression, live `completion_schema` column diagnostics, parameters, formatting, and snippets locally verified (`ff131ef`, `7434818`); daily owner acceptance open                                                                            |
+| Execution                      | Statement/selection/batch execution, typed binding and session commands; cancellation, timeouts, interrupted network, no hidden reconnect/retry of writes                                                                | Parameterized reads, reviewed DML/DDL, configurable 1–86,400s query limits, and retained mixed-SQL console locally verified; live account execution and interruption checks open                                                                                                                                                                    |
+| Results and data movement      | Complete results up to 1,000,000 rows; exact Snowflake scalar/semi-structured values, inspection, filtering/sorting/paging, copying, supported import/export and format/destination behavior on representative data      | Disk-backed 1,000,000-row store/export, SDK 3.4.1 1,000,000-row compressed chunk loopback, server-paged/sorted/filtered relation browsing, and multi-batch RFC-4180 CSV import up to `100,000` rows locally verified (`a794426`, `7434818`); live account million-row & RSS acceptance open                                                         |
+| Data editing                   | Review and commit/rollback row changes with conflict/identity safeguards and truthful affected-row counts; support required keyless workflows safely or record a blocking gap                                            | Reviewed `RelationBrowser` inline cell editing, row delete/insert, `<ReviewDialog>` cancel recovery, pending preview continuation, and Commit/Rollback locally verified across lossless scalar/temporal/binary/JSON codecs up to `1,000` columns (`682b1ed`, `a794426`, `7434818`); spatial types remain read-only; live account qualification open |
+| Transactions                   | Auto/manual modes, shared vs isolated consoles, explicit BEGIN/COMMIT/ROLLBACK, DDL implicit commits, autocommit changes and acknowledgement loss handled truthfully                                                     | Explicit console transaction controls, owned manual/auto grid batch transactions, protected rollback on recording error, and idle `AUTOCOMMIT=true` DDL fencing locally verified; live account commit/rollback verification open                                                                                                                    |
+| History and scripts            | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart                                                                                | Schema-8 durable original outcomes, SQL-free batch archive, paged search, privacy controls, and encrypted metadata recovery locally verified; hands-on owner restart acceptance open                                                                                                                                                                |
+| Performance                    | Appropriate Snowflake estimated/actual plans, query history/profile/timing and required monitoring/cancellation workflow                                                                                                 | Observed Snowflake `EXPLAIN USING JSON` `PlanContext` operator-tree parsing, partition/byte estimates, and `SqlEditor` plan snapshot capture/diff locally verified (`a05306a`, `7434818`); live account plan shapes and post-execution query profile inspection open                                                                                |
+| Schema and engine behavior     | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks                                                             | 8 reviewed Snowflake DDL actions (`CreateTable`, `AddColumn`, `AlterColumnNullability`, `RenameColumn`, `DropColumn`, `DropTable`, `CreateView`, `DropView`) with exact-target destructive confirmation and post-DDL metadata reconciliation locally verified (`ff131ef`, `7434818`); live account DDL qualification open                           |
+| Everyday macOS use             | Full applicable keyboard/accessibility workflows, native installation/update/startup/quit/relaunch, secure credential/session lifecycle and local persistence                                                            | Playwright E2E workflows (`26/26` Snowflake specs), native WebView smoke/recovery, and schema-8 macOS `Joinery.app` bundle locally verified; Developer ID/notarization, `/Applications` install, and hands-on owner walkthrough open                                                                                                                |
+| Other DataGrip facilities      | Identify remaining applicable features in current official documentation, including integrations/AI where provided by the non-commercial context; explicitly track provider/entitlement limits                           | Tracked in [feature matrix](datagrip-feature-matrix.md); external AI/VCS entitlements remain separate from core Snowflake database workflows                                                                                                                                                                                                        |
 
 ## Implementation sequence and safety gates
 

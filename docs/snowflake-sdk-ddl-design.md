@@ -1,8 +1,10 @@
 # Snowflake SDK reviewed DDL
 
-**Status: generated CREATE TABLE, nullable ADD COLUMN and DROP TABLE are
-implemented locally, with helper and pinned-SDK loopback verification. Real
-account DDL and normal application external-browser SSO are not qualified.**
+**Status: generated CREATE TABLE, ADD COLUMN, ALTER COLUMN SET/DROP NOT NULL,
+RENAME COLUMN, DROP COLUMN, DROP TABLE ... RESTRICT, CREATE VIEW and DROP VIEW
+are implemented locally (`ff131ef`), with helper and pinned-SDK loopback
+verification. Real account DDL and normal application external-browser SSO are
+not yet live-qualified.**
 This integrated local contract does not authorize account activity or establish
 full DataGrip replacement. Read alongside the
 [reviewed DML contract](snowflake-sdk-dml-design.md),
@@ -33,25 +35,40 @@ One plan admits one action:
 - **ADD COLUMN:** one nullable column, with no default, on the exact observed and
   inspected supported table. Existing rows receive NULL; see
   [ALTER TABLE](https://docs.snowflake.com/en/sql-reference/sql/alter-table).
+- **ALTER COLUMN SET / DROP NOT NULL:** toggles nullability on an exact observed
+  column of an inspected supported table (`ALTER TABLE ... ALTER COLUMN ... SET NOT NULL`
+  or `DROP NOT NULL`), verifying current column nullability before emitting SQL.
+- **RENAME COLUMN:** renames an exact observed column to a validated non-colliding
+  identifier (`ALTER TABLE ... RENAME COLUMN ... TO ...`).
+- **DROP COLUMN:** drops an exact observed column on a multi-column supported
+  table (`ALTER TABLE ... DROP COLUMN ...`), requiring exact target confirmation.
 - **DROP TABLE:** the exact observed table, with explicit RESTRICT and a separate
   destructive confirmation repeating the fully qualified target. There is no
   CASCADE, PURGE or IF EXISTS. RESTRICT does not protect dependent views or prove
   dependency absence; see [DROP TABLE](https://docs.snowflake.com/en/sql-reference/sql/drop-table).
+- **CREATE VIEW:** creates a new view (`CREATE VIEW "db"."schema"."name" [...] AS SELECT ...`)
+  in an observed schema after verifying exact-name absence and validating the
+  single read-only `SELECT` / `WITH ... SELECT` query body through the strict SQL AST parser.
+- **DROP VIEW:** drops an exact observed `VIEW` (`DROP VIEW "db"."schema"."name"`)
+  with separate exact-target destructive confirmation.
 
-The compiler accepts NUMBER, VARCHAR, BINARY, BOOLEAN, FLOAT, DATE, TIME and
-TIMESTAMP_NTZ, with bounded parameters and output. Numeric precision is 1–38;
-scale is 0–37 and cannot exceed precision. See Snowflake's
+The compiler accepts `NUMBER(1..=38, 0..=38)` (with `scale <= precision`),
+`VARCHAR`/`CHAR`/`STRING`/`TEXT`, `BINARY`/`VARBINARY`, `BOOLEAN`,
+`FLOAT`/`DOUBLE`/`REAL`, `DATE`, `TIME(0..=9)`,
+`TIMESTAMP_NTZ(0..=9)`/`TIMESTAMP_LTZ(0..=9)`/`TIMESTAMP_TZ(0..=9)`, and
+`VARIANT`/`ARRAY`/`OBJECT`, with bounded parameters and output. See Snowflake's
 [numeric limits](https://docs.snowflake.com/en/sql-reference/data-types-numeric).
 Each identifier component is independently quoted and the complete statement is
 round-tripped through strict AST admission. Quoted dots and case remain part of
-the identifier. There is no raw-SQL entry point or parser fallback.
+the identifier. There is no raw-SQL bypass around AST validation.
 
 Defaults, expressions, identity, keys, policies, tags, comments, table options,
-rename/drop/type changes to columns, multi-action ALTER, CREATE OR ALTER, CREATE
-OR REPLACE, IF NOT EXISTS, CTAS, cloning, temporary/dynamic/external/hybrid/Iceberg
-tables, views, schema/database DDL, grants and ownership changes are excluded.
-Broad `ddlEditing` stays false; the narrow reviewed capability grants no general
-DDL or write-classification bypass.
+column type conversions, multi-action ALTER, CREATE OR ALTER, CREATE OR REPLACE,
+IF NOT EXISTS, CTAS, cloning, temporary/dynamic/external/hybrid/Iceberg tables,
+materialized views, schema/database DDL, grants and ownership changes remain
+excluded from generated forms (arbitrary reviewed session/DDL scripts use the
+separate opted-in retained SQL console). Broad `ddlEditing` stays false; the
+reviewed capability grants no unreviewed DDL or write-classification bypass.
 
 ADD and DROP require an available `BASE TABLE` with known permanent or transient
 status and known false temporary, Iceberg, dynamic, hybrid and immutable traits.
@@ -155,9 +172,9 @@ These are complete successful-path SQL submission budgets for each named command
 excluding earlier browser/catalog/column inspection and initial connection work.
 There are no hidden transaction or session-setting statements:
 
-| Command | CREATE | ADD | DROP |
-| --- | ---: | ---: | ---: |
-| Preflight | 12 reads | 15 reads | 11 reads |
+| Command                  |           CREATE |              ADD |             DROP |
+| ------------------------ | ---------------: | ---------------: | ---------------: |
+| Preflight                |         12 reads |         15 reads |         11 reads |
 | Execute an approved plan | 17 reads + 1 DDL | 20 reads + 1 DDL | 16 reads + 1 DDL |
 
 Each idle sample is five reads (context, quoted-identifier policy, AUTOCOMMIT,

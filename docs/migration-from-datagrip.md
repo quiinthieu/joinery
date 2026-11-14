@@ -2,11 +2,43 @@
 
 ## Evaluation version notice
 
-The current source adds internal owner-scoped metadata transport and durable
+Schema-8 source (`682b1ed..HEAD`) and the locally verified uninstalled schema-8
+ARM64 `Joinery.app` bundle (`src-tauri/target/release/bundle/macos/Joinery.app`,
+with the prior schema-7 `d6cfb2a` bundle preserved separately under
+`.cache/verification/preserved-release-d6cfb2a/Joinery.app`) now include the
+complete local Snowflake DataGrip-replacement workflow surface:
+
+- **Editable Snowflake relation grid & multi-batch CSV import**
+  ([contract](snowflake-owned-edit-integration.md),
+  [compiler](snowflake-grid-editing-design.md)): Inline cell updates, row
+  delete/insert, `<ReviewDialog>` cancel recovery, server-side paging
+  (`OFFSET`), multi-column `ORDER BY` sorting, typed column filters, and
+  multi-batch RFC-4180 CSV import up to `100,000` rows across lossless
+  scalar/temporal/binary/JSON codecs up to `1,000` columns, with manual
+  `Pending` -> `Reload pending preview` -> continuation -> `Commit` / protected
+  `Rollback`.
+- **Session context, Object Explorer, reviewed DDL, plans, and SQL authoring**:
+  Guarded `ROLE` / `WAREHOUSE` / `DATABASE` / `SCHEMA` selectors,
+  `ObjectExplorer` / `ObjectInspector` across tables, views, materialized views,
+  sequences, and overloaded functions/procedures, 8 reviewed Snowflake DDL
+  actions ([DDL contract](snowflake-sdk-ddl-design.md)), observed
+  `EXPLAIN USING JSON` plan capture/diff, and Snowflake SQL `:path` completion
+  and live `completion_schema` column diagnostics.
+
+Schema-8 upgrades local metadata so older schema-7 apps refuse to open it; always
+use an isolated disposable `JOINERY_APP_DATA_DIR` during evaluation and retain
+an encrypted backup before upgrading any existing local store. Live Snowflake
+account acceptance has not yet been executed and requires explicit owner
+approval of the bounded
+[`SANDBOX.BILLIE_TESTING` qualification plan](snowflake-sandbox-qualification-plan.md).
+Keep DataGrip installed until live account qualification and your daily
+hands-on walkthrough are accepted.
+
+The historical notes below record the earlier schema-7/schema-8 foundations in
+chronological context:
+
+The preceding internal source added owner-scoped metadata transport and durable
 batch recording ownership, documented in the [integration contract](snowflake-owned-edit-integration.md).
-It adds no migration step or grid/CSV control. Pending transaction editing still
-requires full driver/application integration and account/native acceptance; the
-preserved normal package below does not contain this source increment.
 
 The latest source also retains native Snowflake preview originals and supports
 internal one-use preparation. It introduces no grid/CSV submission control or

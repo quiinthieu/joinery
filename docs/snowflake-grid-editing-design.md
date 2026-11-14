@@ -19,48 +19,59 @@ postimages. Its
 per-row/commit acknowledgement evidence. Do not enable the SDK's `table_editing`
 capability by reusing that contract unchanged.
 
-## Current compiler implementation
+## Current compiler and application implementation
 
-`src-tauri/src/drivers/snowflake_mutations.rs` provides the pure, closed compiler.
-It emits ordered units with quoted identifiers, bound values, explicit casts and
-an expected affected count of one. UPDATE and DELETE compare every retained
-original column, including NULLs; text comparisons use explicit UTF-8 binary
-conversion so insensitive collation cannot hide a changed original. Decimal
-validation uses strings rather than floating point and rejects precision or
+`src-tauri/src/drivers/snowflake_mutations.rs` provides the pure, closed compiler
+(`682b1ed`). It emits ordered `DELETE`, `UPDATE`, and `INSERT` units with quoted
+identifiers, bound scalar values, explicit casts/parsers, and an expected
+affected count of one. `UPDATE` and `DELETE` compare every retained original
+column, including `NULL`s; text comparisons use explicit UTF-8 binary conversion
+so insensitive collation cannot hide a changed original. Decimal validation uses
+exact digit strings rather than binary floating point and rejects precision or
 scale loss before emitting SQL. No key declaration establishes row identity.
 
-The current codecs are text, BOOLEAN and fixed-point NUMBER (precision 1–38,
-scale 0–37, with scale no greater than precision). Decimal input accepts an
-optional minus sign, integer digits and an optional nonempty fractional part.
-Exponents, leading plus signs and fractional places beyond the declared scale
-are rejected, including extra zero places. Binary, floating point, dates/times,
-semi-structured and spatial values remain required codec work; the compiler
-rejects them explicitly rather than emitting an approximate comparison.
+Supported lossless codecs cover:
 
-Compilation permits at most 500 units, 128 columns, 1 MiB per cell and 8 MiB of
-accounted input/output. The accounting includes original values, emitted SQL,
-identifiers and bindings; it is not a measurement of total process memory.
-Repeated indistinguishable originals, recognizable postimage/original overlaps
-and incomplete originals conflict. UPDATE to DEFAULT is currently unsupported.
-An insert whose default/generated postimage is unknown cannot be mixed with an
-UPDATE/DELETE; insert-only defaults remain supported. These are current limits,
-not a narrowing of the replacement target.
+- `TEXT` / `VARCHAR` (byte-exact `TO_BINARY(..., 'UTF-8')` predicate matching)
+- `BOOLEAN` (canonical `"true"` / `"false"` normalized from SDK wire strings)
+- Exact fixed-point `NUMBER(1..=38, 0..=38)`, including `NUMBER(38, 38)` (`0.<38 digits>` and `0`)
+- Finite IEEE-754 `FLOAT` / `DOUBLE` (rejecting `NaN`/`Infinity` and preserving `-0.0` vs `0.0` via `TO_BINARY(TO_VARCHAR(col), 'UTF-8')` predicate comparison)
+- Even-length hex `BINARY` (`TO_BINARY(?, 'HEX')`)
+- `DATE` (`YYYY-MM-DD`), `TIME(0..9)`, and `TIMESTAMP_NTZ(0..9)` / `TIMESTAMP_LTZ(0..9)` / `TIMESTAMP_TZ(0..9)` with explicit fractional-precision validation and typed casts
+- Semi-structured `VARIANT`, `ARRAY`, and `OBJECT` (`PARSE_JSON(?)` with `TYPEOF` / `AS_ARRAY` / `AS_OBJECT` structural checks and exact original comparison)
 
-The descriptor and original-row constructors validate shape and values; they do
-not establish metadata provenance, snapshot freshness, permissions, uniqueness or
-immutable target identity. The future runtime must derive them from retained
-server-side inspection and lossless snapshots, bind the plan to current authority
-and check actual database counts inside its owned transaction. Native snapshot
-preparation now calls the compiler, but there is no dispatch caller and it grants
-no execution authority. Snowflake grid editing and CSV import remain disabled.
+Spatial (`GEOGRAPHY`, `GEOMETRY`) and unstructured file-reference types remain
+explicitly read-only rather than emitting an approximate comparison.
 
-Twelve focused regressions cover hostile names/values, ordering, full predicates,
-NULL/empty/default distinctions, exact decimals, byte-exact text, overlapping
-mutations, invalid/generated columns and aggregate limits. SQL parser checks
-establish the generated single-statement shape only. The
-[verification ledger](replacement-verification.md#snowflake-mutation-compiler-13-november-2026)
-records current commands and results; neither these tests nor the official SQL
-references replace actual Snowflake semantic and account acceptance.
+Compilation permits up to `500` units, `1,000` columns, `2,000` scalar binds per
+batch, `1 MiB` per cell, and `8 MiB` of accounted input/output per snapshot
+(`32 MiB` global `SnapshotStore` lease ceiling). Repeated indistinguishable
+originals, recognizable postimage/original overlaps, and incomplete originals
+conflict before dispatch. `UPDATE` to `DEFAULT` remains unsupported; an insert
+whose default/generated postimage is unknown cannot be mixed with an
+`UPDATE`/`DELETE` in the same batch, while insert-only defaults remain supported.
+
+The compiler, `SnapshotStore`, `SnowflakeExternal`, `Studio` grid run owner,
+public Tauri IPC (`prepare_snowflake_grid_plan`, `cancel_snowflake_grid_plan`,
+`execute_snowflake_grid_plan`, `preview_snowflake_grid_transaction_relation`,
+`finish_snowflake_grid_transaction`), and `RelationBrowser` UI are fully wired
+locally (`c033d00`, `682b1ed`, `a794426`):
+
+- Idle `preview_relation` and pending-owner `preview_snowflake_grid_transaction_relation`
+  bind snapshots to the exact server-paged, sorted, and filtered `PreviewSlice`
+  window (`OFFSET`, multi-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, and
+  typed column filters).
+- Cancelling `<ReviewDialog>` calls `cancel_snowflake_grid_plan` to restore the
+  linear edit snapshot without discarding staged grid edits or forcing a reload.
+- `RelationBrowser` stages inline cell edits, row deletes, paginated new-row
+  inserts, and multi-batch RFC-4180 CSV imports up to `100,000` rows in
+  `500`-row batches with progress tracking and cancellation.
+
+Focused compiler, snapshot, helper, native process, Studio grid owner, and
+Playwright E2E regressions pass in the
+[verification ledger](replacement-verification.md); actual live Snowflake account
+acceptance remains gated on explicit owner approval of the
+[`SANDBOX.BILLIE_TESTING` qualification plan](snowflake-sandbox-qualification-plan.md).
 
 ## Owned-batch runtime integration
 
@@ -336,22 +347,22 @@ These dependencies do not make manual mode, broader codecs or CSV optional.
 
 ## Reproducible acceptance cases
 
-| Case | Required evidence |
-| --- | --- |
-| Quoted names and hostile cell text | Exact component quoting and placeholders in unit tests; real table readback shows text stored literally, with no extra statements |
-| Keyless distinct row | Edit one retained row by original values; exactly one row changes after commit |
-| Declared but duplicate key | Two rows sharing a declared PK never count as uniquely identified; full originals and actual affected counts govern |
-| Identical duplicates | Single-row UPDATE/DELETE affecting two rows rolls back, including earlier mutations in that batch |
-| Stale original | Concurrent non-key update causes conflict and whole-batch rollback; no silent overwrite |
-| Collation and decimal casts | Case/accent/trim changes remain conflicts despite collated equality; fractional overflow cannot round to a different row/value |
-| Atomic mixed batch | Insert/update/delete succeeds together; a late constraint/count failure leaves no earlier mutation committed |
-| Lossless values | NUMBER(38), fixed scale, NULL/empty/default, Unicode, supported dates/times/binary/semi-structured values retain their exact intended meaning; unsupported types are explicit blocking gaps |
-| Competing transaction | Existing console work survives a rejected grid admission; separate grid rollback cannot discard it |
-| Manual mode | Submit leaves visible pending work; other sessions see it only after commit; rollback restores results without calling it committed |
-| Network/cancel/ACK loss | Deterministic barriers around BEGIN, each DML and COMMIT preserve known/unknown evidence; no automatic SQL replay on reconnect or restart |
-| DDL/context/policy drift | Retained plans expire when observed context/metadata changes; externally concurrent name replacement is not misrepresented as prevented |
-| CSV batches | Same target across preview/prepare/submit; exact large decimals, validation errors, cancellation and partial prior-batch commits are shown truthfully |
-| Normal app | Actual UI staging/review/submit/revert/commit/rollback and keyboard paths work end to end after restart; screenshots alone do not qualify them |
+| Case                               | Required evidence                                                                                                                                                                           |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Quoted names and hostile cell text | Exact component quoting and placeholders in unit tests; real table readback shows text stored literally, with no extra statements                                                           |
+| Keyless distinct row               | Edit one retained row by original values; exactly one row changes after commit                                                                                                              |
+| Declared but duplicate key         | Two rows sharing a declared PK never count as uniquely identified; full originals and actual affected counts govern                                                                         |
+| Identical duplicates               | Single-row UPDATE/DELETE affecting two rows rolls back, including earlier mutations in that batch                                                                                           |
+| Stale original                     | Concurrent non-key update causes conflict and whole-batch rollback; no silent overwrite                                                                                                     |
+| Collation and decimal casts        | Case/accent/trim changes remain conflicts despite collated equality; fractional overflow cannot round to a different row/value                                                              |
+| Atomic mixed batch                 | Insert/update/delete succeeds together; a late constraint/count failure leaves no earlier mutation committed                                                                                |
+| Lossless values                    | NUMBER(38), fixed scale, NULL/empty/default, Unicode, supported dates/times/binary/semi-structured values retain their exact intended meaning; unsupported types are explicit blocking gaps |
+| Competing transaction              | Existing console work survives a rejected grid admission; separate grid rollback cannot discard it                                                                                          |
+| Manual mode                        | Submit leaves visible pending work; other sessions see it only after commit; rollback restores results without calling it committed                                                         |
+| Network/cancel/ACK loss            | Deterministic barriers around BEGIN, each DML and COMMIT preserve known/unknown evidence; no automatic SQL replay on reconnect or restart                                                   |
+| DDL/context/policy drift           | Retained plans expire when observed context/metadata changes; externally concurrent name replacement is not misrepresented as prevented                                                     |
+| CSV batches                        | Same target across preview/prepare/submit; exact large decimals, validation errors, cancellation and partial prior-batch commits are shown truthfully                                       |
+| Normal app                         | Actual UI staging/review/submit/revert/commit/rollback and keyboard paths work end to end after restart; screenshots alone do not qualify them                                              |
 
 The owner's permission to create tables under `SANDBOX.BILLIE_TESTING` identifies
 the eventual disposable scope. It does not revive an expired plan or authorize

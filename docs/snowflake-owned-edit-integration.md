@@ -2,13 +2,19 @@
 
 This integration underpins the reviewed Snowflake relation grid and CSV staging
 workflow described in [the editing contract](snowflake-grid-editing-design.md).
-Public Tauri IPC commands and `RelationBrowser` inline editing, CSV row staging,
-`<ReviewDialog>` plan approval, and manual `Pending` -> `Reload pending preview`
--> continuation -> `Commit` / `Rollback` controls are now wired (`c033d00`) on
-explicitly writable `externalBrowser` `reviewedDml` profiles. Broader lossless
-codecs, pagination beyond the 500-row unordered sample, fresh-plan live
-`SANDBOX.BILLIE_TESTING` qualification, million-row hands-on acceptance, and a
-rebuilt schema-8 `Joinery.app` remain required before full DataGrip replacement.
+Public Tauri IPC commands (`prepare_snowflake_grid_plan`,
+`cancel_snowflake_grid_plan`, `execute_snowflake_grid_plan`,
+`preview_snowflake_grid_transaction_relation`, and
+`finish_snowflake_grid_transaction`) and `RelationBrowser` inline editing,
+lossless scalar/temporal/binary/JSON codecs (`<= 1,000` columns), server-side
+slice sort/filter/offset paging, `<ReviewDialog>` plan approval and cancel
+recovery, multi-batch CSV import (`<= 100,000` rows across `500`-row batches),
+and manual `Pending` -> `Reload pending preview` -> continuation -> `Commit` /
+`Rollback` controls are now wired (`c033d00`, `682b1ed`, `a794426`) on
+explicitly writable `externalBrowser` `reviewedDml` profiles. Fresh-plan live
+[`SANDBOX.BILLIE_TESTING` qualification](snowflake-sandbox-qualification-plan.md),
+million-row live-account acceptance, Developer ID signing/notarization, and
+hands-on owner acceptance remain required before retiring DataGrip.
 
 ## Pending-owner metadata and data-preview transport
 
@@ -22,16 +28,16 @@ only exact database/schema/name components and base/temporary table types (with
 
 The helper constructs one fixed statement for each kind:
 
-| Kind                     | Fixed operation                                              | Maximum rows | Aggregate bytes |
-| ------------------------ | ------------------------------------------------------------ | -----------: | --------------: |
-| `context`                | Full context observation                                     |            1 |          65,536 |
-| `quotedIdentifierPolicy` | Session quoted-name parameter                                |            1 |          65,536 |
-| `currentTransaction`     | Current transaction ID                                       |            1 |          65,536 |
-| `exactRelation`          | Exact information-schema relation lookup                     |            3 |       2,097,152 |
-| `columns`                | Ordered complete column projection                           |        1,001 |       1,048,576 |
-| `describe`               | DESCRIBE TABLE columns                                       |        1,001 |       1,048,576 |
-| `zeroRowResolution`      | Fully qualified SELECT with LIMIT 0                          |            0 |       1,048,576 |
-| `preview`                | Quoted 1..=1,000 column SELECT on exact table with LIMIT 501 |          501 |       2,097,152 |
+| Kind                     | Fixed operation                                                                                | Maximum rows | Aggregate bytes |
+| ------------------------ | ---------------------------------------------------------------------------------------------- | -----------: | --------------: |
+| `context`                | Full context observation                                                                       |            1 |          65,536 |
+| `quotedIdentifierPolicy` | Session quoted-name parameter                                                                  |            1 |          65,536 |
+| `currentTransaction`     | Current transaction ID                                                                         |            1 |          65,536 |
+| `exactRelation`          | Exact information-schema relation lookup                                                       |            3 |       2,097,152 |
+| `columns`                | Ordered complete column projection                                                             |        1,001 |       1,048,576 |
+| `describe`               | DESCRIBE TABLE columns                                                                         |        1,001 |       1,048,576 |
+| `zeroRowResolution`      | Fully qualified SELECT with LIMIT 0                                                            |            0 |       1,048,576 |
+| `preview`                | Quoted 1..=1,000 column SELECT on exact table with bounded WHERE/ORDER BY/OFFSET and LIMIT 501 |          501 |       2,097,152 |
 
 The row ceilings include overflow sentinels where applicable. Serialized column
 metadata and emitted batches count toward the byte ceiling. Existing frame,
@@ -196,42 +202,52 @@ independently of the initiating IPC caller or tab:
 ## Reviewed IPC, RelationBrowser staging, and manual transaction UI
 
 Public Tauri IPC commands (`prepare_snowflake_grid_plan`,
-`execute_snowflake_grid_plan`, `preview_snowflake_grid_transaction_relation`,
-`finish_snowflake_grid_transaction`) and desktop ACL capabilities (`c033d00`)
-expose reviewed Snowflake grid mutations through `Studio` and `SafetyGovernor`:
+`cancel_snowflake_grid_plan`, `execute_snowflake_grid_plan`,
+`preview_snowflake_grid_transaction_relation`,
+`finish_snowflake_grid_transaction`) and desktop ACL capabilities (`c033d00`,
+`682b1ed`, `a794426`) expose reviewed Snowflake grid mutations through `Studio`
+and `SafetyGovernor`:
 
 1. `prepare_snowflake_grid_plan` consumes one linear `editSnapshotId` (from
    idle `preview_relation` or owner-scoped
-   `preview_snowflake_grid_transaction_relation`), compiles the closed
+   `preview_snowflake_grid_transaction_relation` across server-paged, sorted,
+   and filtered `PreviewSlice` windows), compiles the closed
    `DELETE`/`UPDATE`/`INSERT` batch without dispatching SQL, and stores
    `Action::SnowflakeGrid` behind `PreparedPlan { reviewed_snowflake_grid: true }`
    for `<ReviewDialog>` confirmation, passphrase, and one-use approval token
-   validation.
+   validation. Cancelling `<ReviewDialog>` invokes `cancel_snowflake_grid_plan`
+   to atomically restore the linear `editSnapshotId` without requiring a network
+   reload when the session generation and context remain intact.
 2. `RelationBrowser` enables inline cell updates (`NULL` toggle, `Revert`),
-   whole-original row deletion, new-row insertion (`DEFAULT` / `NULL` / text),
-   RFC-4180 CSV row staging (file upload or pasted text with case-sensitive
-   header matching and mixed-batch unknown-postimage warnings), `"Resume session
-   metadata"` recovery, and a **Pending Snowflake grid transaction** banner
-   exposing `Reload pending preview`, `Commit transaction`, and protected
-   `Rollback transaction` (which remains enabled even when `recordingError`
-   blocks continuation and commit).
+   whole-original row deletion, paginated new-row insertion (`DEFAULT` / `NULL`
+   / text), RFC-4180 multi-batch CSV row staging up to `100,000` rows in
+   `500`-row batches (`2,000` scalar binds per batch, file upload or pasted text
+   with case-sensitive header matching, progress tracking, explicit cancel, and
+   mixed-batch unknown-postimage warnings), `"Resume session metadata"`
+   recovery, and a **Pending Snowflake grid transaction** banner exposing
+   `Reload pending preview` (preserving active sort/filter/page slices),
+   `Commit transaction`, and protected `Rollback transaction` (which remains
+   enabled even when `recordingError` blocks continuation and commit).
 
 ## Required next integration and acceptance
 
-Extend lossless Snowflake edit codecs beyond the current narrow subset (`TEXT` /
-`VARCHAR`, `BOOLEAN`, and exact `NUMBER(p, s)` on `<= 128`-column base/temporary
-tables) to cover `FLOAT`, `BINARY`, `DATE` / `TIME` / `TIMESTAMP_NTZ` /
-`TIMESTAMP_LTZ` / `TIMESTAMP_TZ`, and `VARIANT` / `ARRAY` / `OBJECT`, plus
-wider-table projection and ordered pagination beyond the 500-row unordered
-preview sample.
+Lossless Snowflake edit codecs now cover `TEXT` / `VARCHAR`, `BOOLEAN` (with
+wire `"TRUE"`/`"FALSE"` normalized to canonical `"true"`/`"false"` in the native
+driver), exact `NUMBER(1..=38, 0..=38)` (including `NUMBER(38, 38)`), finite
+`FLOAT` / `DOUBLE` (preserving `-0.0` vs `0.0` via `TO_BINARY(TO_VARCHAR(...))`),
+even-hex `BINARY`, `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ(0..9)` /
+`TIMESTAMP_LTZ(0..9)` / `TIMESTAMP_TZ(0..9)`, and canonical `PARSE_JSON`
+`VARIANT` / `ARRAY` / `OBJECT` on base/temporary tables up to `1,000` columns
+(`682b1ed`), alongside server-paged, sorted, and filtered browsing (`a794426`).
+Spatial (`GEOGRAPHY`, `GEOMETRY`) and unstructured file-reference columns remain
+explicitly read-only in grid editing.
 
-Run real disposable-table acceptance only under a fresh reviewed account plan;
-earlier approvals are consumed or expired. The owner identified
-`SANDBOX.BILLIE_TESTING` as the disposable location. Rebuild and verify the
-schema-8 `Joinery.app` bundle (preserving the schema-7 `d6cfb2a` bundle until
-authorized), then finish restart, interruption, million-row and hands-on owner
-acceptance.
+Run real disposable-table acceptance only under the fresh reviewed
+[`SANDBOX.BILLIE_TESTING` qualification plan](snowflake-sandbox-qualification-plan.md);
+earlier approvals are consumed or expired. Finish live account, restart,
+interruption, million-row, Developer ID/notarization, and hands-on owner
+acceptance on the verified schema-8 `Joinery.app` bundle.
 
 Source-scoped results belong in the [verification ledger](replacement-verification.md).
-The normal packaged app and private project hub remain unchanged until an
-authorized packaging/publication milestone.
+The private project hub and `/Applications` installation remain unchanged until
+an authorized publication/installation milestone.
