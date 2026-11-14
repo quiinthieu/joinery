@@ -40,19 +40,37 @@ NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   lockfiles, and verified `26/26` Snowflake Playwright E2E browser workflows across
   all `12` `tests/e2e/snowflake*.spec.ts` files.
 
-Serialized local verification on `318bb7a` passes full `pnpm validate` (`1,055`
-Vitest tests across `73` files and `841` standard Rust tests with `146` fixture
-ignores, `cargo fmt --check`, `cargo check`, and strict Clippy with zero
+Serialized local verification on `318bb7a` / `50fa225` passes full `pnpm validate`
+(`1,055` Vitest tests across `73` files and `841` standard Rust tests with `146`
+fixture ignores, `cargo fmt --check`, `cargo check`, and strict Clippy with zero
 warnings), `443` helper tests (`pnpm test:snowflake:helper`),
 `pnpm test:snowflake:process` (`313` unit with `1` ignored, `36` connection,
 `43` process, `32` external), `11` Studio grid cases, `54` batch
 recording/storage cases (`1` child-only fixture ignored), `13` pure edit-snapshot
 cases, `5` native `mutationRead` cases, `58` runtime cases, guarded staged
 startup (`0` auth / `0` SQL requests), `7` native resource cases, `136` offline
-qualification cases, and `26` Snowflake Playwright E2E browser specs; see the
-[source-scoped ledger](replacement-verification.md#complete-local-snowflake-datagrip-replacement-workflows-14-november-2026-local-schema-8-verification).
-Zero live Snowflake queries have been executed; live account qualification
-remains gated on explicit owner review and approval of the bounded
+qualification cases, `26` Snowflake Playwright E2E browser specs, hidden native
+smoke (`pnpm test:native`, `3/3` runs x `10` cleanup cycles, peak main-process
+RSS `102.81 MiB`), and hidden native encrypted metadata recovery
+(`pnpm test:native:encrypted-recovery`, `0` errors / `0` SQL invocations); see
+the [source-scoped ledger](replacement-verification.md#complete-local-snowflake-datagrip-replacement-workflows-14-november-2026-local-schema-8-verification).
+
+The uninstalled schema-8 ARM64 macOS bundle built from clean `50fa225` at
+`src-tauri/target/release/bundle/macos/Joinery.app` (`224.22 MiB`, `13,058`
+files; `Contents/MacOS/joinery` `31,566,416` bytes, SHA-256
+`f901d680a053cd16fb1ff04d4ba16e6decc6c2b4c3ab7faf2334b6f04569b6b7`) passes strict
+ad-hoc `codesign`, bundled Snowflake `3.4.1` package verification (`15,111`
+manifest entries, `symlinkCount: 0`, `manifestSha256`
+`479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c`, Node
+`24.22.2` SHA-256
+`b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a`), and guarded
+bundle helper startup (`authenticationRequests: 0`, `sqlRequests: 0`). The prior
+schema-7 `d6cfb2a` bundle (`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`)
+is preserved unchanged at
+`.cache/verification/preserved-release-d6cfb2a/Joinery.app`, `160 GiB` disk space
+remains free, and `src-tauri/target/debug` is preserved. Zero live Snowflake
+queries have been executed; live account qualification remains gated on explicit
+owner review and approval of the bounded
 [`SANDBOX.BILLIE_TESTING` qualification plan](snowflake-sandbox-qualification-plan.md),
 alongside Developer ID signing/notarization, `/Applications` installation, and
 hands-on owner acceptance.

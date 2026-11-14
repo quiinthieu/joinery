@@ -72,9 +72,13 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --fe
 cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness drivers::snowflake_mutation_read -- --test-threads=1
 PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/playwright-browsers" pnpm exec playwright test tests/e2e/snowflake-datagrip-workflows.spec.ts --workers=1
 pnpm validate
+pnpm desktop:snowflake:smoke:build
+pnpm test:native
+pnpm test:native:encrypted-recovery
+pnpm desktop:snowflake:bundle:mac
 ```
 
-Serialized host verification on `318bb7a` passes:
+Serialized host verification on `318bb7a` / `50fa225` passes:
 
 - `pnpm validate`: `1,055` Vitest tests across `73` files (`0` failed), `841`
   standard Rust tests (`0` failed, `146` fixture ignores), `cargo fmt --check`,
@@ -92,6 +96,33 @@ Serialized host verification on `318bb7a` passes:
 - Browser E2E: `26/26` Snowflake workflow tests across `12`
   `tests/e2e/snowflake*.spec.ts` files (`tests/e2e/snowflake-sdk-completion.spec.ts:369`
   is a PostgreSQL fixture test requiring local Postgres on `55432`).
+- Native smoke & encrypted metadata recovery (`50fa225`, identical Rust/TS/JS
+  source to `318bb7a`):
+  - `pnpm desktop:snowflake:smoke:build`: hidden native smoke bundle verified
+    (`entryCount: 15111`, `symlinkCount: 5`, `sdkVersion: "3.4.1"`,
+    `nodeSha256: "b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a"`,
+    `manifestSha256: "479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c"`,
+    `authenticationRequests: 0`, `sqlRequests: 0`).
+  - `pnpm test:native`: `3/3` runs passed (`10` cleanup cycles each, elapsed
+    `4537 ms`, `3173 ms`, `3335 ms`, `mainProcessPeakRssMiB` `95.16`, `101.83`,
+    `102.81`).
+  - `pnpm test:native:encrypted-recovery`: passed (`errors: []`, `0` connect /
+    `0` prepareExecution / `0` execute invocations across `encryptedSetup` and
+    `encryptedVerify`).
+- Uninstalled schema-8 macOS `Joinery.app` bundle (`pnpm desktop:snowflake:bundle:mac`
+  on clean `50fa225`):
+  - Preserved prior schema-7 `d6cfb2a` bundle unchanged at
+    `.cache/verification/preserved-release-d6cfb2a/Joinery.app`
+    (`Contents/MacOS/joinery` SHA-256
+    `0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`).
+  - Built `src-tauri/target/release/bundle/macos/Joinery.app` (`224.22 MiB`,
+    `13,058` files; `Contents/MacOS/joinery` `31,566,416` bytes, SHA-256
+    `f901d680a053cd16fb1ff04d4ba16e6decc6c2b4c3ab7faf2334b6f04569b6b7`).
+  - Passed strict ad-hoc `codesign` verification, bundled Snowflake package
+    check (`entryCount: 15111`, `symlinkCount: 0`, `manifestSha256:
+"479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c"`), and
+    guarded bundle helper startup (`authenticationRequests: 0`, `sqlRequests: 0`).
+  - Retained `160 GiB` free disk space and preserved `src-tauri/target/debug`.
 
 ### Reviewed Snowflake relation grid, pending preview, and rollback hardening (14 November 2026, local foundation)
 
