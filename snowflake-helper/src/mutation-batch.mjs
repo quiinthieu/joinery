@@ -88,7 +88,7 @@ export function validateMutationRequest(r, helper) {
       (u) =>
         exact(u, ["kind", "sql", "binds"]) &&
         ["insert", "update", "delete"].includes(u.kind) &&
-        text(u.sql, 262144) &&
+        text(u.sql, 786432) &&
         Array.isArray(u.binds) &&
         u.binds.length <= 2000 &&
         u.binds.every(scalar) &&

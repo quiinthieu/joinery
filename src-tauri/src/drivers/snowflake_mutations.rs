@@ -22,6 +22,7 @@ use std::collections::HashSet;
 pub const MAX_ROWS: usize = 500;
 pub const MAX_COLUMNS: usize = 1000;
 pub const MAX_CELL_BYTES: usize = 1024 * 1024;
+pub const MAX_UNIT_SQL_BYTES: usize = 768 * 1024;
 pub const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_JSON_DEPTH: usize = 64;
 
@@ -1175,11 +1176,14 @@ pub fn compile(target: &MutationTarget, mutations: &[Mutation]) -> AppResult<Com
             return Err(overlap());
         }
     }
-    let units = mutations
+    let units: Vec<_> = mutations
         .iter()
         .zip(capacities)
         .map(|(mutation, capacity)| emit(target, mutation, capacity))
         .collect();
+    if units.iter().any(|u| u.sql.len() > MAX_UNIT_SQL_BYTES) {
+        return Err(limit());
+    }
     Ok(CompiledBatch {
         units,
         accounted_bytes: budget.0,

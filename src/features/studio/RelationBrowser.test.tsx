@@ -2474,3 +2474,89 @@ it("imports >500 CSV rows across reviewed 500-row batches inside one manual Snow
     action: "commit",
   });
 });
+
+it("clears the consumed editSnapshotId when a manual continuation batch returns rejected", async () => {
+  setupWritableSnowflakeGrid();
+  let prepareCalls = 0;
+  let executeCalls = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") {
+      return { ...preview, editSnapshotId: "snap-init-1" } satisfies RelationPreview;
+    }
+    if (method === "preview_snowflake_grid_transaction_relation") {
+      return { ...preview, editSnapshotId: "snap-cont-1" } satisfies RelationPreview;
+    }
+    if (method === "prepare_snowflake_grid_plan") {
+      prepareCalls += 1;
+      return {
+        plan: {
+          id: `cont-plan-${prepareCalls}`,
+          sessionId: "s",
+          reviewedSnowflakeGrid: true,
+          statements: [{ sql: "UPDATE ...", kind: "write", missingWhere: false }],
+          warnings: [],
+          requiresApproval: true,
+          requiresPassphrase: false,
+          confirmationText: null,
+          expiresAt: 1_900_000_000_000,
+        },
+        rowCount: 1,
+        sql: ["UPDATE ..."],
+        bindings: [["555"]],
+      } satisfies ChangePreview;
+    }
+    if (method === "authorize_plan") return `cont-approval-${prepareCalls}`;
+    if (method === "execute_snowflake_grid_plan") {
+      executeCalls += 1;
+      return {
+        sessionId: "s",
+        operationId: `op-cont-${executeCalls}`,
+        outcome: executeCalls === 1 ? "pending" : "rejected",
+        transactionId: "tx-open-cont",
+        recordingError: null,
+        metadataRefreshRequired: false,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  // Batch 1 opens the manual Snowflake grid transaction (outcome: pending).
+  fireEvent.change(screen.getByLabelText("Grid transaction mode"), {
+    target: { value: "manual" },
+  });
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "554" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+  // Reload pending preview (snap-cont-1), then submit a continuation batch that returns rejected.
+  const banner = await screen.findByRole("region", { name: "Pending Snowflake grid transaction" });
+  fireEvent.click(within(banner).getByRole("button", { name: "Reload pending preview" }));
+  await vi.waitFor(() => {
+    expect(screen.queryByText(/Click Reload pending preview above/i)).toBeNull();
+  });
+
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "555" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+  // After a rejected continuation, the consumed snapshot must be cleared so the table
+  // reverts to read-only until Reload pending preview is clicked, rather than reusing snap-cont-1.
+  await screen.findByText(
+    /Preview edit snapshot was consumed\. Click Reload pending preview above/i,
+  );
+  expect(screen.getByRole("table", { name: "Read-only preview" })).toBeTruthy();
+  expect(screen.queryByRole("table", { name: "Editable Snowflake preview" })).toBeNull();
+});

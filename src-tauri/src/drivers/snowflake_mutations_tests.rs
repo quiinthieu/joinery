@@ -41,6 +41,8 @@ fn parse_batch(batch: &CompiledBatch) {
         let statements = Parser::parse_sql(&SnowflakeDialect {}, unit.sql()).unwrap();
         assert_eq!(statements.len(), 1);
         assert_eq!(unit.expected_rows(), 1);
+        assert!(unit.sql().len() <= MAX_UNIT_SQL_BYTES);
+        assert!(unit.bindings().len() <= 2 * MAX_COLUMNS);
         assert!(!unit.sql().contains(" LIMIT "));
         assert!(!unit.sql().contains("COUNT("));
     }
@@ -801,18 +803,97 @@ fn scale_38_decimal_float_binary_temporal_and_json_codecs_roundtrip_sqlparser() 
 
 #[test]
 fn thousand_column_full_width_update_compiles_with_2000_binds() {
+    use crate::drivers::snowflake_batch::BatchRequest;
+    use serde_json::{Value, json};
+
     let target = MutationTarget::new(
         "db",
         "schema",
         "wide_1000",
         (0..MAX_COLUMNS)
-            .map(|i| column(&format!("c{i}"), ScalarType::Boolean, false))
+            .map(|i| {
+                column(
+                    &format!("col_timestamp_tz_metric_{i:04}"),
+                    ScalarType::TimestampTz { scale: 9 },
+                    false,
+                )
+            })
             .collect(),
     )
     .unwrap();
-    let original = OriginalRow::new(&target, vec![text("false"); MAX_COLUMNS]).unwrap();
-    let changes: Vec<_> = (0..MAX_COLUMNS).map(|i| (i, text("true"))).collect();
+    let original = OriginalRow::new(
+        &target,
+        vec![text("2026-11-14 00:00:00.000000001 +00:00"); MAX_COLUMNS],
+    )
+    .unwrap();
+    let changes: Vec<_> = (0..MAX_COLUMNS)
+        .map(|i| (i, text("2026-11-14 01:02:03.000000004 +00:00")))
+        .collect();
     let batch = compile(&target, &[Mutation::Update { original, changes }]).unwrap();
     assert_eq!(batch.units()[0].bindings().len(), 2 * MAX_COLUMNS);
+    assert!(batch.units()[0].sql().len() > 262_144);
     parse_batch(&batch);
+
+    let wire_payload = json!({
+        "mode": "automatic",
+        "owner": Value::Null,
+        "rollbackPrior": false,
+        "expected": {
+            "user": "ANALYST",
+            "role": "ANALYST",
+            "database": "db",
+            "schema": "schema",
+            "warehouse": "WH",
+            "session": "12345",
+        },
+        "units": [{
+            "kind": "update",
+            "sql": batch.units()[0].sql(),
+            "binds": batch.units()[0]
+                .bindings()
+                .iter()
+                .map(|b| match b.value() {
+                    Some(v) => Value::String(v.to_string()),
+                    None => Value::Null,
+                })
+                .collect::<Vec<_>>(),
+        }],
+    });
+    assert!(
+        BatchRequest::parse("mutationBatch", &wire_payload)
+            .unwrap()
+            .is_some()
+    );
+
+    // Quote-heavy 1000-column full-width UPDATE whose SQL exceeds MAX_UNIT_SQL_BYTES fails closed at compile.
+    let oversized_target = MutationTarget::new(
+        "db",
+        "schema",
+        "oversized_1000",
+        (0..MAX_COLUMNS)
+            .map(|i| {
+                column(
+                    &format!("{i}{}", "\"".repeat(250)),
+                    ScalarType::Boolean,
+                    false,
+                )
+            })
+            .collect(),
+    )
+    .unwrap();
+    let oversized_orig =
+        OriginalRow::new(&oversized_target, vec![text("false"); MAX_COLUMNS]).unwrap();
+    let oversized_changes: Vec<_> = (0..MAX_COLUMNS).map(|i| (i, text("true"))).collect();
+    assert_eq!(
+        compile(
+            &oversized_target,
+            &[Mutation::Update {
+                original: oversized_orig,
+                changes: oversized_changes,
+            }],
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::ResultLimitReached
+    );
 }

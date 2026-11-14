@@ -118,13 +118,20 @@ fn batch_request_rejects_unbounded_or_ambiguous_payload_before_dispatch() {
         json!({"kind":"insert","sql":" ","binds":[]}),
         json!({"kind":"insert","sql":"x","binds":[1]}),
         json!({"kind":"insert","sql":"x","binds":[{}]}),
-        json!({"kind":"insert","sql":"x","binds":vec![Value::Null;1001]}),
-        json!({"kind":"insert","sql":"x".repeat(262_145),"binds":[]}),
+        json!({"kind":"insert","sql":"x","binds":vec![Value::Null;2001]}),
+        json!({"kind":"insert","sql":"x".repeat(786_433),"binds":[]}),
     ] {
         let mut malformed = valid.clone();
         malformed["units"] = json!([unit]);
         assert!(BatchRequest::parse("mutationBatch", &malformed).is_err());
     }
+    let mut max_wide = valid.clone();
+    max_wide["units"] = json!([{
+        "kind": "update",
+        "sql": "x".repeat(786_432),
+        "binds": vec![Value::Null; 2000]
+    }]);
+    assert!(BatchRequest::parse("mutationBatch", &max_wide).is_ok());
     assert!(BatchRequest::parse("query", &valid).unwrap().is_none());
     let owner = Uuid::new_v4();
     assert!(BatchRequest::parse("mutationBatch", &payload(1, Mode::Manual, Some(owner))).is_ok());

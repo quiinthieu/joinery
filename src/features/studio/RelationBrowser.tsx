@@ -26,9 +26,11 @@ import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeD
 import { DdlPanel } from "./ObjectInspectorView";
 import {
   MAX_SNOWFLAKE_GRID_MUTATIONS,
+  SAFE_SNOWFLAKE_BATCH_FRAME_BYTES,
   buildSnowflakeGridMutations,
   canColumnDefaultOnInsert,
   createBlankInsertRow,
+  estimateInsertRowsFrameBytes,
   isWritableSnowflakeColumn,
   stageCsvInsertBatches,
   type CsvFieldDelimiter,
@@ -786,12 +788,18 @@ export function RelationBrowser({
     if (!inspection) return;
     setGridError(null);
     try {
+      const tableTarget = {
+        database: catalog?.database,
+        schema: inspection.table.schema,
+        name: inspection.table.name,
+      };
       const batches = stageCsvInsertBatches({
         raw: csvRawText,
         delimiter: csvDelimiter,
         hasHeader: csvHasHeader,
         nullToken: csvNullToken,
         columns: inspection.columns,
+        table: tableTarget,
       });
       const totalRows = batches.reduce((acc, batch) => acc + batch.length, 0);
       if (batches.length === 1 && !csvImportQueue) {
@@ -799,6 +807,19 @@ export function RelationBrowser({
         if (totalStagedMutations + staged.length > MAX_SNOWFLAKE_GRID_MUTATIONS) {
           setGridError(
             `Staging ${staged.length} CSV rows would exceed the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-mutation batch limit. Review or discard existing staged edits first.`,
+          );
+          return;
+        }
+        if (
+          insertedRows.length > 0 &&
+          estimateInsertRowsFrameBytes(
+            [...insertedRows, ...staged],
+            inspection.columns,
+            tableTarget,
+          ) > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES
+        ) {
+          setGridError(
+            `Staging ${staged.length} CSV rows with existing staged inserts would exceed the Snowflake helper frame limit. Review or discard existing staged edits first.`,
           );
           return;
         }
@@ -961,9 +982,7 @@ export function RelationBrowser({
             return;
           }
           clearStagedGridEdits();
-          if (result.outcome === "pending") {
-            setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
-          }
+          setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
         }}
       />
     );

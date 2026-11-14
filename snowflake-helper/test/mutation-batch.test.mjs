@@ -753,7 +753,7 @@ test("uppercase SDK batch identity preserves ACK but cannot become canonical suc
   assert.equal(state.retired(), 1);
 });
 
-test("wide-table UPDATE unit accepts up to 2000 scalar binds and rejects 2001", async () => {
+test("wide-table UPDATE unit accepts up to 2000 scalar binds and 768 KiB SQL while rejecting overflow", async () => {
   const state = await pinned();
   assert.equal(
     validateMutationRequest(
@@ -762,7 +762,7 @@ test("wide-table UPDATE unit accepts up to 2000 scalar binds and rejects 2001", 
         payload: payload([
           {
             kind: "update",
-            sql: 'UPDATE "DB"."PUBLIC"."WIDE" SET "C0" = CAST(? AS VARCHAR)',
+            sql: `UPDATE "DB"."PUBLIC"."WIDE" SET ${'"C" = CAST(? AS VARCHAR), '.repeat(11000)}"C0" = CAST(? AS VARCHAR)`,
             binds: new Array(2000).fill("v"),
           },
         ]),
@@ -770,6 +770,22 @@ test("wide-table UPDATE unit accepts up to 2000 scalar binds and rejects 2001", 
       state.helper,
     ),
     true,
+  );
+  assert.equal(
+    validateMutationRequest(
+      {
+        op: "mutationBatch",
+        payload: payload([
+          {
+            kind: "update",
+            sql: "x".repeat(786433),
+            binds: ["v"],
+          },
+        ]),
+      },
+      state.helper,
+    ),
+    false,
   );
   assert.equal(
     validateMutationRequest(

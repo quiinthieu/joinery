@@ -7,6 +7,33 @@ import type {
 
 export const MAX_SNOWFLAKE_GRID_MUTATIONS = 500;
 export const MAX_SNOWFLAKE_CSV_IMPORT_ROWS = 100_000;
+export const MAX_SNOWFLAKE_SCALAR_BIND_BYTES = 262_144;
+export const MAX_SNOWFLAKE_UNIT_SQL_BYTES = 786_432;
+export const SAFE_SNOWFLAKE_BATCH_FRAME_BYTES = 900_000;
+const SAFE_SNOWFLAKE_COMPILER_BATCH_BYTES = 7 * 1024 * 1024;
+const BATCH_FRAME_ENVELOPE_BYTES = 512;
+const utf8Encoder = new TextEncoder();
+const SIMPLE_JSON_ASCII = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/;
+
+function utf8ByteLength(value: string): number {
+  return SIMPLE_JSON_ASCII.test(value) ? value.length : utf8Encoder.encode(value).length;
+}
+
+function jsonStringUtf8Bytes(value: string): number {
+  return SIMPLE_JSON_ASCII.test(value)
+    ? value.length + 2
+    : utf8Encoder.encode(JSON.stringify(value)).length;
+}
+
+function quoteSqlIdentifier(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+export interface CsvTargetRelationName {
+  database?: string | null;
+  schema: string;
+  name: string;
+}
 
 export type CsvFieldDelimiter = "," | "\t" | ";" | "|";
 
@@ -400,11 +427,132 @@ function mapCsvRowsToInsertRows(
           );
         }
       } else {
+        if (utf8ByteLength(rawValue) > MAX_SNOWFLAKE_SCALAR_BIND_BYTES) {
+          throw new Error(
+            `CSV row ${hasHeader ? rowOffset + 2 : rowOffset + 1}: column "${column.name}" exceeds the 256 KiB scalar bind limit`,
+          );
+        }
         cells[targetIndex] = { kind: "text", value: rawValue };
       }
     });
     return { id: crypto.randomUUID(), cells };
   });
+}
+
+interface WritableInsertColumnCost {
+  index: number;
+  isSemiStructured: boolean;
+  quotedSqlBytes: number;
+  quotedJsonBytes: number;
+  castSqlBytes: number;
+  castJsonBytes: number;
+}
+
+function buildInsertColumnCosts(columns: readonly ColumnInspection[]): WritableInsertColumnCost[] {
+  const costs: WritableInsertColumnCost[] = [];
+  columns.forEach((column, index) => {
+    if (!isWritableSnowflakeColumn(column)) return;
+    const family = snowflakeEditTypeFamily(column.dataType);
+    const quoted = quoteSqlIdentifier(column.name);
+    const quotedSqlBytes = utf8ByteLength(quoted) + 2;
+    const quotedJsonBytes = jsonStringUtf8Bytes(quoted) - 2 + 2;
+    let castSqlBytes = 30;
+    if (family === "timestamp_ntz" || family === "timestamp_ltz" || family === "timestamp_tz") {
+      castSqlBytes = 100;
+    } else if (family === "time") {
+      castSqlBytes = 68;
+    } else if (family === "date") {
+      castSqlBytes = 52;
+    } else if (family === "array" || family === "object") {
+      castSqlBytes = 44;
+    } else if (family === "variant") {
+      castSqlBytes = 34;
+    } else if (family === "binary") {
+      castSqlBytes = 32;
+    }
+    costs.push({
+      index,
+      isSemiStructured: family === "variant" || family === "array" || family === "object",
+      quotedSqlBytes,
+      quotedJsonBytes,
+      castSqlBytes,
+      castJsonBytes: castSqlBytes + 4,
+    });
+  });
+  return costs;
+}
+
+function qualifiedTableLengths(table?: CsvTargetRelationName): {
+  sqlBytes: number;
+  jsonBytes: number;
+} {
+  if (!table) {
+    return { sqlBytes: 256, jsonBytes: 320 };
+  }
+  const qualified = `${quoteSqlIdentifier(table.database ?? "DB")}.${quoteSqlIdentifier(table.schema)}.${quoteSqlIdentifier(table.name)}`;
+  return {
+    sqlBytes: utf8ByteLength(qualified),
+    jsonBytes: jsonStringUtf8Bytes(qualified) - 2,
+  };
+}
+
+function estimateInsertRowCost(
+  row: StagedInsertRow,
+  columns: readonly ColumnInspection[],
+  columnCosts: readonly WritableInsertColumnCost[],
+  tableLengths: { sqlBytes: number; jsonBytes: number },
+): { sqlBytes: number; frameBytes: number; compilerBytes: number } {
+  let needsSelect = false;
+  for (const col of columnCosts) {
+    const cell = row.cells[col.index] ?? defaultInsertCellForColumn(columns[col.index]);
+    if (col.isSemiStructured && cell.kind !== "default") {
+      needsSelect = true;
+      break;
+    }
+  }
+  let sqlBytes = 28 + tableLengths.sqlBytes;
+  let jsonSqlBytes = 28 + tableLengths.jsonBytes;
+  let bindsJsonBytes = 2;
+  let compilerCellBytes = 128;
+  for (const col of columnCosts) {
+    const cell = row.cells[col.index] ?? defaultInsertCellForColumn(columns[col.index]);
+    if (needsSelect && cell.kind === "default") continue;
+    sqlBytes += col.quotedSqlBytes;
+    jsonSqlBytes += col.quotedJsonBytes;
+    if (cell.kind === "default") {
+      sqlBytes += 9;
+      jsonSqlBytes += 9;
+    } else if (cell.kind === "null") {
+      sqlBytes += 32;
+      jsonSqlBytes += 32;
+      bindsJsonBytes += 5;
+      compilerCellBytes += 64;
+    } else {
+      sqlBytes += col.castSqlBytes;
+      jsonSqlBytes += col.castJsonBytes;
+      bindsJsonBytes += jsonStringUtf8Bytes(cell.value) + 1;
+      compilerCellBytes += 2 * utf8ByteLength(cell.value) + 64;
+    }
+  }
+  return {
+    sqlBytes,
+    frameBytes: 48 + jsonSqlBytes + bindsJsonBytes,
+    compilerBytes: sqlBytes + compilerCellBytes,
+  };
+}
+
+export function estimateInsertRowsFrameBytes(
+  rows: readonly StagedInsertRow[],
+  columns: readonly ColumnInspection[],
+  table?: CsvTargetRelationName,
+): number {
+  const columnCosts = buildInsertColumnCosts(columns);
+  const tableLengths = qualifiedTableLengths(table);
+  let total = BATCH_FRAME_ENVELOPE_BYTES;
+  for (const row of rows) {
+    total += estimateInsertRowCost(row, columns, columnCosts, tableLengths).frameBytes;
+  }
+  return total;
 }
 
 export function stageCsvInsertRows(args: {
@@ -413,17 +561,45 @@ export function stageCsvInsertRows(args: {
   hasHeader: boolean;
   nullToken: string;
   columns: readonly ColumnInspection[];
+  table?: CsvTargetRelationName;
 }): StagedInsertRow[] {
-  return mapCsvRowsToInsertRows(
+  const rows = mapCsvRowsToInsertRows(
     args,
     MAX_SNOWFLAKE_GRID_MUTATIONS,
     `CSV batch exceeds the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-row generated mutation limit`,
   );
+  const columnCosts = buildInsertColumnCosts(args.columns);
+  const tableLengths = qualifiedTableLengths(args.table);
+  let frameBytes = BATCH_FRAME_ENVELOPE_BYTES;
+  let compilerBytes = 0;
+  rows.forEach((row, idx) => {
+    const cost = estimateInsertRowCost(row, args.columns, columnCosts, tableLengths);
+    if (
+      cost.sqlBytes > MAX_SNOWFLAKE_UNIT_SQL_BYTES ||
+      BATCH_FRAME_ENVELOPE_BYTES + cost.frameBytes > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES ||
+      cost.compilerBytes > SAFE_SNOWFLAKE_COMPILER_BATCH_BYTES
+    ) {
+      throw new Error(
+        `CSV row ${args.hasHeader ? idx + 2 : idx + 1} exceeds the Snowflake generated batch frame limit; reduce row width or cell payload size`,
+      );
+    }
+    frameBytes += cost.frameBytes;
+    compilerBytes += cost.compilerBytes;
+  });
+  if (
+    frameBytes > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES ||
+    compilerBytes > SAFE_SNOWFLAKE_COMPILER_BATCH_BYTES
+  ) {
+    throw new Error(
+      "CSV batch exceeds the Snowflake helper frame limit; use multi-batch import or fewer rows",
+    );
+  }
+  return rows;
 }
 
 /**
- * Validates up to 100,000 CSV data rows upfront and splits them into 500-row
- * generated-mutation batches for atomic multi-batch Snowflake transaction execution.
+ * Validates up to 100,000 CSV data rows upfront and splits them into generated-mutation
+ * batches bounded by row count (<= 500), 1 MiB helper wire frame, and 8 MiB compiler budget.
  */
 export function stageCsvInsertBatches(
   args: {
@@ -432,6 +608,7 @@ export function stageCsvInsertBatches(
     hasHeader: boolean;
     nullToken: string;
     columns: readonly ColumnInspection[];
+    table?: CsvTargetRelationName;
   },
   batchSize: number = MAX_SNOWFLAKE_GRID_MUTATIONS,
 ): StagedInsertRow[][] {
@@ -443,9 +620,42 @@ export function stageCsvInsertBatches(
     MAX_SNOWFLAKE_CSV_IMPORT_ROWS,
     `CSV import exceeds the ${MAX_SNOWFLAKE_CSV_IMPORT_ROWS.toLocaleString()}-row multi-batch limit`,
   );
+  const columnCosts = buildInsertColumnCosts(args.columns);
+  const tableLengths = qualifiedTableLengths(args.table);
   const batches: StagedInsertRow[][] = [];
-  for (let i = 0; i < allRows.length; i += batchSize) {
-    batches.push(allRows.slice(i, i + batchSize));
+  let currentBatch: StagedInsertRow[] = [];
+  let currentFrameBytes = BATCH_FRAME_ENVELOPE_BYTES;
+  let currentCompilerBytes = 0;
+
+  allRows.forEach((row, idx) => {
+    const cost = estimateInsertRowCost(row, args.columns, columnCosts, tableLengths);
+    if (
+      cost.sqlBytes > MAX_SNOWFLAKE_UNIT_SQL_BYTES ||
+      BATCH_FRAME_ENVELOPE_BYTES + cost.frameBytes > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES ||
+      cost.compilerBytes > SAFE_SNOWFLAKE_COMPILER_BATCH_BYTES
+    ) {
+      throw new Error(
+        `CSV row ${args.hasHeader ? idx + 2 : idx + 1} exceeds the Snowflake generated batch frame limit; reduce row width or cell payload size`,
+      );
+    }
+    if (
+      currentBatch.length > 0 &&
+      (currentBatch.length >= batchSize ||
+        currentFrameBytes + cost.frameBytes > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES ||
+        currentCompilerBytes + cost.compilerBytes > SAFE_SNOWFLAKE_COMPILER_BATCH_BYTES)
+    ) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentFrameBytes = BATCH_FRAME_ENVELOPE_BYTES;
+      currentCompilerBytes = 0;
+    }
+    currentBatch.push(row);
+    currentFrameBytes += cost.frameBytes;
+    currentCompilerBytes += cost.compilerBytes;
+  });
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
   }
   return batches;
 }

@@ -480,10 +480,10 @@ impl BatchRequest {
                 for unit in source {
                     if !object_keys(unit, &["kind", "sql", "binds"])
                         || !unit["sql"].as_str().is_some_and(|s| {
-                            !s.trim().is_empty() && s.len() <= 262_144 && !s.contains('\0')
+                            !s.trim().is_empty() && s.len() <= 786_432 && !s.contains('\0')
                         })
                         || !unit["binds"].as_array().is_some_and(|binds| {
-                            binds.len() <= 1000
+                            binds.len() <= 2000
                                 && binds.iter().all(|bind| {
                                     bind.is_null()
                                         || bind.is_boolean()

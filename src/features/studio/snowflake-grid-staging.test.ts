@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnInspection } from "../../ipc/generated";
 import {
+  SAFE_SNOWFLAKE_BATCH_FRAME_BYTES,
   buildSnowflakeGridMutations,
   defaultInsertCellForColumn,
+  estimateInsertRowsFrameBytes,
   isWritableSnowflakeColumn,
   parseCsvRows,
   stageCsvInsertBatches,
@@ -259,5 +261,69 @@ describe("snowflake-grid-staging", () => {
         columns,
       }),
     ).toThrow('CSV row 901: column "ID" is NOT NULL');
+  });
+
+  it("dynamically splits wide-table CSV imports below the 1 MiB helper frame limit and rejects oversized single rows", () => {
+    const wideColumns = Array.from({ length: 1000 }, (_, i) =>
+      makeColumn({
+        name: `C_${i}`,
+        ordinal: i + 1,
+        dataType: "TEXT",
+        fullType: "TEXT(256)",
+        resultKind: "text",
+        nullable: false,
+      }),
+    );
+    const header = wideColumns.map((c) => c.name).join(",");
+    const rowValues = wideColumns.map((_, i) => `val_${i}`).join(",");
+    const raw45 = `${header}\n${Array.from({ length: 45 }, () => rowValues).join("\n")}`;
+
+    const batches = stageCsvInsertBatches({
+      raw: raw45,
+      delimiter: ",",
+      hasHeader: true,
+      nullToken: "\\N",
+      columns: wideColumns,
+      table: { database: "SANDBOX", schema: "BILLIE_TESTING", name: "WIDE_1000" },
+    });
+    expect(batches.length).toBeGreaterThan(2);
+    expect(batches.reduce((sum, b) => sum + b.length, 0)).toBe(45);
+    for (const batch of batches) {
+      expect(batch.length).toBeLessThan(500);
+      expect(
+        estimateInsertRowsFrameBytes(batch, wideColumns, {
+          database: "SANDBOX",
+          schema: "BILLIE_TESTING",
+          name: "WIDE_1000",
+        }),
+      ).toBeLessThanOrEqual(SAFE_SNOWFLAKE_BATCH_FRAME_BYTES);
+    }
+
+    // Single cell exceeding 256 KiB scalar bind limit is rejected upfront.
+    const narrowCols = [makeColumn({ name: "PAYLOAD", ordinal: 1, nullable: false })];
+    expect(() =>
+      stageCsvInsertBatches({
+        raw: `PAYLOAD\n${"x".repeat(262_145)}`,
+        delimiter: ",",
+        hasHeader: true,
+        nullToken: "\\N",
+        columns: narrowCols,
+      }),
+    ).toThrow(/exceeds the 256 KiB scalar bind limit/);
+
+    // Single row exceeding 900 KiB batch frame budget (e.g. 5 x 200 KiB cells) is rejected upfront.
+    const fiveCols = Array.from({ length: 5 }, (_, i) =>
+      makeColumn({ name: `P${i}`, ordinal: i + 1, nullable: false }),
+    );
+    const hugeRow = Array.from({ length: 5 }, () => "y".repeat(200_000)).join(",");
+    expect(() =>
+      stageCsvInsertBatches({
+        raw: `${fiveCols.map((c) => c.name).join(",")}\n${hugeRow}`,
+        delimiter: ",",
+        hasHeader: true,
+        nullToken: "\\N",
+        columns: fiveCols,
+      }),
+    ).toThrow(/exceeds the Snowflake generated batch frame limit/);
   });
 });
