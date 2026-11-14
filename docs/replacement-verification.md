@@ -11,9 +11,10 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 ### Complete local Snowflake DataGrip-replacement workflows (14 November 2026, local schema-8 verification)
 
 Base `d2d6eb3`, feature branch `feat/datagrip-replacement`, commits `682b1ed`,
-`a794426`, `51ae8d1`, `a05306a`, `ff131ef`, `7434818`, and `318bb7a`.
+`a794426`, `51ae8d1`, `a05306a`, `ff131ef`, `7434818`, `318bb7a`, `50fa225`,
+`5f0447a`, `858151f`, `c2f4efe`, and `e416059`.
 
-1. **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`)**:
+1. **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`, `858151f`)**:
    - Expanded `drivers/snowflake_mutations.rs`, `snowflake_edit_snapshot.rs`
      (`8 MiB` per-snapshot / `32 MiB` global ceiling, `MAX_COLUMNS = 1000`,
      `MAX_UNIT_SQL_BYTES = 786_432`), `drivers/snowflake_batch.rs`, and
@@ -27,37 +28,38 @@ Base `d2d6eb3`, feature branch `feat/datagrip-replacement`, commits `682b1ed`,
      `RelationBrowser.tsx` so cancelling `<ReviewDialog>` restores the linear
      `editSnapshotId` without discarding staged edits or forcing a reload, while
      clearing consumed snapshots after any dispatched batch (including rejected
-     manual continuations).
+     manual continuations, `858151f`).
    - Added `normalize_wire_booleans` in `drivers/snowflake_external.rs` (wired
      into `stream_bounded`, `grid_freshness.rs`, and `console.rs`) so
      `snowflake-sdk` `3.4.1` `fetchAsString` `"TRUE"`/`"FALSE"` values on
      `ColumnKind::Boolean` normalize to canonical `"true"`/`"false"` in Rust
      while raw JS helper wire values stay untouched for `136/136` offline
      qualification parity (`318bb7a`).
-2. **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`)**:
+2. **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`, `858151f`)**:
    - Extended `PreviewRelationRequest`, `snowflake_browsing.rs`,
      `snowflake-helper/src/mutation-read.mjs`, and `NativeEditBinding` with
      `PreviewSlice` (`offset`, single-column `ORDER BY ... ASC/DESC NULLS
 FIRST/LAST`, and typed column filters), paginated staged inserts, and
      multi-batch RFC-4180 CSV staging up to `100,000` rows dynamically
      partitioned within `<= 500` rows, `8 MiB` compiler budget, and `< 1 MiB`
-     helper wire frame.
+     helper wire frame (`858151f`).
    - Updated `AttemptOwner` workspace layout checks (`51ae8d1`) for schema-8
      `profiles_v8` and lockfiles.
-3. **Guarded context switching, observed `EXPLAIN USING JSON` diff, Object Explorer, 8 DDL actions, and SQL authoring (`a05306a`, `ff131ef`, `7434818`)**:
+3. **Guarded context switching, observed `EXPLAIN USING JSON` diff, Object Explorer, 8 DDL actions, and SQL authoring (`a05306a`, `ff131ef`, `7434818`, `c2f4efe`)**:
    - Added `snowflake_session_contexts` and `switch_snowflake_context` (`ROLE`,
      `WAREHOUSE`, `DATABASE`, `SCHEMA`), observed `EXPLAIN USING JSON`
      `QueryEvent::PlanContext` operator-tree parsing, and `SqlEditor` plan
      snapshot comparison (`a05306a`).
    - Added `drivers/snowflake_explorer.rs` (`database_objects` and
      `object_details` across tables, views, materialized views, sequences, and
-     overloaded functions/procedures), 8 reviewed Snowflake DDL actions
+     overloaded functions/procedures with `revokeSchemaSelectionBeforeWork`
+     guard in `ObjectInspectorView.tsx`), 8 reviewed Snowflake DDL actions
      (`CreateTable`, `AddColumn`, `AlterColumnNullability`, `RenameColumn`,
      `DropColumn`, `DropTable`, `CreateView`, `DropView`), Snowflake SQL `:path`
      completion + live `inspection_schema` zero-row column diagnostics on
      `SnowflakeExternal` (preserving `Unsupported` on permission-filtered OAuth
-     `Snowflake`), and end-to-end Playwright workflow coverage in
-     `tests/e2e/snowflake-datagrip-workflows.spec.ts` (`7434818`).
+     `Snowflake`, `c2f4efe`), and end-to-end Playwright workflow coverage in
+     `tests/e2e/snowflake-datagrip-workflows.spec.ts` (`7434818`, `c2f4efe`).
 
 Reproduce serially with pinned Rust and `JOINERY_TEST_NODE` pointing to the
 isolated Node `24.22.2` binary:
@@ -84,15 +86,15 @@ pnpm test:native:encrypted-recovery
 pnpm desktop:snowflake:bundle:mac
 ```
 
-Serialized host verification on `318bb7a` / `50fa225` passes:
+Serialized host verification on `c2f4efe` / `e416059` passes:
 
-- `pnpm validate`: `1,055` Vitest tests across `73` files (`0` failed), `841`
+- `pnpm validate`: `1,057` Vitest tests across `73` files (`0` failed), `842`
   standard Rust tests (`0` failed, `146` fixture ignores), `cargo fmt --check`,
   `cargo check`, and strict `cargo clippy --all-targets --all-features -- -D warnings`
   with zero warnings.
 - `pnpm test:snowflake:helper`: `443` passed (`0` failed).
-- `pnpm test:snowflake:process`: `313` unit (`1` ignored), `36` connection, `43`
-  process, `32` external (`424` passed, `0` failed).
+- `pnpm test:snowflake:process`: `314` unit (`1` ignored), `36` connection, `43`
+  process, `32` external (`425` passed, `0` failed).
 - Focused `test-harness` suites: `11` Studio grid cases, `54` batch
   recording/storage cases (`1` child-only fixture ignored), `13` pure
   edit-snapshot cases, and `5` native `mutationRead` cases (`0` failed).
@@ -101,32 +103,33 @@ Serialized host verification on `318bb7a` / `50fa225` passes:
   offline qualification runner checks.
 - Browser E2E: `26/26` Snowflake workflow tests across `12`
   `tests/e2e/snowflake*.spec.ts` files (`tests/e2e/snowflake-sdk-completion.spec.ts:369`
-  is a PostgreSQL fixture test requiring local Postgres on `55432`).
-- Native smoke & encrypted metadata recovery (`50fa225`, identical Rust/TS/JS
-  source to `318bb7a`):
+  is a PostgreSQL fixture test requiring local Postgres on `55432`), plus `3/3`
+  consecutive `--repeat-each=3` runs of `snowflake-sdk-completion.spec.ts`.
+- Native smoke & encrypted metadata recovery (`e416059`, identical Rust/TS/JS
+  source to `c2f4efe`):
   - `pnpm desktop:snowflake:smoke:build`: hidden native smoke bundle verified
     (`entryCount: 15111`, `symlinkCount: 5`, `sdkVersion: "3.4.1"`,
     `nodeSha256: "b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a"`,
-    `manifestSha256: "479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c"`,
+    `manifestSha256: "df68c565d0a521cc59b0e548956bba573c216d0c5b9a71bb3a9004c53ef4ac12"`,
     `authenticationRequests: 0`, `sqlRequests: 0`).
   - `pnpm test:native`: `3/3` runs passed (`10` cleanup cycles each, elapsed
-    `4537 ms`, `3173 ms`, `3335 ms`, `mainProcessPeakRssMiB` `95.16`, `101.83`,
-    `102.81`).
+    `3746 ms`, `3183 ms`, `3188 ms`, `mainProcessPeakRssMiB` `102.89`, `103.52`,
+    `102.34`).
   - `pnpm test:native:encrypted-recovery`: passed (`errors: []`, `0` connect /
     `0` prepareExecution / `0` execute invocations across `encryptedSetup` and
     `encryptedVerify`).
 - Uninstalled schema-8 macOS `Joinery.app` bundle (`pnpm desktop:snowflake:bundle:mac`
-  on clean `50fa225`):
+  on clean `e416059`):
   - Preserved prior schema-7 `d6cfb2a` bundle unchanged at
     `.cache/verification/preserved-release-d6cfb2a/Joinery.app`
     (`Contents/MacOS/joinery` SHA-256
     `0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`).
   - Built `src-tauri/target/release/bundle/macos/Joinery.app` (`224.22 MiB`,
-    `13,058` files; `Contents/MacOS/joinery` `31,566,416` bytes, SHA-256
-    `f901d680a053cd16fb1ff04d4ba16e6decc6c2b4c3ab7faf2334b6f04569b6b7`).
+    `13,058` files; `Contents/MacOS/joinery` `31,566,464` bytes, SHA-256
+    `e5f17bccd45168aba98c8f9f7bc141c2e9cdce7fd7a729dcfa4b2645d8ddfc89`).
   - Passed strict ad-hoc `codesign` verification, bundled Snowflake package
     check (`entryCount: 15111`, `symlinkCount: 0`, `manifestSha256:
-"479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c"`), and
+"df68c565d0a521cc59b0e548956bba573c216d0c5b9a71bb3a9004c53ef4ac12"`), and
     guarded bundle helper startup (`authenticationRequests: 0`, `sqlRequests: 0`).
   - Retained `160 GiB` free disk space and preserved `src-tauri/target/debug`.
 

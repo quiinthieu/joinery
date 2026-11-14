@@ -2,11 +2,11 @@
 
 ## Complete local Snowflake DataGrip-replacement workflow surface (14 November 2026, local schema-8 verification)
 
-Commits `682b1ed..318bb7a` complete the local schema-8 Snowflake DataGrip
+Commits `682b1ed..e416059` complete the local schema-8 Snowflake DataGrip
 2026.3 (`263.7307.216`) replacement workflow surface across the bundled
 Apache-2.0 `snowflake-sdk` `3.4.1` and pinned Node `24.22.2` helper:
 
-- **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`)**:
+- **Lossless grid codecs, `<ReviewDialog>` cancel recovery, and `1,000`-column ceiling (`682b1ed`, `318bb7a`, `858151f`)**:
   Expanded `drivers/snowflake_mutations.rs`, `drivers/snowflake_batch.rs`,
   `SnapshotStore` (`8 MiB` per-snapshot / `32 MiB` global budget, `768 KiB` unit
   SQL), and helper `mutationBatch` (`2,000` scalar binds / `500` units) across
@@ -18,7 +18,7 @@ Apache-2.0 `snowflake-sdk` `3.4.1` and pinned Node `24.22.2` helper:
   `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, and `VARIANT`/`ARRAY`/`OBJECT`, plus
   `cancel_snowflake_grid_plan` to restore linear edit snapshots on review cancel
   and clear consumed snapshots after rejected manual continuations.
-- **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`)**:
+- **Server-paged/sorted/filtered relation browsing and `100,000`-row multi-batch CSV import (`a794426`, `858151f`)**:
   Added `PreviewRelationRequest` `offset`, single-column `ORDER BY ... ASC/DESC
 NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   `NativeEditBinding`), paginated inline staged inserts, and multi-batch RFC-4180
@@ -29,7 +29,7 @@ NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   verification and metadata refresh, plus observed Snowflake `EXPLAIN USING JSON`
   `QueryEvent::PlanContext` operator-tree parsing and `SqlEditor` plan snapshot
   comparison.
-- **Snowflake `ObjectExplorer` / `ObjectInspector`, 8 reviewed DDL actions, and SQL authoring (`ff131ef`)**:
+- **Snowflake `ObjectExplorer` / `ObjectInspector`, 8 reviewed DDL actions, and SQL authoring (`ff131ef`, `c2f4efe`)**:
   Added `drivers/snowflake_explorer.rs` (`database_objects` and `object_details`
   across tables, views, materialized views, sequences, and overloaded user
   functions/procedures with FK mappings, view dependencies, and `GET_DDL`),
@@ -37,34 +37,36 @@ NULLS FIRST/LAST`, and typed column filters (`PreviewSlice`-bound
   `AlterColumnNullability`, `RenameColumn`, `DropColumn`, `DropTable`,
   `CreateView`, `DropView`), and added Snowflake SQL `:path` semi-structured
   completion, string/comment suppression, and live `inspection_schema` zero-row
-  column diagnostics on `SnowflakeExternal`.
-- **Qualification workspace schema-8 alignment and E2E browser coverage (`51ae8d1`, `7434818`)**:
+  column diagnostics on `SnowflakeExternal` (preserving `Unsupported` on
+  permission-filtered OAuth `Snowflake`).
+- **Qualification workspace schema-8 alignment and E2E browser coverage (`51ae8d1`, `7434818`, `c2f4efe`)**:
   Updated `AttemptOwner` workspace layout checks for schema-8 `profiles_v8` and
   lockfiles, and verified `26/26` Snowflake Playwright E2E browser workflows across
-  all `12` `tests/e2e/snowflake*.spec.ts` files.
+  all `12` `tests/e2e/snowflake*.spec.ts` files (plus `3/3` consecutive
+  `--repeat-each=3` completion runs).
 
-Serialized local verification on `318bb7a` / `50fa225` passes full `pnpm validate`
-(`1,055` Vitest tests across `73` files and `841` standard Rust tests with `146`
+Serialized local verification on `c2f4efe` / `e416059` passes full `pnpm validate`
+(`1,057` Vitest tests across `73` files and `842` standard Rust tests with `146`
 fixture ignores, `cargo fmt --check`, `cargo check`, and strict Clippy with zero
 warnings), `443` helper tests (`pnpm test:snowflake:helper`),
-`pnpm test:snowflake:process` (`313` unit with `1` ignored, `36` connection,
+`pnpm test:snowflake:process` (`314` unit with `1` ignored, `36` connection,
 `43` process, `32` external), `11` Studio grid cases, `54` batch
 recording/storage cases (`1` child-only fixture ignored), `13` pure edit-snapshot
 cases, `5` native `mutationRead` cases, `58` runtime cases, guarded staged
 startup (`0` auth / `0` SQL requests), `7` native resource cases, `136` offline
 qualification cases, `26` Snowflake Playwright E2E browser specs, hidden native
 smoke (`pnpm test:native`, `3/3` runs x `10` cleanup cycles, peak main-process
-RSS `102.81 MiB`), and hidden native encrypted metadata recovery
+RSS `103.52 MiB`), and hidden native encrypted metadata recovery
 (`pnpm test:native:encrypted-recovery`, `0` errors / `0` SQL invocations); see
 the [source-scoped ledger](replacement-verification.md#complete-local-snowflake-datagrip-replacement-workflows-14-november-2026-local-schema-8-verification).
 
-The uninstalled schema-8 ARM64 macOS bundle built from clean `50fa225` at
+The uninstalled schema-8 ARM64 macOS bundle built from clean `e416059` at
 `src-tauri/target/release/bundle/macos/Joinery.app` (`224.22 MiB`, `13,058`
-files; `Contents/MacOS/joinery` `31,566,416` bytes, SHA-256
-`f901d680a053cd16fb1ff04d4ba16e6decc6c2b4c3ab7faf2334b6f04569b6b7`) passes strict
+files; `Contents/MacOS/joinery` `31,566,464` bytes, SHA-256
+`e5f17bccd45168aba98c8f9f7bc141c2e9cdce7fd7a729dcfa4b2645d8ddfc89`) passes strict
 ad-hoc `codesign`, bundled Snowflake `3.4.1` package verification (`15,111`
 manifest entries, `symlinkCount: 0`, `manifestSha256`
-`479b9574293c6f35b82cf27e4eb2d12fc7d2cf1d521dedec3ad87983fe75099c`, Node
+`df68c565d0a521cc59b0e548956bba573c216d0c5b9a71bb3a9004c53ef4ac12`, Node
 `24.22.2` SHA-256
 `b6fb419f0f43bb2fbca273700294dd2f3b685a64b60e8417c295f47646a70e4a`), and guarded
 bundle helper startup (`authenticationRequests: 0`, `sqlRequests: 0`). The prior
