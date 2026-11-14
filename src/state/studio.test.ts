@@ -2973,3 +2973,60 @@ test("Snowflake session context catalog switches role, warehouse, database and s
   expect(useStudio.getState().snowflakeContextAuthorities[session.id]).toBeUndefined();
   expect(useStudio.getState().snowflakeContextExpanded[session.id]).toBeUndefined();
 });
+
+test("Snowflake Object Explorer loads database_objects only on explicit refreshCatalog and supports openObject tabs", async () => {
+  useSdkSession();
+  const stateBefore = useStudio.getState();
+  useStudio.setState({
+    sessions: {
+      profile: {
+        ...stateBefore.sessions.profile!,
+        capabilities: {
+          ...stateBefore.sessions.profile!.capabilities,
+          tableBrowsing: false,
+          objectExplorer: true,
+        },
+      },
+    },
+  });
+
+  // Automatic background refreshCatalog does not issue unsolicited database_objects on Snowflake.
+  await useStudio.getState().refreshCatalog("profile", false);
+  expect(client.call).not.toHaveBeenCalled();
+
+  // Explicit refreshCatalog loads database_objects into state.objects.profile.
+  const summary = {
+    object: {
+      schema: "PUBLIC",
+      name: "ORDERS",
+      kind: "table" as const,
+      identity: null,
+    },
+    owner: null,
+    comment: "Order ledger",
+    estimatedRows: 42,
+    totalBytes: 8192,
+    signature: null,
+    returnType: null,
+    target: null,
+    extensionName: null,
+  };
+  vi.mocked(client.call).mockImplementation(async (command) => {
+    if (command === "database_objects") return [summary];
+    throw new Error(`Unexpected ${command}`);
+  });
+  await useStudio.getState().refreshCatalog("profile", true);
+  expect(client.call).toHaveBeenCalledWith("database_objects", { sessionId: session.id });
+  expect(useStudio.getState().objects.profile).toEqual([summary]);
+
+  // openObject opens an object inspector tab for Snowflake when objectExplorer is enabled.
+  await useStudio.getState().openObject("profile", summary.object, "structure", "ID");
+  const opened = useStudio.getState().tabs.find((t) => t.id === useStudio.getState().activeTabId);
+  expect(opened).toMatchObject({
+    kind: "object",
+    connectionId: "profile",
+    object: summary.object,
+    view: "structure",
+    highlightedColumn: "ID",
+  });
+});

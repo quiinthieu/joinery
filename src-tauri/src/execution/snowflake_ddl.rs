@@ -35,12 +35,18 @@ fn ddl_plan(
         schema: response.schema.clone(),
         name: response.name.clone(),
     };
-    let action = match &request.action {
+    let target_table = match &request.action {
         SnowflakeDdlAction::CreateTable {
             database,
             schema,
             name,
-            columns,
+            ..
+        }
+        | SnowflakeDdlAction::CreateView {
+            database,
+            schema,
+            name,
+            ..
         } => {
             if database != &response.database
                 || schema != &response.schema
@@ -48,30 +54,20 @@ fn ddl_plan(
             {
                 return Err(expired());
             }
-            crate::ddl::TableObjectAction::CreateTable {
-                table,
-                columns: columns
-                    .iter()
-                    .map(SnowflakeDdlColumnDraft::to_table_column_draft)
-                    .collect(),
-                comment: None,
-            }
+            None
         }
-        SnowflakeDdlAction::AddColumn { column, .. } => crate::ddl::TableObjectAction::AddColumn {
-            table,
-            column: column.to_table_column_draft(),
-        },
-        SnowflakeDdlAction::DropTable { .. } => crate::ddl::TableObjectAction::DropObject {
-            object: DatabaseObjectRef {
-                schema: table.schema,
-                name: table.name,
-                kind: DatabaseObjectKind::Table,
-                identity: None,
-            },
-            cascade: false,
-        },
+        SnowflakeDdlAction::AddColumn { .. }
+        | SnowflakeDdlAction::AlterColumnNullability { .. }
+        | SnowflakeDdlAction::RenameColumn { .. }
+        | SnowflakeDdlAction::DropColumn { .. }
+        | SnowflakeDdlAction::DropTable { .. }
+        | SnowflakeDdlAction::DropView { .. } => Some(&table),
     };
-    let canonical = safety::snowflake_ddl::compile(&action, &response.database)?;
+    let canonical = safety::snowflake_ddl::compile_snowflake_action(
+        &request.action,
+        target_table,
+        &response.database,
+    )?;
     let qualified = canonical
         .qualified_target()
         .iter()
@@ -81,7 +77,7 @@ fn ddl_plan(
     if response.revision != request.revision
         || response.sql != request.sql
         || canonical.sql() != request.sql
-        || SnowflakeDdlKind::from(canonical.kind()) != response.kind
+        || canonical.kind() != response.kind
         || qualified != response.qualified_target
     {
         return Err(expired());
@@ -102,7 +98,10 @@ fn ddl_plan(
         serde_json::to_vec(&(request, response))
             .map_err(|_| AppError::internal("Could not fingerprint generated DDL"))?,
     )));
-    if response.kind == SnowflakeDdlKind::DropTable {
+    if matches!(
+        response.kind,
+        SnowflakeDdlKind::DropTable | SnowflakeDdlKind::DropColumn | SnowflakeDdlKind::DropView
+    ) {
         plan.target_confirmation_text = Some(response.qualified_target.clone());
     }
     plan.warnings = response.warnings.clone();

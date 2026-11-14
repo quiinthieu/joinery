@@ -373,7 +373,7 @@ export function Sidebar({
             aria-label="Refresh schema"
             onClick={() =>
               void state
-                .refreshCatalog(selected.id)
+                .refreshCatalog(selected.id, true)
                 .catch((error) => state.notify(String(error.message ?? error)))
             }
           >
@@ -427,7 +427,9 @@ export function Sidebar({
                 ? "No matching database objects."
                 : selected.engine === "redis"
                   ? "Open SQL Studio to scan Redis keys."
-                  : "No readable schema objects found."}
+                  : selected.engine === "snowflake" && state.objects[selected.id] === undefined
+                    ? "Click Refresh schema to load Snowflake objects."
+                    : "No readable schema objects found."}
             </span>
           </div>
         ) : (

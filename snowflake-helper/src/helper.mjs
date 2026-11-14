@@ -75,7 +75,16 @@ const TRANSACTIONS = Object.freeze({
   rollback: SQL_CONTRACT.rollback,
 });
 const DML_KINDS = new Set(["insert", "update", "delete"]);
-const DDL_KINDS = new Set(["createTable", "addColumn", "dropTable"]);
+const DDL_KINDS = new Set([
+  "createTable",
+  "addColumn",
+  "alterColumnNullability",
+  "renameColumn",
+  "dropColumn",
+  "dropTable",
+  "createView",
+  "dropView",
+]);
 const EXECUTE_FETCH_AS_STRING = Object.freeze([
   "Number",
   "Date",

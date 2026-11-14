@@ -431,8 +431,21 @@ fn ledger_tag(kind: SqlKind) -> &'static str {
         SqlKind::Read(Relations) => "B",
         SqlKind::Read(ExactRelation) => "R",
         SqlKind::Read(
-            Definition | Constraints | CheckConstraints | PrimaryKeyMapping | UniqueKeyMapping
-            | ForeignKeyMapping,
+            Definition
+            | Constraints
+            | CheckConstraints
+            | PrimaryKeyMapping
+            | UniqueKeyMapping
+            | ForeignKeyMapping
+            | ExplorerTables
+            | ExplorerSequences
+            | ExplorerFunctions
+            | ExplorerProcedures
+            | ExplorerExactTable
+            | ExplorerExactSequence
+            | ExplorerExactFunction
+            | ExplorerExactProcedure
+            | ExplorerDdl,
         ) => {
             panic!("Relation detail reads are outside the qualification ledger")
         }
@@ -443,6 +456,7 @@ fn ledger_tag(kind: SqlKind) -> &'static str {
         SqlKind::Ddl(SnowflakeDdlKind::CreateTable) => "CREATE",
         SqlKind::Ddl(SnowflakeDdlKind::AddColumn) => "ADD",
         SqlKind::Ddl(SnowflakeDdlKind::DropTable) => "DROP",
+        SqlKind::Ddl(_) => panic!("Extended DDL kinds are outside the qualification ledger"),
         SqlKind::Dml(SnowflakeDmlKind::Insert) => "INSERT",
         SqlKind::Dml(SnowflakeDmlKind::Update) => "UPDATE",
         SqlKind::Dml(SnowflakeDmlKind::Delete) => "DELETE",
@@ -1151,6 +1165,7 @@ fn compile_factory_action(action: &SnowflakeDdlAction, catalog: &BrowseCatalog) 
                 cascade: false,
             }
         }
+        _ => unreachable!("qualification factory emits only CreateTable, AddColumn, DropTable"),
     };
     snowflake_ddl::compile(&action, DATABASE)
         .unwrap()

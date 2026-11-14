@@ -3261,7 +3261,17 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        let mut objects = session.driver.database_objects().await?;
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            Some(Self::relation_lane(&session).await?)
+        } else {
+            None
+        };
+        let result = session.driver.database_objects().await;
+        let mut objects = if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)?
+        } else {
+            result?
+        };
         if objects.len() > 10_000 {
             objects.truncate(10_000);
         }
@@ -3278,7 +3288,17 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        let mut details = session.driver.object_details(object).await?;
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            Some(Self::relation_lane(&session).await?)
+        } else {
+            None
+        };
+        let result = session.driver.object_details(object).await;
+        let mut details = if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)?
+        } else {
+            result?
+        };
         details.ddl = details.ddl.capped(MAX_OBJECT_DDL_BYTES);
         details.uses = finalize_dependency_edges(&details.object, details.uses, MAX_OBJECT_DEPS);
         details.used_by =

@@ -587,6 +587,52 @@ export function ObjectInspectorView({
         />
       )}
 
+      {details.constraints.length > 0 && (
+        <section className="object-section" aria-label="Object constraints">
+          <h3 className="object-section-title">Constraints</h3>
+          <dl className="object-meta-grid">
+            {details.constraints.map((constraint) => (
+              <div key={`${constraint.kind}:${constraint.name}`}>
+                <dt className="mono">{constraint.name}</dt>
+                <dd>
+                  <span className="mono">{constraint.definition}</span>
+                  {constraint.columns.length > 0 && (
+                    <span className="mono">{` (${constraint.columns.join(", ")})`}</span>
+                  )}
+                  {constraint.target && (onOpenObject || tab.connectionId) && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        className="button ghost small"
+                        onClick={() => {
+                          const ref: DatabaseObjectRef = {
+                            schema: constraint.target!.schema,
+                            name: constraint.target!.name,
+                            kind: "table",
+                            identity: null,
+                          };
+                          if (onOpenObject) onOpenObject(ref);
+                          else if (tab.connectionId)
+                            void useStudio
+                              .getState()
+                              .openObject(tab.connectionId, ref, "structure")
+                              .catch((err) => useStudio.getState().notify(messageOf(err)));
+                        }}
+                      >
+                        <Table2 size={11} />
+                        {`${constraint.target.schema}.${constraint.target.name}`}
+                        <ArrowRight size={10} />
+                      </button>
+                    </>
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      )}
+
       <DependencySection
         connectionId={tab.connectionId}
         uses={details.uses}

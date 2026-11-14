@@ -129,7 +129,12 @@ impl<'de> Deserialize<'de> for OutcomeKind {
                 let kind = match kind.as_str() {
                     "createTable" => SnowflakeDdlKind::CreateTable,
                     "addColumn" => SnowflakeDdlKind::AddColumn,
+                    "alterColumnNullability" => SnowflakeDdlKind::AlterColumnNullability,
+                    "renameColumn" => SnowflakeDdlKind::RenameColumn,
+                    "dropColumn" => SnowflakeDdlKind::DropColumn,
                     "dropTable" => SnowflakeDdlKind::DropTable,
+                    "createView" => SnowflakeDdlKind::CreateView,
+                    "dropView" => SnowflakeDdlKind::DropView,
                     _ => return Err(bad()),
                 };
                 Ok(Self::SnowflakeDdl {

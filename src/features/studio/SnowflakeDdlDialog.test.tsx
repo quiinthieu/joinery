@@ -173,3 +173,128 @@ it("unmount during authorization never dispatches a late approved DDL", async ()
   expect(execute).not.toHaveBeenCalled();
   execute.mockRestore();
 });
+
+it("supports createView, renameColumn, alterColumnNullability, dropColumn, and dropView actions", async () => {
+  const columns = [
+    {
+      name: "ID",
+      ordinal: 1,
+      fullType: "NUMBER(38,0)",
+      dataType: "NUMBER",
+      dataTypeAlias: null,
+      kind: "column" as const,
+      resultKind: "integer" as const,
+      nullable: false,
+      defaultExpression: null,
+      descriptorDefaultExpression: null,
+      writeDefaultExpression: null,
+      writeDefaultStatus: "notReported" as const,
+      comment: null,
+      characterMaximumLength: null,
+      characterOctetLength: null,
+      numericPrecision: "38",
+      numericPrecisionRadix: "10",
+      numericScale: "0",
+      identity: {
+        isIdentity: false,
+        generation: null,
+        start: null,
+        increment: null,
+        ordered: null,
+      },
+      expression: null,
+    },
+    {
+      name: "NOTES",
+      ordinal: 2,
+      fullType: "VARCHAR(100)",
+      dataType: "TEXT",
+      dataTypeAlias: null,
+      kind: "column" as const,
+      resultKind: "text" as const,
+      nullable: true,
+      defaultExpression: null,
+      descriptorDefaultExpression: null,
+      writeDefaultExpression: null,
+      writeDefaultStatus: "notReported" as const,
+      comment: null,
+      characterMaximumLength: "100",
+      characterOctetLength: "400",
+      numericPrecision: null,
+      numericPrecisionRadix: null,
+      numericScale: null,
+      identity: {
+        isIdentity: false,
+        generation: null,
+        start: null,
+        increment: null,
+        ordered: null,
+      },
+      expression: null,
+    },
+  ];
+
+  const { unmount } = render(
+    <SnowflakeDdlDialog
+      sessionId="isolated-console"
+      ownerTabId="owner"
+      profile={profile}
+      request={{ kind: "createView", database: "DB", schema: "PUBLIC" }}
+      onClose={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("View name"), { target: { value: "ACTIVE_ORDERS" } });
+  fireEvent.change(screen.getByLabelText("View SELECT query"), {
+    target: { value: 'SELECT "ID" FROM "DB"."PUBLIC"."ORDERS"' },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Generate & review SQL" }));
+  await screen.findByRole("dialog", { name: "Review this operation" });
+  expect(client.call).toHaveBeenNthCalledWith(1, "preflight_snowflake_ddl", {
+    request: {
+      sessionId: "isolated-console",
+      action: {
+        kind: "createView",
+        database: "DB",
+        schema: "PUBLIC",
+        name: "ACTIVE_ORDERS",
+        querySql: 'SELECT "ID" FROM "DB"."PUBLIC"."ORDERS"',
+      },
+    },
+  });
+  unmount();
+
+  vi.mocked(client.call).mockClear();
+  render(
+    <SnowflakeDdlDialog
+      sessionId="isolated-console"
+      ownerTabId="owner"
+      profile={profile}
+      request={{
+        kind: "renameColumn",
+        browseRevision: "b-rev",
+        targetId: "t-id",
+        inspectionRevision: "i-rev",
+        qualifiedTarget: '"DB"."PUBLIC"."ORDERS"',
+        columns,
+      }}
+      onClose={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText("Target column"), { target: { value: "NOTES" } });
+  fireEvent.change(screen.getByLabelText("New column name"), { target: { value: "MEMO" } });
+  fireEvent.click(screen.getByRole("button", { name: "Generate & review SQL" }));
+  await screen.findByRole("dialog", { name: "Review this operation" });
+  expect(client.call).toHaveBeenNthCalledWith(1, "preflight_snowflake_ddl", {
+    request: {
+      sessionId: "isolated-console",
+      action: {
+        kind: "renameColumn",
+        browseRevision: "b-rev",
+        targetId: "t-id",
+        inspectionRevision: "i-rev",
+        columnName: "NOTES",
+        newName: "MEMO",
+      },
+    },
+  });
+});

@@ -480,14 +480,32 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
 
   const buildSymbolContext = (): SqlSymbolContext => {
     const config = latest.current;
+    const state = useStudio.getState();
     const snapshot =
-      config.sessionId && isSnowflakeConsoleSession(useStudio.getState(), config.sessionId)
+      config.sessionId && isSnowflakeConsoleSession(state, config.sessionId)
         ? null
         : liveRef.current;
+    let databaseObjects = liveObjectsRef.current;
+    if (databaseObjects.length === 0 && config.sessionId) {
+      for (const [connId, info] of Object.entries(state.sessions)) {
+        if (info.id === config.sessionId) {
+          databaseObjects = state.objects[connId] ?? [];
+          break;
+        }
+      }
+      if (databaseObjects.length === 0) {
+        for (const [connId, entries] of Object.entries(state.sessionPool)) {
+          if (entries.some((entry) => entry.info.id === config.sessionId)) {
+            databaseObjects = state.objects[connId] ?? [];
+            break;
+          }
+        }
+      }
+    }
     return {
       engine: config.engine,
       tables: snapshot?.tables ?? [],
-      databaseObjects: liveObjectsRef.current,
+      databaseObjects,
       schemas: schemaCacheRef.current,
       database: snapshot?.identity.database ?? config.database,
       defaultSchema: config.defaultSchema,
@@ -771,11 +789,14 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       for (const table of plan.tables) {
         if (!current() || renameContext() !== context) return;
         revokeSchemaSelectionBeforeWork(sessionId);
-        const schema = await client.call<TableSchema>("inspection_schema", {
-          sessionId,
-          revision: snapshot.revision,
-          table,
-        });
+        const schema = await client.call<TableSchema>(
+          latest.current.engine === "snowflake" ? "completion_schema" : "inspection_schema",
+          {
+            sessionId,
+            revision: snapshot.revision,
+            table,
+          },
+        );
         if (!current() || renameContext() !== context) return;
         columns += schema.columns.length;
         bytes += new TextEncoder().encode(JSON.stringify(schema)).length;
@@ -1169,7 +1190,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           if (snapshot && isCurrent()) {
             liveRef.current = snapshot;
             setLive(snapshot);
-            if (props.objectExplorerSupported) {
+            if (props.objectExplorerSupported && props.engine !== "snowflake") {
               try {
                 revokeSchemaSelectionBeforeWork(props.sessionId!);
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {

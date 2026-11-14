@@ -126,6 +126,43 @@ const keywords = [
   "EXPLAIN",
 ];
 
+const snowflakeKeywords = [
+  "QUALIFY",
+  "ILIKE",
+  "PIVOT",
+  "UNPIVOT",
+  "LATERAL",
+  "FLATTEN",
+  "SAMPLE",
+  "MATCH_RECOGNIZE",
+  "TRY_CAST",
+  "COPY INTO",
+  "MERGE INTO",
+  "CREATE OR REPLACE",
+];
+
+const snowflakeFunctions = [
+  "IFF",
+  "NVL",
+  "ZEROIFNULL",
+  "DATEADD",
+  "DATEDIFF",
+  "DATE_TRUNC",
+  "TO_TIMESTAMP_NTZ",
+  "TO_TIMESTAMP_LTZ",
+  "TO_TIMESTAMP_TZ",
+  "TRY_TO_NUMBER",
+  "TRY_TO_TIMESTAMP_NTZ",
+  "PARSE_JSON",
+  "TRY_PARSE_JSON",
+  "OBJECT_CONSTRUCT",
+  "ARRAY_AGG",
+  "LISTAGG",
+  "SPLIT_TO_TABLE",
+  "HASH",
+  "REGEXP_SUBSTR",
+];
+
 /** Per-editor lifecycle for the existing worker, never application/global state. */
 export class CompletionSession {
   private configuration?: Configuration;
@@ -196,6 +233,12 @@ export class CompletionSession {
         : [
             ...catalogCompletions(config.tables, this.lookup),
             ...keywords.map((label) => ({ label, type: "keyword" })),
+            ...(config.engine === "snowflake"
+              ? [
+                  ...snowflakeKeywords.map((label) => ({ label, type: "keyword" })),
+                  ...snowflakeFunctions.map((label) => ({ label, type: "function" })),
+                ]
+              : []),
           ];
     this.replace("catalog", items);
     this.scopeKey = "";

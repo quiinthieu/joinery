@@ -1,16 +1,25 @@
-import type { SnowflakeDdlEvidence, SnowflakeDdlResult } from "../../ipc/generated";
+import type {
+  SnowflakeDdlEvidence,
+  SnowflakeDdlKind,
+  SnowflakeDdlResult,
+} from "../../ipc/generated";
+
+const DDL_KIND_LABELS: Record<SnowflakeDdlKind, string> = {
+  createTable: "CREATE TABLE",
+  addColumn: "ADD COLUMN",
+  alterColumnNullability: "ALTER COLUMN NULLABILITY",
+  renameColumn: "RENAME COLUMN",
+  dropColumn: "DROP COLUMN",
+  dropTable: "DROP TABLE",
+  createView: "CREATE VIEW",
+  dropView: "DROP VIEW",
+};
 
 export function SnowflakeDdlHistorySummary({ evidence }: { evidence: SnowflakeDdlEvidence }) {
   return (
     <span className="snowflake-dml-history-summary">
       <strong>
-        Snowflake{" "}
-        {evidence.kind === "createTable"
-          ? "CREATE TABLE"
-          : evidence.kind === "addColumn"
-            ? "ADD COLUMN"
-            : "DROP TABLE"}{" "}
-        · {evidence.qualifiedTarget}
+        Snowflake {DDL_KIND_LABELS[evidence.kind]} · {evidence.qualifiedTarget}
       </strong>
       <br />
       {evidence.statementOutcome === "succeeded"

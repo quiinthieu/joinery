@@ -2010,7 +2010,12 @@ pub struct SnowflakeDmlResult {
 pub enum SnowflakeDdlKind {
     CreateTable,
     AddColumn,
+    AlterColumnNullability,
+    RenameColumn,
+    DropColumn,
     DropTable,
+    CreateView,
+    DropView,
 }
 
 impl SnowflakeDdlKind {
@@ -2018,7 +2023,12 @@ impl SnowflakeDdlKind {
         match self {
             Self::CreateTable => "createTable",
             Self::AddColumn => "addColumn",
+            Self::AlterColumnNullability => "alterColumnNullability",
+            Self::RenameColumn => "renameColumn",
+            Self::DropColumn => "dropColumn",
             Self::DropTable => "dropTable",
+            Self::CreateView => "createView",
+            Self::DropView => "dropView",
         }
     }
 }
@@ -2074,7 +2084,37 @@ pub enum SnowflakeDdlAction {
         inspection_revision: String,
         column: SnowflakeDdlColumnDraft,
     },
+    AlterColumnNullability {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+        nullable: bool,
+    },
+    RenameColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+        new_name: String,
+    },
+    DropColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+    },
     DropTable {
+        browse_revision: String,
+        target_id: String,
+    },
+    CreateView {
+        database: String,
+        schema: String,
+        name: String,
+        query_sql: String,
+    },
+    DropView {
         browse_revision: String,
         target_id: String,
     },

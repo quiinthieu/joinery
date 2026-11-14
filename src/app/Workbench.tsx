@@ -987,14 +987,34 @@ export function Workbench({
             </>
           )}
           {tab.kind === "object" && (
-            <button
-              className="button ghost small"
-              disabled={!session}
-              onClick={() => state.updateTab(tab.id, { revision: tab.revision + 1 })}
-            >
-              <RefreshCw size={13} />
-              Refresh
-            </button>
+            <>
+              {!consoleMode &&
+                session?.capabilities.relationBrowsing &&
+                tab.object &&
+                (tab.object.kind === "table" ||
+                  tab.object.kind === "view" ||
+                  tab.object.kind === "materializedView") && (
+                  <button
+                    className="button ghost small"
+                    disabled={!!state.sessionMetadataRefreshRequired[session.id]}
+                    onClick={() => {
+                      assertOrdinarySession(session.id);
+                      setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
+                      setRelationBrowserSession(session.id);
+                    }}
+                  >
+                    <Table2 size={13} /> Browse relations
+                  </button>
+                )}
+              <button
+                className="button ghost small"
+                disabled={!session}
+                onClick={() => state.updateTab(tab.id, { revision: tab.revision + 1 })}
+              >
+                <RefreshCw size={13} />
+                Refresh
+              </button>
+            </>
           )}
         </div>
       </div>

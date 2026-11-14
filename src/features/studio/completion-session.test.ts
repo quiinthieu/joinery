@@ -379,3 +379,46 @@ test("ranks FK JOIN and ON completions ahead of catalog and column options", asy
   expect(onResult.options[0].apply).toBe('o.customer_id = c."id"');
   session.dispose();
 });
+
+test("Snowflake completion catalog includes dialect keywords and built-in functions without affecting Postgres", async () => {
+  const { session, messages } = setup();
+  const pgCatalog = messages.find((m) => m.type === "replace" && m.section === "catalog");
+  expect(pgCatalog?.type === "replace" && pgCatalog.items.some((i) => i.label === "QUALIFY")).toBe(
+    false,
+  );
+  messages.length = 0;
+  session.configure({
+    engine: "snowflake",
+    sessionId: "fixture",
+    tables: [
+      {
+        table: { schema: "PUBLIC", name: "ORDERS" },
+        kind: "BASE TABLE; transient=no; temporary=no; iceberg=no; dynamic=no; hybrid=no; immutable=no",
+        estimatedRows: null,
+        totalBytes: null,
+      },
+    ],
+    database: "DB",
+    unqualifiedTables: [{ schema: "PUBLIC", name: "ORDERS" }],
+    caseSensitiveTableNames: true,
+  });
+  const sfCatalog = messages.find((m) => m.type === "replace" && m.section === "catalog");
+  expect(sfCatalog?.type).toBe("replace");
+  if (sfCatalog?.type === "replace") {
+    const labels = new Map(sfCatalog.items.map((item) => [item.label, item.type]));
+    expect(labels.get("QUALIFY")).toBe("keyword");
+    expect(labels.get("FLATTEN")).toBe("keyword");
+    expect(labels.get("ILIKE")).toBe("keyword");
+    expect(labels.get("IFF")).toBe("function");
+    expect(labels.get("PARSE_JSON")).toBe("function");
+    expect(labels.get("OBJECT_CONSTRUCT")).toBe("function");
+  }
+  const sfEditor = EditorState.create({
+    doc: "SELECT PARSE_J FROM ORDERS",
+    selection: { anchor: "SELECT PARSE_J".length },
+    extensions: [sql({ dialect: sqlDialect("snowflake") })],
+  });
+  const result = (await request(session, sfEditor))!;
+  expect(result.options.map((o) => o.label)).toContain("PARSE_JSON");
+  session.dispose();
+});

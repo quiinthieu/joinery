@@ -160,7 +160,12 @@ test("createTable, addColumn and dropTable each dispatch one exact SQL statement
   for (const [kind, sql] of [
     ["createTable", 'CREATE TABLE "TEST"."PUBLIC"."T" ("ID" NUMBER(38,0) NOT NULL)'],
     ["addColumn", 'ALTER TABLE "TEST"."PUBLIC"."T" ADD COLUMN "NOTE" VARCHAR(255)'],
+    ["alterColumnNullability", 'ALTER TABLE "TEST"."PUBLIC"."T" ALTER COLUMN "NOTE" SET NOT NULL'],
+    ["renameColumn", 'ALTER TABLE "TEST"."PUBLIC"."T" RENAME COLUMN "NOTE" TO "REMARK"'],
+    ["dropColumn", 'ALTER TABLE "TEST"."PUBLIC"."T" DROP COLUMN "REMARK"'],
     ["dropTable", 'DROP TABLE "TEST"."PUBLIC"."T" RESTRICT'],
+    ["createView", 'CREATE VIEW "TEST"."PUBLIC"."V" AS SELECT "ID" FROM "TEST"."PUBLIC"."T"'],
+    ["dropView", 'DROP VIEW "TEST"."PUBLIC"."V"'],
   ]) {
     const state = await pinned({ synchronousComplete: true });
     const row = resultRow();

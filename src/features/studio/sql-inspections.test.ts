@@ -1115,4 +1115,83 @@ describe("bounded qualified-column inspections", () => {
       }).finish(mysql, [schema]).issues,
     ).toHaveLength(1);
   });
+
+  test("inspects Snowflake queries with uppercase unquoted folding, exact quoted case, 3-part names, and trait-tagged base tables", () => {
+    const sfTable = { schema: "PUBLIC", name: "ORDERS" };
+    const sfContext: SqlSymbolContext = {
+      engine: "snowflake",
+      database: "ANALYTICS",
+      tables: [
+        {
+          table: sfTable,
+          kind: "BASE TABLE; transient=no; temporary=no; iceberg=no; dynamic=no; hybrid=no; immutable=no",
+          estimatedRows: null,
+          totalBytes: null,
+        },
+      ],
+      unqualifiedTables: [sfTable],
+      caseSensitiveTableNames: true,
+    };
+    const sfSchema: TableSchema = {
+      table: sfTable,
+      columns: ["ID", "CUSTOMER_ID", "MixedCase"].map((name) => ({
+        id: name,
+        name,
+        databaseType: "TEXT",
+        kind: "text",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      })),
+      primaryKey: [],
+      foreignKeys: [],
+      editable: false,
+    };
+    const doc =
+      'SELECT o.id, o."MixedCase", o.mixedcase, o.typo FROM analytics.public.orders o WHERE o.customer_id > 0';
+    const sfState = stateOf(doc, "snowflake");
+    expect(ensureSyntaxTree(sfState, sfState.doc.length, 1000)).not.toBeNull();
+    const result = prepareColumnInspection(sfState, 7, sfContext).finish(sfState, [sfSchema]);
+    expect(result.tables).toEqual([sfTable]);
+    expect(result.issues.map((issue) => issue.name)).toEqual(["MIXEDCASE", "TYPO"]);
+    const fix = result.preview(sfState, result.issues[0], "MixedCase");
+    expect(sfState.update({ changes: fix }).state.doc.toString()).toContain(
+      'o."MixedCase", o."MixedCase"',
+    );
+
+    // Cross-database 3-part relation withholds instead of guessing active-database metadata.
+    const crossDb = stateOf("SELECT o.id FROM other_db.public.orders o", "snowflake");
+    expect(ensureSyntaxTree(crossDb, crossDb.doc.length, 1000)).not.toBeNull();
+    expect(() => prepareColumnInspection(crossDb, 7, sfContext)).toThrow(/unique direct base/);
+
+    // Dynamic tables withhold direct base-table inspection.
+    const dynamicCtx: SqlSymbolContext = {
+      ...sfContext,
+      tables: [
+        {
+          ...sfContext.tables[0],
+          kind: "BASE TABLE; transient=no; temporary=no; iceberg=no; dynamic=yes; hybrid=no; immutable=no",
+        },
+      ],
+    };
+    expect(() => prepareColumnInspection(sfState, 7, dynamicCtx)).toThrow(/unique direct base/);
+
+    // QUALIFY cleanly withholds instead of misparsing window predicates.
+    const qualifyState = stateOf(
+      "SELECT o.id FROM public.orders o QUALIFY row_number() OVER (ORDER BY o.id) = 1",
+      "snowflake",
+    );
+    expect(ensureSyntaxTree(qualifyState, qualifyState.doc.length, 1000)).not.toBeNull();
+    expect(() => prepareColumnInspection(qualifyState, 7, sfContext)).toThrow(
+      /direct-table SELECT/,
+    );
+
+    // >255 character Snowflake identifier withholds.
+    const overlong = stateOf(`SELECT o.${"x".repeat(256)} FROM public.orders o`, "snowflake");
+    expect(ensureSyntaxTree(overlong, overlong.doc.length, 1000)).not.toBeNull();
+    expect(() => prepareColumnInspection(overlong, 7, sfContext)).toThrow();
+  });
 });

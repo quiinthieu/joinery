@@ -18,6 +18,8 @@ pub(crate) mod snowflake_edit_codec;
 #[cfg(unix)]
 pub(crate) mod snowflake_edit_snapshot;
 #[cfg(unix)]
+pub(crate) mod snowflake_explorer;
+#[cfg(unix)]
 pub mod snowflake_external;
 #[cfg(unix)]
 mod snowflake_metadata;

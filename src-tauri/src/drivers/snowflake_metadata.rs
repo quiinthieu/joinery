@@ -41,6 +41,15 @@ pub(crate) enum ReadKind {
     Columns,
     Describe,
     ZeroRowResolution,
+    ExplorerTables,
+    ExplorerSequences,
+    ExplorerFunctions,
+    ExplorerProcedures,
+    ExplorerExactTable,
+    ExplorerExactSequence,
+    ExplorerExactFunction,
+    ExplorerExactProcedure,
+    ExplorerDdl,
 }
 
 /// An immutable production read. Only closed factories below construct it;
@@ -257,6 +266,123 @@ pub(crate) fn inspection_reads(
             bytes,
         ),
     ])
+}
+
+pub(crate) fn explorer_tables_read(context: &LiveContext, schema: &str) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerTables,
+        explorer::tables_sql(context, schema)?,
+        (explorer::OBJECT_LIMIT + 1) as u64,
+        explorer::OBJECT_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_sequences_read(context: &LiveContext, schema: &str) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerSequences,
+        explorer::sequences_sql(context, schema)?,
+        (explorer::OBJECT_LIMIT + 1) as u64,
+        explorer::OBJECT_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_functions_read(context: &LiveContext, schema: &str) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerFunctions,
+        explorer::functions_sql(context, schema)?,
+        (explorer::OBJECT_LIMIT + 1) as u64,
+        explorer::OBJECT_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_procedures_read(context: &LiveContext, schema: &str) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerProcedures,
+        explorer::procedures_sql(context, schema)?,
+        (explorer::OBJECT_LIMIT + 1) as u64,
+        explorer::OBJECT_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_exact_table_read(
+    context: &LiveContext,
+    schema: &str,
+    name: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerExactTable,
+        explorer::exact_table_sql(context, schema, name)?,
+        3,
+        explorer::DETAIL_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_exact_sequence_read(
+    context: &LiveContext,
+    schema: &str,
+    name: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerExactSequence,
+        explorer::exact_sequence_sql(context, schema, name)?,
+        2,
+        explorer::DETAIL_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_exact_routine_read(
+    context: &LiveContext,
+    schema: &str,
+    name: &str,
+    is_procedure: bool,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        if is_procedure {
+            ReadKind::ExplorerExactProcedure
+        } else {
+            ReadKind::ExplorerExactFunction
+        },
+        explorer::exact_routine_sql(context, schema, name, is_procedure)?,
+        65,
+        explorer::DETAIL_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_sequence_ddl_read(
+    database: &str,
+    schema: &str,
+    name: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerDdl,
+        explorer::sequence_ddl_sql(database, schema, name)?,
+        1,
+        explorer::DETAIL_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_routine_ddl_read(
+    database: &str,
+    schema: &str,
+    name: &str,
+    is_procedure: bool,
+    identity_arguments: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerDdl,
+        explorer::routine_ddl_sql(database, schema, name, is_procedure, identity_arguments)?,
+        1,
+        explorer::DETAIL_MAX_BYTES as u64,
+    ))
 }
 
 // CURRENT_SESSION is VARCHAR, not a numeric identity. CURRENT_SECONDARY_ROLES

@@ -203,7 +203,12 @@ fn matches(summary: &HistorySummary, sql: Option<&str>, tokens: &[String]) -> bo
         let kind = match ddl.kind {
             SnowflakeDdlKind::CreateTable => "create table",
             SnowflakeDdlKind::AddColumn => "add column",
+            SnowflakeDdlKind::AlterColumnNullability => "alter column nullability",
+            SnowflakeDdlKind::RenameColumn => "rename column",
+            SnowflakeDdlKind::DropColumn => "drop column",
             SnowflakeDdlKind::DropTable => "drop table",
+            SnowflakeDdlKind::CreateView => "create view",
+            SnowflakeDdlKind::DropView => "drop view",
         };
         let outcome = match ddl.statement_outcome {
             SnowflakeDdlOutcome::Succeeded => "statement acknowledged",

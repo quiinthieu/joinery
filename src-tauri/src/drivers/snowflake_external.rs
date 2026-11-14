@@ -13,6 +13,7 @@ use super::{
     BrowseRows, CompletionRelations, Driver, QuerySink, RowMutation,
     snowflake::Snowflake,
     snowflake_browsing::{self as browsing, BrowseRelation},
+    snowflake_explorer as explorer,
     snowflake_metadata::{self as metadata, LiveContext, MetadataResult},
     snowflake_session::{self as session, ObservationSample, SampleConsistency},
 };
@@ -158,7 +159,7 @@ struct DdlAuthorityState {
     grant: Option<DdlGrant>,
 }
 type CompiledDdlAction = (
-    crate::safety::snowflake_ddl::Canonical,
+    crate::safety::snowflake_ddl::SnowflakeCanonical,
     Option<(LiveContext, BrowseRelation)>,
     Option<Vec<crate::relation_inspection::ColumnInspection>>,
 );
@@ -169,7 +170,7 @@ struct DdlGrant {
     transaction_generation: String,
     sample: ObservationSample,
     action: SnowflakeDdlAction,
-    canonical: crate::safety::snowflake_ddl::Canonical,
+    canonical: crate::safety::snowflake_ddl::SnowflakeCanonical,
     target: Option<BrowseRelation>,
     inspected_columns: Option<Vec<crate::relation_inspection::ColumnInspection>>,
 }
@@ -423,7 +424,7 @@ impl SnowflakeExternal {
                 table_editing: false,
                 table_filtering: false,
                 processes: false,
-                object_explorer: false,
+                object_explorer: !config.reviewed_console,
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
@@ -831,30 +832,22 @@ impl SnowflakeExternal {
         let active_database = self.active_database.lock().clone().ok_or_else(stale_ddl)?;
         match action {
             SnowflakeDdlAction::CreateTable {
-                database,
-                schema,
-                name,
-                columns,
+                database, schema, ..
+            }
+            | SnowflakeDdlAction::CreateView {
+                database, schema, ..
             } => {
                 if schema == "INFORMATION_SCHEMA" {
                     return Err(AppError::new(
                         ErrorCode::Unsupported,
-                        "Reviewed Snowflake DDL cannot create tables in INFORMATION_SCHEMA",
+                        "Reviewed Snowflake DDL cannot create objects in INFORMATION_SCHEMA",
                     ));
                 }
-                let table_action = TableObjectAction::CreateTable {
-                    table: TableRef {
-                        schema: schema.clone(),
-                        name: name.clone(),
-                    },
-                    columns: columns
-                        .iter()
-                        .map(SnowflakeDdlColumnDraft::to_table_column_draft)
-                        .collect(),
-                    comment: None,
-                };
-                let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    None,
+                    &active_database,
+                )?;
                 if database != &active_database {
                     return Err(stale_ddl());
                 }
@@ -873,12 +866,11 @@ impl SnowflakeExternal {
                 if inspected_columns.len() >= browsing::COLUMN_LIMIT {
                     return Err(metadata_limit());
                 }
-                let table_action = TableObjectAction::AddColumn {
-                    table: target.table.clone(),
-                    column: column.to_table_column_draft(),
-                };
-                let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
                 if target.database != active_database {
                     return Err(stale_ddl());
                 }
@@ -897,23 +889,161 @@ impl SnowflakeExternal {
                     Some(inspected_columns),
                 ))
             }
+            SnowflakeDdlAction::AlterColumnNullability {
+                browse_revision,
+                target_id,
+                inspection_revision,
+                column_name,
+                nullable,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_base_table(&target)?;
+                let inspected_columns =
+                    self.browse_columns(browse_revision, target_id, inspection_revision)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
+                if target.database != active_database {
+                    return Err(stale_ddl());
+                }
+                let Some(existing) = inspected_columns
+                    .iter()
+                    .find(|existing| existing.name == *column_name)
+                else {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "The selected column no longer exists on the inspected table",
+                    ));
+                };
+                if existing.kind != crate::relation_inspection::InspectedColumnKind::Column {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Virtual or partition columns cannot change nullability",
+                    ));
+                }
+                if existing.nullable == *nullable {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "The selected column already has the requested nullability",
+                    ));
+                }
+                Ok((
+                    canonical,
+                    Some((browse_ctx, target)),
+                    Some(inspected_columns),
+                ))
+            }
+            SnowflakeDdlAction::RenameColumn {
+                browse_revision,
+                target_id,
+                inspection_revision,
+                column_name,
+                new_name,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_base_table(&target)?;
+                let inspected_columns =
+                    self.browse_columns(browse_revision, target_id, inspection_revision)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
+                if target.database != active_database {
+                    return Err(stale_ddl());
+                }
+                if !inspected_columns
+                    .iter()
+                    .any(|existing| existing.name == *column_name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "The selected column no longer exists on the inspected table",
+                    ));
+                }
+                if inspected_columns
+                    .iter()
+                    .any(|existing| existing.name == *new_name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "A column with the new exact name already exists on the inspected table",
+                    ));
+                }
+                Ok((
+                    canonical,
+                    Some((browse_ctx, target)),
+                    Some(inspected_columns),
+                ))
+            }
+            SnowflakeDdlAction::DropColumn {
+                browse_revision,
+                target_id,
+                inspection_revision,
+                column_name,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_base_table(&target)?;
+                let inspected_columns =
+                    self.browse_columns(browse_revision, target_id, inspection_revision)?;
+                if inspected_columns.len() <= 1 {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "Snowflake tables cannot drop their last remaining column; drop the table instead",
+                    ));
+                }
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
+                if target.database != active_database {
+                    return Err(stale_ddl());
+                }
+                if !inspected_columns
+                    .iter()
+                    .any(|existing| existing.name == *column_name)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "The selected column no longer exists on the inspected table",
+                    ));
+                }
+                Ok((
+                    canonical,
+                    Some((browse_ctx, target)),
+                    Some(inspected_columns),
+                ))
+            }
             SnowflakeDdlAction::DropTable {
                 browse_revision,
                 target_id,
             } => {
                 let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
                 require_plain_base_table(&target)?;
-                let table_action = TableObjectAction::DropObject {
-                    object: DatabaseObjectRef {
-                        schema: target.table.schema.clone(),
-                        name: target.table.name.clone(),
-                        kind: DatabaseObjectKind::Table,
-                        identity: None,
-                    },
-                    cascade: false,
-                };
-                let canonical =
-                    crate::safety::snowflake_ddl::compile(&table_action, &active_database)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
+                if target.database != active_database {
+                    return Err(stale_ddl());
+                }
+                Ok((canonical, Some((browse_ctx, target)), None))
+            }
+            SnowflakeDdlAction::DropView {
+                browse_revision,
+                target_id,
+            } => {
+                let (browse_ctx, target) = self.browse_target(browse_revision, target_id)?;
+                require_plain_view(&target)?;
+                let canonical = crate::safety::snowflake_ddl::compile_snowflake_action(
+                    action,
+                    Some(&target.table),
+                    &active_database,
+                )?;
                 if target.database != active_database {
                     return Err(stale_ddl());
                 }
@@ -936,6 +1066,12 @@ impl SnowflakeExternal {
                 schema,
                 name,
                 ..
+            }
+            | SnowflakeDdlAction::CreateView {
+                database,
+                schema,
+                name,
+                ..
             } => {
                 if database != &active_database
                     || context.database.as_deref() != Some(database.as_str())
@@ -945,7 +1081,7 @@ impl SnowflakeExternal {
                 if schema == "INFORMATION_SCHEMA" {
                     return Err(AppError::new(
                         ErrorCode::Unsupported,
-                        "Reviewed Snowflake DDL cannot create tables in INFORMATION_SCHEMA",
+                        "Reviewed Snowflake DDL cannot create objects in INFORMATION_SCHEMA",
                     ));
                 }
                 let schema_rows = self.read_spec(&metadata::schemas_read(context)?).await?;
@@ -1011,9 +1147,88 @@ impl SnowflakeExternal {
                 }
                 self.require_browse_relation(context, target).await
             }
+            SnowflakeDdlAction::AlterColumnNullability {
+                column_name,
+                nullable,
+                ..
+            } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                let expected_columns = inspected_columns.ok_or_else(stale_ddl)?;
+                require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await?;
+                let [columns_read, describe_read, resolved_read] =
+                    metadata::inspection_reads(target)?;
+                let columns = self.read_spec(&columns_read).await?;
+                let describe = self.read_spec(&describe_read).await?;
+                let resolved = self.read_spec(&resolved_read).await?;
+                let live_columns =
+                    browsing::parse_inspection(target, &columns, &describe, &resolved)?;
+                if live_columns.as_slice() != expected_columns {
+                    return Err(stale_ddl());
+                }
+                let Some(existing) = live_columns
+                    .iter()
+                    .find(|existing| existing.name == *column_name)
+                else {
+                    return Err(stale_ddl());
+                };
+                if existing.nullable == *nullable {
+                    return Err(stale_ddl());
+                }
+                self.require_browse_relation(context, target).await
+            }
+            SnowflakeDdlAction::RenameColumn {
+                column_name,
+                new_name,
+                ..
+            } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                let expected_columns = inspected_columns.ok_or_else(stale_ddl)?;
+                require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await?;
+                let [columns_read, describe_read, resolved_read] =
+                    metadata::inspection_reads(target)?;
+                let columns = self.read_spec(&columns_read).await?;
+                let describe = self.read_spec(&describe_read).await?;
+                let resolved = self.read_spec(&resolved_read).await?;
+                let live_columns =
+                    browsing::parse_inspection(target, &columns, &describe, &resolved)?;
+                if live_columns.as_slice() != expected_columns
+                    || !live_columns.iter().any(|c| c.name == *column_name)
+                    || live_columns.iter().any(|c| c.name == *new_name)
+                {
+                    return Err(stale_ddl());
+                }
+                self.require_browse_relation(context, target).await
+            }
+            SnowflakeDdlAction::DropColumn { column_name, .. } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                let expected_columns = inspected_columns.ok_or_else(stale_ddl)?;
+                require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await?;
+                let [columns_read, describe_read, resolved_read] =
+                    metadata::inspection_reads(target)?;
+                let columns = self.read_spec(&columns_read).await?;
+                let describe = self.read_spec(&describe_read).await?;
+                let resolved = self.read_spec(&resolved_read).await?;
+                let live_columns =
+                    browsing::parse_inspection(target, &columns, &describe, &resolved)?;
+                if live_columns.as_slice() != expected_columns
+                    || live_columns.len() <= 1
+                    || !live_columns.iter().any(|c| c.name == *column_name)
+                {
+                    return Err(stale_ddl());
+                }
+                self.require_browse_relation(context, target).await
+            }
             SnowflakeDdlAction::DropTable { .. } => {
                 let target = target.ok_or_else(stale_ddl)?;
                 require_plain_base_table(target)?;
+                self.require_browse_relation(context, target).await
+            }
+            SnowflakeDdlAction::DropView { .. } => {
+                let target = target.ok_or_else(stale_ddl)?;
+                require_plain_view(target)?;
                 self.require_browse_relation(context, target).await
             }
         }
@@ -2047,7 +2262,7 @@ impl Driver for SnowflakeExternal {
             let _ = self.publish_transaction_sample(&after, &tx_generation)?;
             let components = canonical.qualified_target().clone();
             let qualified_target = qualified_ddl_target(&components)?;
-            let kind = SnowflakeDdlKind::from(canonical.kind());
+            let kind = canonical.kind();
             let warnings = ddl_warnings(
                 kind,
                 &qualified_target,
@@ -2112,7 +2327,7 @@ impl Driver for SnowflakeExternal {
             self.validate_ddl_locked(&tx, &ddl, request)?;
             ddl.grant.take().ok_or_else(stale_ddl)?
         };
-        let kind = SnowflakeDdlKind::from(grant.canonical.kind());
+        let kind = grant.canonical.kind();
         let qualified_target = qualified_ddl_target(grant.canonical.qualified_target())?;
         self.invalidate_session_options();
         self.invalidate_relation_catalog();
@@ -3751,6 +3966,312 @@ impl Driver for SnowflakeExternal {
     async fn catalog(&self) -> AppResult<Vec<TableInfo>> {
         Err(unsupported())
     }
+    async fn database_objects(&self) -> AppResult<Vec<DatabaseObjectSummary>> {
+        self.grid.require_ordinary()?;
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+            let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+            let mut objects = Vec::new();
+            let mut total_bytes = 0usize;
+            for schema in &schemas {
+                let table_rows = self
+                    .read_spec(&metadata::explorer_tables_read(&context, schema)?)
+                    .await?;
+                let seq_rows = self
+                    .read_spec(&metadata::explorer_sequences_read(&context, schema)?)
+                    .await?;
+                let fn_rows = self
+                    .read_spec(&metadata::explorer_functions_read(&context, schema)?)
+                    .await?;
+                let proc_rows = self
+                    .read_spec(&metadata::explorer_procedures_read(&context, schema)?)
+                    .await?;
+                for batch in [
+                    explorer::parse_tables(&context, schema, &table_rows)?,
+                    explorer::parse_sequences(&context, schema, &seq_rows)?,
+                    explorer::parse_routines(&context, schema, false, &fn_rows)?,
+                    explorer::parse_routines(&context, schema, true, &proc_rows)?,
+                ] {
+                    total_bytes = total_bytes
+                        .checked_add(
+                            serde_json::to_vec(&batch)
+                                .map_err(|_| protocol_error())?
+                                .len(),
+                        )
+                        .ok_or_else(metadata_limit)?;
+                    if objects.len().saturating_add(batch.len()) > explorer::OBJECT_LIMIT
+                        || total_bytes > explorer::OBJECT_MAX_BYTES
+                    {
+                        return Err(metadata_limit());
+                    }
+                    objects.extend(batch);
+                }
+            }
+            self.recheck_metadata_context(&context).await?;
+            Ok(objects)
+        })
+        .await
+    }
+    async fn object_details(&self, object: &DatabaseObjectRef) -> AppResult<ObjectDetails> {
+        self.grid.require_ordinary()?;
+        if !matches!(
+            object.kind,
+            DatabaseObjectKind::Table
+                | DatabaseObjectKind::View
+                | DatabaseObjectKind::MaterializedView
+                | DatabaseObjectKind::Sequence
+                | DatabaseObjectKind::Function
+                | DatabaseObjectKind::Procedure
+        ) {
+            return Err(unsupported());
+        }
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let database = context.database.clone().ok_or_else(|| {
+                AppError::new(
+                    ErrorCode::Unsupported,
+                    "Select an active Snowflake database before inspecting object details",
+                )
+            })?;
+            let mut details = explorer::empty_details(object.clone());
+            match object.kind {
+                DatabaseObjectKind::Table
+                | DatabaseObjectKind::View
+                | DatabaseObjectKind::MaterializedView => {
+                    let exact_read =
+                        metadata::explorer_exact_table_read(&context, &object.schema, &object.name)?;
+                    let exact = self.read_spec(&exact_read).await?;
+                    let (target, comment, storage) = explorer::parse_exact_table(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        &exact,
+                    )?;
+                    let kind_matches = match object.kind {
+                        DatabaseObjectKind::MaterializedView => {
+                            target.table_type == "MATERIALIZED VIEW"
+                        }
+                        DatabaseObjectKind::View => target.table_type == "VIEW",
+                        DatabaseObjectKind::Table => matches!(
+                            target.table_type.as_str(),
+                            "BASE TABLE" | "TEMPORARY TABLE" | "EXTERNAL TABLE" | "EVENT TABLE"
+                        ),
+                        _ => false,
+                    };
+                    if !kind_matches {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "Snowflake relation kind changed; refresh schema objects",
+                        ));
+                    }
+                    details.comment = comment.clone();
+                    if object.kind == DatabaseObjectKind::Table {
+                        details.storage = Some(storage.clone());
+                    }
+                    let ddl_read = metadata::definition_read(&target)?;
+                    details.ddl = match self.read_spec(&ddl_read).await {
+                        Ok(result) => ObjectDdlStatus::Available {
+                            ddl: explorer::parse_ddl(&result)?,
+                            truncated: false,
+                        },
+                        Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                            ObjectDdlStatus::Unavailable {
+                                reason: err.message,
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    if object.kind == DatabaseObjectKind::Table {
+                        let key_rows = self.read_spec(&metadata::constraints_read(&target)?).await?;
+                        let check_rows = self
+                            .read_spec(&metadata::check_constraints_read(&target)?)
+                            .await?;
+                        let keys = browsing::parse_constraints(&target, &key_rows)?;
+                        let mappings = if target.traits.dynamic == Some(false) {
+                            let reads = metadata::mapping_reads(&target)?;
+                            let primary = self.read_spec(&reads[0]).await?;
+                            let unique = self.read_spec(&reads[1]).await?;
+                            let foreign = self.read_spec(&reads[2]).await?;
+                            browsing::parse_mappings(
+                                &target,
+                                &keys,
+                                [&primary, &unique, &foreign],
+                            )?
+                        } else {
+                            browsing::unsupported_mappings(&keys)
+                        };
+                        let checks = browsing::parse_check_constraints(&target, &check_rows)?;
+                        for mapping in &mappings {
+                            if mapping.kind
+                                == crate::relation_inspection::RelationKeyConstraintKind::ForeignKey
+                                && let Some(ref_table) = &mapping.referenced_table
+                                && ref_table.database == database
+                            {
+                                details.uses.push(DependencyEdge {
+                                    object: DatabaseObjectRef {
+                                        schema: ref_table.table.schema.clone(),
+                                        name: ref_table.table.name.clone(),
+                                        kind: DatabaseObjectKind::Table,
+                                        identity: None,
+                                    },
+                                    relation: "foreign key".into(),
+                                });
+                            }
+                        }
+                        details.constraints =
+                            explorer::build_table_constraints(&database, &keys, &mappings, &checks);
+                    } else if let ObjectDdlStatus::Available { ddl, .. } = &details.ddl {
+                        let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+                        let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+                        let mut known = Vec::new();
+                        for schema in schemas.iter().take(64) {
+                            let rows = self
+                                .read_spec(&metadata::explorer_tables_read(&context, schema)?)
+                                .await?;
+                            let batch = explorer::parse_tables(&context, schema, &rows)?;
+                            if known.len().saturating_add(batch.len()) > explorer::OBJECT_LIMIT {
+                                break;
+                            }
+                            known.extend(batch);
+                        }
+                        details.uses = explorer::extract_view_dependencies(
+                            &database,
+                            &object.schema,
+                            &object.name,
+                            ddl,
+                            &known,
+                        );
+                    }
+                    let verify = self.read_spec(&exact_read).await?;
+                    let after = explorer::parse_exact_table(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        &verify,
+                    )?;
+                    if after != (target, comment, storage) {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "Snowflake relation changed while inspecting details; refresh and retry",
+                        ));
+                    }
+                }
+                DatabaseObjectKind::Sequence => {
+                    let exact_read = metadata::explorer_exact_sequence_read(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                    )?;
+                    let exact = self.read_spec(&exact_read).await?;
+                    let (sequence, comment) = explorer::parse_exact_sequence(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        &exact,
+                    )?;
+                    details.comment = comment.clone();
+                    details.sequence = Some(sequence.clone());
+                    let ddl_read =
+                        metadata::explorer_sequence_ddl_read(&database, &object.schema, &object.name)?;
+                    details.ddl = match self.read_spec(&ddl_read).await {
+                        Ok(result) => ObjectDdlStatus::Available {
+                            ddl: explorer::parse_ddl(&result)?,
+                            truncated: false,
+                        },
+                        Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                            ObjectDdlStatus::Unavailable {
+                                reason: err.message,
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    let verify = self.read_spec(&exact_read).await?;
+                    let after = explorer::parse_exact_sequence(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        &verify,
+                    )?;
+                    if after.0.data_type != sequence.data_type
+                        || after.0.start_value != sequence.start_value
+                        || after.0.increment_by != sequence.increment_by
+                        || after.0.cycle != sequence.cycle
+                        || after.1 != comment
+                    {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "Snowflake sequence changed while inspecting details; refresh and retry",
+                        ));
+                    }
+                }
+                DatabaseObjectKind::Function | DatabaseObjectKind::Procedure => {
+                    let is_procedure = object.kind == DatabaseObjectKind::Procedure;
+                    let exact_read = metadata::explorer_exact_routine_read(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        is_procedure,
+                    )?;
+                    let exact = self.read_spec(&exact_read).await?;
+                    let (routine, identity_args, comment) = explorer::parse_exact_routine(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        is_procedure,
+                        object.identity.as_deref(),
+                        &exact,
+                    )?;
+                    details.object.identity = Some(identity_args.clone());
+                    details.comment = comment.clone();
+                    details.routine = Some(routine.clone());
+                    let ddl_read = metadata::explorer_routine_ddl_read(
+                        &database,
+                        &object.schema,
+                        &object.name,
+                        is_procedure,
+                        &identity_args,
+                    )?;
+                    details.ddl = match self.read_spec(&ddl_read).await {
+                        Ok(result) => ObjectDdlStatus::Available {
+                            ddl: explorer::parse_ddl(&result)?,
+                            truncated: false,
+                        },
+                        Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                            ObjectDdlStatus::Unavailable {
+                                reason: err.message,
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    let verify = self.read_spec(&exact_read).await?;
+                    let after = explorer::parse_exact_routine(
+                        &context,
+                        &object.schema,
+                        &object.name,
+                        is_procedure,
+                        Some(&identity_args),
+                        &verify,
+                    )?;
+                    if after.0.arguments != routine.arguments
+                        || after.0.return_type != routine.return_type
+                        || after.0.language != routine.language
+                        || after.0.volatility != routine.volatility
+                        || after.2 != comment
+                    {
+                        return Err(AppError::new(
+                            ErrorCode::Conflict,
+                            "Snowflake routine changed while inspecting details; refresh and retry",
+                        ));
+                    }
+                }
+                _ => return Err(unsupported()),
+            }
+            self.recheck_metadata_context(&context).await?;
+            Ok(details)
+        })
+        .await
+    }
     async fn schema(&self, _: &TableRef) -> AppResult<TableSchema> {
         Err(unsupported())
     }
@@ -3842,6 +4363,27 @@ fn require_plain_base_table(target: &BrowseRelation) -> AppResult<()> {
     Ok(())
 }
 
+fn require_plain_view(target: &BrowseRelation) -> AppResult<()> {
+    if target.availability != crate::relation_inspection::RelationAvailability::Available
+        || target.table_type != "VIEW"
+        || target.traits
+            != (crate::relation_inspection::RelationTraits {
+                transient: target.traits.transient,
+                temporary: Some(false),
+                iceberg: Some(false),
+                dynamic: Some(false),
+                hybrid: Some(false),
+                immutable: Some(false),
+            })
+    {
+        return Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Reviewed Snowflake DDL requires an available standard VIEW with known non-temporary traits",
+        ));
+    }
+    Ok(())
+}
+
 fn qualified_ddl_target(components: &[String; 3]) -> AppResult<String> {
     Ok(format!(
         "{}.{}.{}",
@@ -3875,6 +4417,16 @@ fn ddl_warnings(
     if kind == SnowflakeDdlKind::DropTable {
         warnings.push(
             "Dropping a Snowflake table immediately removes the table from active schemas. Time Travel recovery depends on remote object retention settings not verified here.".into(),
+        );
+    }
+    if kind == SnowflakeDdlKind::DropColumn {
+        warnings.push(
+            "Dropping a Snowflake column permanently removes column visibility from the active table schema and breaks dependent views or queries referencing the column.".into(),
+        );
+    }
+    if kind == SnowflakeDdlKind::DropView {
+        warnings.push(
+            "Dropping a Snowflake view immediately removes the view definition and invalidates downstream views or tasks referencing it.".into(),
         );
     }
     warnings
@@ -4216,9 +4768,14 @@ const sdk = { createConnection() {
       const context = sql === normalizedContextSql;
       const unsupportedContext = sql === oldContextSql;
       const schemas = sql.includes('.INFORMATION_SCHEMA.SCHEMATA ');
-      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ');
+      const explorerExactTable = sql.includes('ROW_COUNT::VARCHAR AS ROW_COUNT') && sql.includes('IS_TRANSIENT');
+      const explorerTables = sql.includes('ROW_COUNT::VARCHAR AS ROW_COUNT') && !sql.includes('IS_TRANSIENT');
+      const explorerSequences = sql.includes('.INFORMATION_SCHEMA.SEQUENCES ');
+      const explorerFunctions = sql.includes('.INFORMATION_SCHEMA.FUNCTIONS ');
+      const explorerProcedures = sql.includes('.INFORMATION_SCHEMA.PROCEDURES ');
+      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ') && !sql.includes('ROW_COUNT::VARCHAR');
       const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
-      const describe = sql.startsWith('DESCRIBE TABLE ');
+      const describe = sql.startsWith('DESCRIBE TABLE ') || sql.startsWith('DESCRIBE VIEW ') || sql.startsWith('DESCRIBE MATERIALIZED VIEW ');
       const zeroRows = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
       const definition = sql.startsWith('SELECT GET_DDL(');
       const constraints = sql.includes('.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC ');
@@ -4230,7 +4787,7 @@ const sdk = { createConnection() {
       const use = /^(USE SCHEMA|USE ROLE|USE WAREHOUSE|USE DATABASE) /u.test(sql);
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
-      const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE) /u.test(sql);
+      const ddl = /^(CREATE TABLE|ALTER TABLE|DROP TABLE|CREATE VIEW|DROP VIEW) /u.test(sql);
       const readback = sql.startsWith('SELECT CURRENT_USER(),') && switched;
       let names = ['VALUE'], rows = [['1']], parameter;
       if (ddl) {
@@ -4336,10 +4893,37 @@ const sdk = { createConnection() {
       } else if (definition) {
         definitionSeen = true;
         names = value('definitionColumns',['DDL']);
-        rows = value('definitionRows',[[value('definition','create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);')]]);
+        const defaultDdl = sql.includes('ACTIVE_ORDERS')
+          ? 'create or replace view "DB"."PUBLIC"."ACTIVE_ORDERS" as select ID, NOTES from "DB"."PUBLIC"."ORDERS";'
+          : 'create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);';
+        rows = value('definitionRows',[[value('definition',defaultDdl)]]);
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',navigation ? ['PUBLIC',navigationSchema] : ['OTHER','PUBLIC']).map(name => [currentDatabase ?? 'DB',name]);
+      } else if (explorerTables) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','ROW_COUNT','BYTES','COMMENT'];
+        const schema = predicate('TABLE_SCHEMA') ?? 'PUBLIC';
+        rows = value('explorerTableRows', schema === 'PUBLIC' ? [['DB','PUBLIC','ORDERS','BASE TABLE','42','8192','Order ledger'],['DB','PUBLIC','ACTIVE_ORDERS','VIEW',null,null,'Active view']] : [['DB',schema,'Mixed.Name','BASE TABLE','5','1024',null]]);
+      } else if (explorerExactTable) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','ROW_COUNT','BYTES','COMMENT'];
+        const schema = predicate('TABLE_SCHEMA') ?? 'PUBLIC';
+        const table = predicate('TABLE_NAME') ?? 'ORDERS';
+        rows = value('explorerExactTableRows', table === 'ACTIVE_ORDERS' ? [['DB',schema,'ACTIVE_ORDERS','VIEW','NO','NO','NO','NO','NO','NO',null,null,'Active view']] : [['DB',schema,table,value('tableType','BASE TABLE'),'NO','NO','NO','NO','NO','NO','42','8192','Order ledger']]);
+      } else if (explorerSequences) {
+        names = ['SEQUENCE_CATALOG','SEQUENCE_SCHEMA','SEQUENCE_NAME','DATA_TYPE','START_VALUE','MINIMUM_VALUE','MAXIMUM_VALUE','INCREMENT_BY','CYCLE_OPTION','COMMENT'];
+        const schema = predicate('SEQUENCE_SCHEMA') ?? 'PUBLIC';
+        const seqName = predicate('SEQUENCE_NAME');
+        rows = value('explorerSequenceRows', schema === 'PUBLIC' && (!seqName || seqName === 'ORDER_SEQ') ? [['DB','PUBLIC','ORDER_SEQ','NUMBER','1','1','999999999','1','NO','Order sequence']] : []);
+      } else if (explorerFunctions) {
+        names = ['FUNCTION_CATALOG','FUNCTION_SCHEMA','FUNCTION_NAME','ARGUMENT_SIGNATURE','DATA_TYPE','FUNCTION_LANGUAGE','IS_VOLATILE','COMMENT'];
+        const schema = predicate('FUNCTION_SCHEMA') ?? 'PUBLIC';
+        const fnName = predicate('FUNCTION_NAME');
+        rows = value('explorerFunctionRows', schema === 'PUBLIC' && (!fnName || fnName === 'CALC_TAX') ? [['DB','PUBLIC','CALC_TAX','(AMOUNT NUMBER)','NUMBER(18,2)','SQL','NO','Tax helper'],['DB','PUBLIC','CALC_TAX','(AMOUNT NUMBER, RATE FLOAT)','FLOAT','SQL','YES','Overloaded tax helper']] : []);
+      } else if (explorerProcedures) {
+        names = ['PROCEDURE_CATALOG','PROCEDURE_SCHEMA','PROCEDURE_NAME','ARGUMENT_SIGNATURE','DATA_TYPE','PROCEDURE_LANGUAGE','COMMENT'];
+        const schema = predicate('PROCEDURE_SCHEMA') ?? 'PUBLIC';
+        const procName = predicate('PROCEDURE_NAME');
+        rows = value('explorerProcedureRows', schema === 'PUBLIC' && (!procName || procName === 'SYNC_ORDERS') ? [['DB','PUBLIC','SYNC_ORDERS','(BATCH_ID VARCHAR)','VARCHAR','SQL','Sync batch']] : []);
       } else if (relations) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','CREATED','LAST_DDL'];
         const schema = sql.includes("TABLE_SCHEMA = 'OTHER'") ? 'OTHER' : 'PUBLIC';
@@ -4359,7 +4943,7 @@ const sdk = { createConnection() {
 
       } else if (columnMetadata) {
         names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','DATA_TYPE_ALIAS','CHARACTER_MAXIMUM_LENGTH','CHARACTER_OCTET_LENGTH','NUMERIC_PRECISION','NUMERIC_PRECISION_RADIX','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_GENERATION','IDENTITY_START','IDENTITY_INCREMENT','IDENTITY_ORDERED','COMMENT','EXPRESSION','KIND'];
-        const table = value('tableName','ORDERS');
+        const table = Object.hasOwn(settings,'tableName') ? settings.tableName : (predicate('TABLE_NAME') ?? 'ORDERS');
         rows = [['DB','PUBLIC',table,'ID','1','42','NO','NUMBER','BIGINT',null,null,'38','10','0','NO',null,null,null,null,'identifier',null,'COLUMN'],['DB','PUBLIC',table,'NOTES','3',null,'YES','TEXT',null,'100','400',null,null,null,'NO',null,null,null,null,null,null,'COLUMN']];
         if (navigation) {
           const exactSchema = predicate('TABLE_SCHEMA'), exactTable = predicate('TABLE_NAME');
@@ -4744,6 +5328,8 @@ process.stdin.on('end', retire);
                     .iter()
                     .any(|prefix| sql.starts_with(prefix))
                     || sql.starts_with("DESCRIBE TABLE ")
+                    || sql.starts_with("DESCRIBE VIEW ")
+                    || sql.starts_with("DESCRIBE MATERIALIZED VIEW ")
                     || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
                     || [
                         "INSERT INTO ",
@@ -4752,6 +5338,8 @@ process.stdin.on('end', retire);
                         "CREATE TABLE ",
                         "ALTER TABLE ",
                         "DROP TABLE ",
+                        "CREATE VIEW ",
+                        "DROP VIEW ",
                     ]
                     .iter()
                     .any(|prefix| sql.starts_with(prefix))
@@ -7148,6 +7736,280 @@ process.stdin.on('end', retire);
                 "USE DATABASE \"ANALYTICS_DB\"",
                 "USE SCHEMA \"ANALYTICS_DB\".\"OTHER\"",
             ]
+        );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn object_explorer_and_inspector_cover_tables_views_sequences_and_overloaded_routines() {
+        let h = Harness::open().await;
+        let objects = h.driver.database_objects().await.unwrap();
+        assert!(objects.iter().any(|o| {
+            o.object.schema == "PUBLIC"
+                && o.object.name == "ORDERS"
+                && o.object.kind == DatabaseObjectKind::Table
+                && o.estimated_rows == Some(42.0)
+                && o.total_bytes == Some(8192.0)
+        }));
+        assert!(objects.iter().any(|o| {
+            o.object.schema == "PUBLIC"
+                && o.object.name == "ACTIVE_ORDERS"
+                && o.object.kind == DatabaseObjectKind::View
+        }));
+        assert!(objects.iter().any(|o| {
+            o.object.schema == "PUBLIC"
+                && o.object.name == "ORDER_SEQ"
+                && o.object.kind == DatabaseObjectKind::Sequence
+        }));
+        let overloaded_fns: Vec<_> = objects
+            .iter()
+            .filter(|o| {
+                o.object.schema == "PUBLIC"
+                    && o.object.name == "CALC_TAX"
+                    && o.object.kind == DatabaseObjectKind::Function
+            })
+            .collect();
+        assert_eq!(overloaded_fns.len(), 2);
+        assert!(overloaded_fns[0].object.identity.is_some());
+        assert_ne!(
+            overloaded_fns[0].object.identity,
+            overloaded_fns[1].object.identity
+        );
+
+        let table_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "ORDERS".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table_details.comment.as_deref(), Some("Order ledger"));
+        assert_eq!(
+            table_details
+                .storage
+                .as_ref()
+                .and_then(|s| s.estimated_rows),
+            Some(42.0)
+        );
+        assert!(matches!(
+            table_details.ddl,
+            ObjectDdlStatus::Available { .. }
+        ));
+        assert!(table_details.constraints.iter().any(|c| {
+            c.name == "ORDERS_PARENT_FK"
+                && c.columns == vec!["PARENT_A", "PARENT_B"]
+                && c.target
+                    == Some(TableRef {
+                        schema: "PUBLIC".into(),
+                        name: "PARENTS".into(),
+                    })
+                && c.target_columns == vec!["A", "B"]
+        }));
+        assert!(
+            table_details
+                .constraints
+                .iter()
+                .any(|c| c.name == "POSITIVE_ID")
+        );
+        assert!(table_details.uses.iter().any(|u| {
+            u.object.schema == "PUBLIC" && u.object.name == "PARENTS" && u.relation == "foreign key"
+        }));
+
+        let view_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "ACTIVE_ORDERS".into(),
+                kind: DatabaseObjectKind::View,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(view_details.comment.as_deref(), Some("Active view"));
+        assert!(matches!(
+            view_details.ddl,
+            ObjectDdlStatus::Available { .. }
+        ));
+        assert!(view_details.uses.iter().any(|u| {
+            u.object.schema == "PUBLIC"
+                && u.object.name == "ORDERS"
+                && u.object.kind == DatabaseObjectKind::Table
+        }));
+
+        let seq_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "ORDER_SEQ".into(),
+                kind: DatabaseObjectKind::Sequence,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            seq_details.sequence.as_ref().map(|s| s.data_type.as_str()),
+            Some("NUMBER")
+        );
+
+        let fn_details = h
+            .driver
+            .object_details(&overloaded_fns[0].object)
+            .await
+            .unwrap();
+        assert!(fn_details.routine.is_some());
+        assert!(matches!(fn_details.ddl, ObjectDdlStatus::Available { .. }));
+
+        let proc_ref = objects
+            .iter()
+            .find(|o| o.object.kind == DatabaseObjectKind::Procedure)
+            .unwrap()
+            .object
+            .clone();
+        h.settings(json!({ "rejectDefinition": true }));
+        let proc_details = h.driver.object_details(&proc_ref).await.unwrap();
+        assert!(proc_details.routine.is_some());
+        assert!(matches!(
+            proc_details.ddl,
+            ObjectDdlStatus::Unavailable { .. }
+        ));
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn reviewed_ddl_executes_column_migrations_and_view_lifecycle() {
+        let h = Harness::open_ddl_policy(SafeMode::Guard, true).await;
+        let create_view = SnowflakeDdlAction::CreateView {
+            database: "DB".into(),
+            schema: "PUBLIC".into(),
+            name: "ACTIVE_ORDERS_V".into(),
+            query_sql: "SELECT \"ID\", \"NOTES\" FROM \"DB\".\"PUBLIC\".\"ORDERS\"".into(),
+        };
+        let view_preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: create_view.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let view_res = h
+            .driver
+            .snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlRequest {
+                    revision: view_preflight.revision,
+                    action: create_view,
+                    sql: view_preflight.sql,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(view_res.kind, SnowflakeDdlKind::CreateView);
+        assert_eq!(view_res.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+
+        let catalog = h.driver.relation_catalog().await.unwrap();
+        let target_id = catalog
+            .relations
+            .iter()
+            .find(|r| r.table.schema == "PUBLIC" && r.table.name == "ORDERS")
+            .unwrap()
+            .target_id
+            .clone();
+        let inspected = h
+            .driver
+            .inspect_relation(&InspectRelationRequest {
+                revision: catalog.revision.clone(),
+                target_id: target_id.clone(),
+            })
+            .await
+            .unwrap();
+        let rename_action = SnowflakeDdlAction::RenameColumn {
+            browse_revision: catalog.revision.clone(),
+            target_id: target_id.clone(),
+            inspection_revision: inspected.revision.clone(),
+            column_name: "NOTES".into(),
+            new_name: "MEMO".into(),
+        };
+        let rename_preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: rename_action.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rename_preflight.sql,
+            "ALTER TABLE \"DB\".\"PUBLIC\".\"ORDERS\" RENAME COLUMN \"NOTES\" TO \"MEMO\""
+        );
+        let rename_res = h
+            .driver
+            .snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlRequest {
+                    revision: rename_preflight.revision,
+                    action: rename_action,
+                    sql: rename_preflight.sql,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rename_res.kind, SnowflakeDdlKind::RenameColumn);
+        assert_eq!(rename_res.statement_outcome, SnowflakeDdlOutcome::Succeeded);
+
+        h.settings(json!({ "tableName": "ACTIVE_ORDERS_V", "tableType": "VIEW" }));
+        let view_catalog = h.driver.relation_catalog().await.unwrap();
+        let view_target_id = view_catalog
+            .relations
+            .iter()
+            .find(|r| r.table.schema == "PUBLIC" && r.table.name == "ACTIVE_ORDERS_V")
+            .unwrap()
+            .target_id
+            .clone();
+        let drop_view = SnowflakeDdlAction::DropView {
+            browse_revision: view_catalog.revision,
+            target_id: view_target_id,
+        };
+        let drop_view_preflight = h
+            .driver
+            .preflight_snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlPreflightRequest {
+                    session_id: "observer-session".into(),
+                    action: drop_view.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            drop_view_preflight.sql,
+            "DROP VIEW \"DB\".\"PUBLIC\".\"ACTIVE_ORDERS_V\""
+        );
+        let drop_view_res = h
+            .driver
+            .snowflake_ddl(
+                "observer-session",
+                &SnowflakeDdlRequest {
+                    revision: drop_view_preflight.revision,
+                    action: drop_view,
+                    sql: drop_view_preflight.sql,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(drop_view_res.kind, SnowflakeDdlKind::DropView);
+        assert_eq!(
+            drop_view_res.statement_outcome,
+            SnowflakeDdlOutcome::Succeeded
         );
         h.finish().await;
     }

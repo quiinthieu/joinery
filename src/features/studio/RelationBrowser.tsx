@@ -1175,6 +1175,29 @@ export function RelationBrowser({
           >
             View CHECK constraints
           </button>
+          {session?.capabilities.objectExplorer && session.connectionId && (
+            <button
+              className="button small"
+              disabled={busy || blocked || !ownerAvailable || target?.availability !== "available"}
+              onClick={() => {
+                if (!target || !session.connectionId) return;
+                useStudio.getState().openObject(session.connectionId, {
+                  schema: target.table.schema,
+                  name: target.table.name,
+                  kind:
+                    target.tableType === "MATERIALIZED VIEW"
+                      ? "materializedView"
+                      : target.tableType === "VIEW"
+                        ? "view"
+                        : "table",
+                  identity: null,
+                });
+                onClose();
+              }}
+            >
+              Inspect object
+            </button>
+          )}
           {canDdl && (
             <>
               <button
@@ -1190,6 +1213,20 @@ export function RelationBrowser({
                 }
               >
                 Create table…
+              </button>
+              <button
+                className="button small"
+                disabled={busy || blocked || !catalog}
+                onClick={() =>
+                  catalog &&
+                  setDdlRequest({
+                    kind: "createView",
+                    database: catalog.database,
+                    schema: useStudio.getState().sessionStates[sessionId]?.activeContext ?? "",
+                  })
+                }
+              >
+                Create view…
               </button>
               <button
                 className="button small"
@@ -1217,6 +1254,87 @@ export function RelationBrowser({
                 Add nullable column…
               </button>
               <button
+                className="button small"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  !inspection ||
+                  inspection.columns.filter((col) => col.kind === "column").length === 0 ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "BASE TABLE"
+                }
+                onClick={() =>
+                  catalog &&
+                  inspection &&
+                  target &&
+                  setDdlRequest({
+                    kind: "alterColumnNullability",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    inspectionRevision: inspection.revision,
+                    qualifiedTarget: qualified,
+                    columns: inspection.columns.filter((col) => col.kind === "column"),
+                  })
+                }
+              >
+                Alter column nullability…
+              </button>
+              <button
+                className="button small"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  !inspection ||
+                  inspection.columns.filter((col) => col.kind === "column").length === 0 ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "BASE TABLE"
+                }
+                onClick={() =>
+                  catalog &&
+                  inspection &&
+                  target &&
+                  setDdlRequest({
+                    kind: "renameColumn",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    inspectionRevision: inspection.revision,
+                    qualifiedTarget: qualified,
+                    columns: inspection.columns.filter((col) => col.kind === "column"),
+                  })
+                }
+              >
+                Rename column…
+              </button>
+              <button
+                className="button small danger"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  !inspection ||
+                  inspection.columns.filter((col) => col.kind === "column").length <= 1 ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "BASE TABLE"
+                }
+                onClick={() =>
+                  catalog &&
+                  inspection &&
+                  target &&
+                  setDdlRequest({
+                    kind: "dropColumn",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    inspectionRevision: inspection.revision,
+                    qualifiedTarget: qualified,
+                    columns: inspection.columns.filter((col) => col.kind === "column"),
+                  })
+                }
+              >
+                Drop column…
+              </button>
+              <button
                 className="button small danger"
                 disabled={
                   busy ||
@@ -1237,6 +1355,28 @@ export function RelationBrowser({
                 }
               >
                 Drop table…
+              </button>
+              <button
+                className="button small danger"
+                disabled={
+                  busy ||
+                  blocked ||
+                  !catalog ||
+                  target?.availability !== "available" ||
+                  target.tableType !== "VIEW"
+                }
+                onClick={() =>
+                  catalog &&
+                  target &&
+                  setDdlRequest({
+                    kind: "dropView",
+                    browseRevision: catalog.revision,
+                    targetId: target.targetId,
+                    qualifiedTarget: qualified,
+                  })
+                }
+              >
+                Drop view…
               </button>
             </>
           )}

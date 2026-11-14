@@ -8,17 +8,22 @@
 
 use crate::{
     ddl::{TableColumnDraft, TableObjectAction},
-    domain::{AppError, AppResult, DatabaseObjectKind, ErrorCode},
+    domain::{
+        AppError, AppResult, DatabaseObjectKind, ErrorCode, SnowflakeDdlAction,
+        SnowflakeDdlColumnDraft, SnowflakeDdlKind, TableRef,
+    },
 };
 use sqlparser::{
     ast::{
-        AlterTable, AlterTableOperation, ColumnDef, ColumnOption, ColumnOptionDef, DataType, Ident,
-        ObjectName, ObjectType, Statement, helpers::attached_token::AttachedToken,
+        AlterColumnOperation, AlterTable, AlterTableOperation, ColumnDef, ColumnOption,
+        ColumnOptionDef, DataType, Expr, Ident, ObjectName, ObjectType, Statement, Value,
+        ValueWithSpan, Visit, Visitor, helpers::attached_token::AttachedToken,
     },
     dialect::SnowflakeDialect,
     parser::Parser,
 };
 use std::collections::HashSet;
+use std::ops::ControlFlow;
 
 pub const MAX_COLUMNS: usize = 256;
 pub const MAX_IDENTIFIER_CHARS: usize = 255;
@@ -299,6 +304,388 @@ pub fn compile(action: &TableObjectAction, database: &str) -> AppResult<Canonica
         return Err(unsupported());
     }
     Ok(Canonical {
+        kind,
+        qualified_target,
+        sql,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnowflakeCanonical {
+    kind: SnowflakeDdlKind,
+    qualified_target: [String; 3],
+    sql: String,
+}
+
+impl SnowflakeCanonical {
+    pub fn kind(&self) -> SnowflakeDdlKind {
+        self.kind
+    }
+
+    pub fn qualified_target(&self) -> &[String; 3] {
+        &self.qualified_target
+    }
+
+    pub fn sql(&self) -> &str {
+        &self.sql
+    }
+}
+
+fn snowflake_column_type(input: &str) -> AppResult<DataType> {
+    if input.len() > MAX_TYPE_BYTES {
+        return Err(limit());
+    }
+    if !input.is_ascii() || input.bytes().any(|b| b.is_ascii_control()) {
+        return Err(unsupported());
+    }
+    let upper = input.trim().to_ascii_uppercase();
+    let (name, args) = if let Some((name, tail)) = upper.split_once('(') {
+        let arguments = tail.strip_suffix(')').ok_or_else(unsupported)?;
+        if arguments.is_empty() {
+            return Err(unsupported());
+        }
+        let args = arguments
+            .split(',')
+            .map(|argument| {
+                let argument = argument.trim();
+                if argument.is_empty() || !argument.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(unsupported());
+                }
+                argument.parse::<u64>().map_err(|_| unsupported())
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        (name.trim(), args)
+    } else {
+        (upper.as_str(), Vec::new())
+    };
+    let canonical = match (name, args.as_slice()) {
+        ("NUMBER", []) => "NUMBER(38,0)".to_owned(),
+        ("NUMBER", [precision]) if (1..=38).contains(precision) => {
+            format!("NUMBER({precision},0)")
+        }
+        ("NUMBER", [precision, scale])
+            if (1..=38).contains(precision) && *scale <= 38 && scale <= precision =>
+        {
+            format!("NUMBER({precision},{scale})")
+        }
+        ("VARCHAR", []) => format!("VARCHAR({MAX_VARCHAR_LENGTH})"),
+        ("VARCHAR", [length]) if (1..=MAX_VARCHAR_LENGTH).contains(length) => {
+            format!("VARCHAR({length})")
+        }
+        ("BINARY", []) => format!("BINARY({MAX_BINARY_LENGTH})"),
+        ("BINARY", [length]) if (1..=MAX_BINARY_LENGTH).contains(length) => {
+            format!("BINARY({length})")
+        }
+        ("TIME", []) => "TIME(9)".to_owned(),
+        ("TIME", [precision]) if *precision <= 9 => format!("TIME({precision})"),
+        ("TIMESTAMP_NTZ", []) => "TIMESTAMP_NTZ(9)".to_owned(),
+        ("TIMESTAMP_NTZ", [precision]) if *precision <= 9 => {
+            format!("TIMESTAMP_NTZ({precision})")
+        }
+        ("TIMESTAMP_LTZ", []) => "TIMESTAMP_LTZ(9)".to_owned(),
+        ("TIMESTAMP_LTZ", [precision]) if *precision <= 9 => {
+            format!("TIMESTAMP_LTZ({precision})")
+        }
+        ("TIMESTAMP_TZ", []) => "TIMESTAMP_TZ(9)".to_owned(),
+        ("TIMESTAMP_TZ", [precision]) if *precision <= 9 => {
+            format!("TIMESTAMP_TZ({precision})")
+        }
+        ("BOOLEAN" | "FLOAT" | "DATE" | "VARIANT" | "OBJECT" | "ARRAY", []) => name.to_owned(),
+        _ => return Err(unsupported()),
+    };
+    Parser::new(&SnowflakeDialect {})
+        .with_recursion_limit(16)
+        .try_with_sql(&canonical)
+        .and_then(|mut parser| parser.parse_data_type())
+        .map_err(|_| unsupported())
+}
+
+fn snowflake_column(draft: &SnowflakeDdlColumnDraft, adding: bool) -> AppResult<ColumnDef> {
+    if adding && !draft.nullable {
+        return Err(unsupported());
+    }
+    Ok(ColumnDef {
+        name: identifier(&draft.name)?,
+        data_type: snowflake_column_type(&draft.data_type)?,
+        options: if draft.nullable {
+            Vec::new()
+        } else {
+            vec![ColumnOptionDef {
+                name: None,
+                option: ColumnOption::NotNull,
+            }]
+        },
+    })
+}
+
+fn validate_view_query(query_sql: &str) -> AppResult<Box<sqlparser::ast::Query>> {
+    struct ViewQueryGuard;
+    impl Visitor for ViewQueryGuard {
+        type Break = ();
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
+            match expr {
+                Expr::Value(ValueWithSpan {
+                    value: Value::Placeholder(_),
+                    ..
+                }) => ControlFlow::Break(()),
+                Expr::Function(func) => {
+                    if let Some(last) = func.name.0.last().and_then(|p| p.as_ident())
+                        && matches!(
+                            last.value.to_ascii_uppercase().as_str(),
+                            "LAST_QUERY_ID" | "RESULT_SCAN" | "SYSTEM$CANCEL_QUERY"
+                        )
+                    {
+                        return ControlFlow::Break(());
+                    }
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Continue(()),
+            }
+        }
+        fn pre_visit_query(&mut self, query: &sqlparser::ast::Query) -> ControlFlow<Self::Break> {
+            if !query.locks.is_empty() || query.settings.is_some() || query.format_clause.is_some()
+            {
+                return ControlFlow::Break(());
+            }
+            if let sqlparser::ast::SetExpr::Select(select) = query.body.as_ref()
+                && select.into.is_some()
+            {
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    if query_sql.len() > MAX_CANONICAL_BYTES {
+        return Err(limit());
+    }
+    if query_sql.contains('\0') || query_sql.chars().any(|c| {
+        matches!(
+            c,
+            '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
+    }) {
+        return Err(unsupported());
+    }
+    let trimmed = query_sql.trim().trim_end_matches(';').trim();
+    if trimmed.is_empty() {
+        return Err(unsupported());
+    }
+    let Statement::Query(query) = parse_one(trimmed)? else {
+        return Err(unsupported());
+    };
+    let mut guard = ViewQueryGuard;
+    if query.visit(&mut guard).is_break() {
+        return Err(unsupported());
+    }
+    Ok(query)
+}
+
+/// Compile a structured `SnowflakeDdlAction` into a canonical, AST-roundtripped
+/// Snowflake DDL statement bound to an independently observed database and
+/// optional catalog-resolved target relation.
+pub fn compile_snowflake_action(
+    action: &SnowflakeDdlAction,
+    target_table: Option<&TableRef>,
+    database: &str,
+) -> AppResult<SnowflakeCanonical> {
+    let require_target = || target_table.ok_or_else(unsupported);
+    let (kind, qualified_target, statement) = match action {
+        SnowflakeDdlAction::CreateTable {
+            schema,
+            name,
+            columns,
+            ..
+        } => {
+            if columns.is_empty() {
+                return Err(unsupported());
+            }
+            if columns.len() > MAX_COLUMNS {
+                return Err(limit());
+            }
+            let (obj_name, target) = target(database, schema, name)?;
+            let mut seen = HashSet::new();
+            let columns = columns
+                .iter()
+                .map(|draft| {
+                    let column = snowflake_column(draft, false)?;
+                    if !seen.insert(column.name.value.clone()) {
+                        return Err(unsupported());
+                    }
+                    Ok(column)
+                })
+                .collect::<AppResult<Vec<_>>>()?;
+            let Statement::CreateTable(mut create) =
+                parse_one("CREATE TABLE \"D\".\"S\".\"T\" (\"C\" BOOLEAN)")?
+            else {
+                return Err(unsupported());
+            };
+            create.name = obj_name;
+            create.columns = columns;
+            (
+                SnowflakeDdlKind::CreateTable,
+                target,
+                Statement::CreateTable(create),
+            )
+        }
+        SnowflakeDdlAction::AddColumn { column: draft, .. } => {
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let statement = Statement::AlterTable(AlterTable {
+                name: obj_name,
+                if_exists: false,
+                only: false,
+                operations: vec![AlterTableOperation::AddColumn {
+                    column_keyword: true,
+                    if_not_exists: false,
+                    column_def: snowflake_column(draft, true)?,
+                    column_position: None,
+                }],
+                location: None,
+                on_cluster: None,
+                table_type: None,
+                end_token: AttachedToken::empty(),
+            });
+            (SnowflakeDdlKind::AddColumn, target, statement)
+        }
+        SnowflakeDdlAction::AlterColumnNullability {
+            column_name,
+            nullable,
+            ..
+        } => {
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let col_ident = identifier(column_name)?;
+            let op = if *nullable {
+                AlterColumnOperation::DropNotNull
+            } else {
+                AlterColumnOperation::SetNotNull
+            };
+            let statement = Statement::AlterTable(AlterTable {
+                name: obj_name,
+                if_exists: false,
+                only: false,
+                operations: vec![AlterTableOperation::AlterColumn {
+                    column_name: col_ident,
+                    op,
+                }],
+                location: None,
+                on_cluster: None,
+                table_type: None,
+                end_token: AttachedToken::empty(),
+            });
+            (SnowflakeDdlKind::AlterColumnNullability, target, statement)
+        }
+        SnowflakeDdlAction::RenameColumn {
+            column_name,
+            new_name,
+            ..
+        } => {
+            if column_name == new_name {
+                return Err(unsupported());
+            }
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let old_ident = identifier(column_name)?;
+            let new_ident = identifier(new_name)?;
+            let statement = Statement::AlterTable(AlterTable {
+                name: obj_name,
+                if_exists: false,
+                only: false,
+                operations: vec![AlterTableOperation::RenameColumn {
+                    old_column_name: old_ident,
+                    new_column_name: new_ident,
+                }],
+                location: None,
+                on_cluster: None,
+                table_type: None,
+                end_token: AttachedToken::empty(),
+            });
+            (SnowflakeDdlKind::RenameColumn, target, statement)
+        }
+        SnowflakeDdlAction::DropColumn { column_name, .. } => {
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let col_ident = identifier(column_name)?;
+            let Statement::AlterTable(mut alter) =
+                parse_one("ALTER TABLE \"D\".\"S\".\"T\" DROP COLUMN \"C\"")?
+            else {
+                return Err(unsupported());
+            };
+            alter.name = obj_name;
+            let Some(AlterTableOperation::DropColumn { column_names, .. }) =
+                alter.operations.first_mut()
+            else {
+                return Err(unsupported());
+            };
+            *column_names = vec![col_ident];
+            (
+                SnowflakeDdlKind::DropColumn,
+                target,
+                Statement::AlterTable(alter),
+            )
+        }
+        SnowflakeDdlAction::DropTable { .. } => {
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let statement = Statement::Drop {
+                object_type: ObjectType::Table,
+                if_exists: false,
+                names: vec![obj_name],
+                cascade: false,
+                restrict: true,
+                purge: false,
+                temporary: false,
+                table: None,
+            };
+            (SnowflakeDdlKind::DropTable, target, statement)
+        }
+        SnowflakeDdlAction::CreateView {
+            schema,
+            name,
+            query_sql,
+            ..
+        } => {
+            let (obj_name, target) = target(database, schema, name)?;
+            let query = validate_view_query(query_sql)?;
+            let Statement::CreateView(mut view) =
+                parse_one("CREATE VIEW \"D\".\"S\".\"V\" AS SELECT 1")?
+            else {
+                return Err(unsupported());
+            };
+            view.name = obj_name;
+            view.query = query;
+            (
+                SnowflakeDdlKind::CreateView,
+                target,
+                Statement::CreateView(view),
+            )
+        }
+        SnowflakeDdlAction::DropView { .. } => {
+            let table = require_target()?;
+            let (obj_name, target) = target(database, &table.schema, &table.name)?;
+            let statement = Statement::Drop {
+                object_type: ObjectType::View,
+                if_exists: false,
+                names: vec![obj_name],
+                cascade: false,
+                restrict: false,
+                purge: false,
+                temporary: false,
+                table: None,
+            };
+            (SnowflakeDdlKind::DropView, target, statement)
+        }
+    };
+    let sql = statement.to_string();
+    if sql.len() > MAX_CANONICAL_BYTES {
+        return Err(limit());
+    }
+    let roundtrip = parse_one(&sql)?;
+    if roundtrip != statement || roundtrip.to_string() != sql {
+        return Err(unsupported());
+    }
+    Ok(SnowflakeCanonical {
         kind,
         qualified_target,
         sql,
@@ -709,5 +1096,205 @@ mod tests {
             .collect();
         let error = compile(&create(columns), "DB").unwrap_err();
         assert_eq!(error.code, ErrorCode::ResultLimitReached);
+    }
+
+    #[test]
+    fn snowflake_action_compiles_expanded_types_column_migrations_and_views() {
+        let target_ref = TableRef {
+            schema: "S.雪".into(),
+            name: "Orders\"1".into(),
+        };
+        let create_action = SnowflakeDdlAction::CreateTable {
+            database: "DB".into(),
+            schema: "S.雪".into(),
+            name: "WideTypes".into(),
+            columns: vec![
+                SnowflakeDdlColumnDraft {
+                    name: "FRAC".into(),
+                    data_type: "NUMBER(38, 38)".into(),
+                    nullable: false,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "LTZ".into(),
+                    data_type: "TIMESTAMP_LTZ(9)".into(),
+                    nullable: true,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "TZ".into(),
+                    data_type: "TIMESTAMP_TZ(6)".into(),
+                    nullable: true,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "DOC".into(),
+                    data_type: "VARIANT".into(),
+                    nullable: true,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "META".into(),
+                    data_type: "OBJECT".into(),
+                    nullable: true,
+                },
+                SnowflakeDdlColumnDraft {
+                    name: "ITEMS".into(),
+                    data_type: "ARRAY".into(),
+                    nullable: true,
+                },
+            ],
+        };
+        let created = compile_snowflake_action(&create_action, None, "DB").unwrap();
+        assert_eq!(created.kind, SnowflakeDdlKind::CreateTable);
+        assert_eq!(
+            created.sql,
+            "CREATE TABLE \"DB\".\"S.雪\".\"WideTypes\" (\"FRAC\" NUMBER(38, 38) NOT NULL, \"LTZ\" TIMESTAMP_LTZ(9), \"TZ\" TIMESTAMP_TZ(6), \"DOC\" VARIANT, \"META\" OBJECT, \"ITEMS\" ARRAY)"
+        );
+
+        let set_not_null = compile_snowflake_action(
+            &SnowflakeDdlAction::AlterColumnNullability {
+                browse_revision: "b".into(),
+                target_id: "t".into(),
+                inspection_revision: "i".into(),
+                column_name: "Col.A".into(),
+                nullable: false,
+            },
+            Some(&target_ref),
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(set_not_null.kind, SnowflakeDdlKind::AlterColumnNullability);
+        assert_eq!(
+            set_not_null.sql,
+            "ALTER TABLE \"DB\".\"S.雪\".\"Orders\"\"1\" ALTER COLUMN \"Col.A\" SET NOT NULL"
+        );
+
+        let drop_not_null = compile_snowflake_action(
+            &SnowflakeDdlAction::AlterColumnNullability {
+                browse_revision: "b".into(),
+                target_id: "t".into(),
+                inspection_revision: "i".into(),
+                column_name: "Col.A".into(),
+                nullable: true,
+            },
+            Some(&target_ref),
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(
+            drop_not_null.sql,
+            "ALTER TABLE \"DB\".\"S.雪\".\"Orders\"\"1\" ALTER COLUMN \"Col.A\" DROP NOT NULL"
+        );
+
+        let renamed = compile_snowflake_action(
+            &SnowflakeDdlAction::RenameColumn {
+                browse_revision: "b".into(),
+                target_id: "t".into(),
+                inspection_revision: "i".into(),
+                column_name: "Old Name".into(),
+                new_name: "New Name".into(),
+            },
+            Some(&target_ref),
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(renamed.kind, SnowflakeDdlKind::RenameColumn);
+        assert_eq!(
+            renamed.sql,
+            "ALTER TABLE \"DB\".\"S.雪\".\"Orders\"\"1\" RENAME COLUMN \"Old Name\" TO \"New Name\""
+        );
+        assert!(
+            compile_snowflake_action(
+                &SnowflakeDdlAction::RenameColumn {
+                    browse_revision: "b".into(),
+                    target_id: "t".into(),
+                    inspection_revision: "i".into(),
+                    column_name: "SAME".into(),
+                    new_name: "SAME".into(),
+                },
+                Some(&target_ref),
+                "DB",
+            )
+            .is_err()
+        );
+
+        let dropped_col = compile_snowflake_action(
+            &SnowflakeDdlAction::DropColumn {
+                browse_revision: "b".into(),
+                target_id: "t".into(),
+                inspection_revision: "i".into(),
+                column_name: "Legacy".into(),
+            },
+            Some(&target_ref),
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(dropped_col.kind, SnowflakeDdlKind::DropColumn);
+        assert_eq!(
+            dropped_col.sql,
+            "ALTER TABLE \"DB\".\"S.雪\".\"Orders\"\"1\" DROP COLUMN \"Legacy\""
+        );
+
+        let created_view = compile_snowflake_action(
+            &SnowflakeDdlAction::CreateView {
+                database: "DB".into(),
+                schema: "S.雪".into(),
+                name: "ActiveOrders".into(),
+                query_sql:
+                    "SELECT \"ID\", \"NOTES\" FROM \"DB\".\"PUBLIC\".\"ORDERS\" WHERE \"ID\" > 0;"
+                        .into(),
+            },
+            None,
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(created_view.kind, SnowflakeDdlKind::CreateView);
+        assert_eq!(
+            created_view.sql,
+            "CREATE VIEW \"DB\".\"S.雪\".\"ActiveOrders\" AS SELECT \"ID\", \"NOTES\" FROM \"DB\".\"PUBLIC\".\"ORDERS\" WHERE \"ID\" > 0"
+        );
+
+        for rejected_query in [
+            "",
+            "DROP TABLE \"DB\".\"PUBLIC\".\"ORDERS\"",
+            "SELECT 1; SELECT 2",
+            "SELECT ? AS X",
+            "SELECT :param AS X",
+            "SELECT LAST_QUERY_ID()",
+            "SELECT * FROM TABLE(RESULT_SCAN('01'))",
+            "SELECT SYSTEM$CANCEL_QUERY('01')",
+            "SELECT 1 INTO \"OUT_T\"",
+            "SELECT '\u{202e}' AS BIDI",
+        ] {
+            assert!(
+                compile_snowflake_action(
+                    &SnowflakeDdlAction::CreateView {
+                        database: "DB".into(),
+                        schema: "PUBLIC".into(),
+                        name: "BAD_VIEW".into(),
+                        query_sql: rejected_query.into(),
+                    },
+                    None,
+                    "DB",
+                )
+                .is_err(),
+                "expected CreateView query guard to reject {rejected_query:?}"
+            );
+        }
+
+        let dropped_view = compile_snowflake_action(
+            &SnowflakeDdlAction::DropView {
+                browse_revision: "b".into(),
+                target_id: "t".into(),
+            },
+            Some(&TableRef {
+                schema: "PUBLIC".into(),
+                name: "ActiveOrders".into(),
+            }),
+            "DB",
+        )
+        .unwrap();
+        assert_eq!(dropped_view.kind, SnowflakeDdlKind::DropView);
+        assert_eq!(
+            dropped_view.sql,
+            "DROP VIEW \"DB\".\"PUBLIC\".\"ActiveOrders\""
+        );
     }
 }

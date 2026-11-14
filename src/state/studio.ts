@@ -330,7 +330,7 @@ interface StudioState {
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
-  refreshCatalog(id: string): Promise<void>;
+  refreshCatalog(id: string, explicit?: boolean): Promise<void>;
   openQuery(connectionId?: string | null, sql?: string): string;
   openSqlFile(connectionId?: string | null): Promise<string | null>;
   saveSqlFile(tabId: string, options?: { saveAs?: boolean }): Promise<boolean>;
@@ -2783,10 +2783,37 @@ export const useStudio = create<StudioState>((set, get) => ({
   selectConnection(id) {
     set({ selectedConnectionId: id });
   },
-  async refreshCatalog(id) {
+  async refreshCatalog(id, explicit = false) {
     const session = get().sessions[id];
     if (!session) return;
-    if (isSnowflakeConsoleSession(get(), session.id) || !session.capabilities.tableBrowsing) {
+    if (isSnowflakeConsoleSession(get(), session.id)) {
+      const { catalog, objects } = get();
+      if (catalog[id] !== undefined || objects[id] !== undefined) {
+        const nextCatalog = { ...catalog };
+        const nextObjects = { ...objects };
+        delete nextCatalog[id];
+        delete nextObjects[id];
+        set({ catalog: nextCatalog, objects: nextObjects });
+      }
+      return;
+    }
+    if (!session.capabilities.tableBrowsing) {
+      if (explicit && session.capabilities.objectExplorer) {
+        assertOrdinarySession(session.id);
+        const objects = await client
+          .call<DatabaseObjectSummary[]>("database_objects", { sessionId: session.id })
+          .catch((error) => {
+            if ((error as Partial<AppError> | null)?.code === "unsupported") return [];
+            throw error;
+          });
+        assertOrdinarySession(session.id);
+        if (get().sessions[id]?.id === session.id)
+          set((state) => ({
+            catalog: { ...state.catalog, [id]: [] },
+            objects: { ...state.objects, [id]: objects },
+          }));
+        return;
+      }
       const { catalog, objects } = get();
       if (catalog[id] !== undefined || objects[id] !== undefined) {
         const nextCatalog = { ...catalog };
@@ -3298,7 +3325,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   async openObject(connectionId, object, preferredView, highlightedColumn) {
     const currentSession = get().sessions[connectionId];
     if (currentSession) assertOrdinarySession(currentSession.id);
-    if (isTabularObjectKind(object.kind)) {
+    if (isTabularObjectKind(object.kind) && (currentSession?.capabilities.tableBrowsing ?? true)) {
       await get().openTable(
         connectionId,
         { schema: object.schema, name: object.name },
@@ -3319,9 +3346,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (existing) {
       set((state) => ({
         activeTabId: existing.id,
-        tabs: preferredView
-          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
-          : state.tabs,
+        tabs:
+          preferredView || highlightedColumn !== undefined
+            ? state.tabs.map((t) =>
+                t.id === existing.id
+                  ? {
+                      ...t,
+                      ...(preferredView ? { view: preferredView } : {}),
+                      ...(highlightedColumn !== undefined ? { highlightedColumn } : {}),
+                    }
+                  : t,
+              )
+            : state.tabs,
       }));
       get().recordRecentLocation({
         key: `object:${connectionId}:${databaseObjectKey(object)}`,
@@ -3334,6 +3370,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const next = tab("object", objectTabTitle(object), connectionId);
     next.object = object;
     next.view = preferredView ?? "structure";
+    if (highlightedColumn !== undefined) next.highlightedColumn = highlightedColumn;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     get().recordRecentLocation({
       key: `object:${connectionId}:${databaseObjectKey(object)}`,
