@@ -137,9 +137,28 @@ fn every_kind_uses_fixed_limits_and_overflow_sentinels() {
         json!({"database":"DB","schema":"INFORMATION_SCHEMA","name":"T","tableType":"BASE TABLE","columns":["ID"]}),
         json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":[]}),
         json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID","ID"]}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID"],"offset":1_000_001}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID"],"sort":{"column":"OTHER","direction":"asc"}}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID"],"filters":[{"column":"ID","operator":"isNull","value":"x"}]}),
+        json!({"database":"DB","schema":"PUBLIC","name":"T","tableType":"BASE TABLE","columns":["ID"],"filters":[{"column":"ID","operator":"contains","value":""}]}),
     ] {
         let mut request = payload("preview");
         request["target"] = bad_preview;
         assert!(ReadState::parse(&request).is_err());
     }
+    let mut sliced = payload("preview");
+    sliced["target"] = json!({
+        "database": "DB",
+        "schema": "PUBLIC",
+        "name": "T",
+        "tableType": "BASE TABLE",
+        "columns": ["ID", "NOTES"],
+        "offset": 500,
+        "sort": { "column": "ID", "direction": "desc", "nulls": "last" },
+        "filters": [
+            { "column": "NOTES", "operator": "contains", "value": "urgent" },
+            { "column": "ID", "operator": "isNotNull" }
+        ]
+    });
+    assert!(ReadState::parse(&sliced).is_ok());
 }

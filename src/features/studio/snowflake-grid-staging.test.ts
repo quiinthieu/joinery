@@ -5,6 +5,7 @@ import {
   defaultInsertCellForColumn,
   isWritableSnowflakeColumn,
   parseCsvRows,
+  stageCsvInsertBatches,
   stageCsvInsertRows,
 } from "./snowflake-grid-staging";
 
@@ -206,5 +207,57 @@ describe("snowflake-grid-staging", () => {
       });
       expect(isWritableSnowflakeColumn(col)).toBe(false);
     }
+  });
+
+  it("chunks >500-row CSV imports into 500-row batches and validates late rows upfront", () => {
+    const columns = [
+      makeColumn({
+        name: "ID",
+        ordinal: 1,
+        dataType: "NUMBER",
+        fullType: "NUMBER(38,0)",
+        resultKind: "integer",
+        nullable: false,
+      }),
+      makeColumn({ name: "LABEL", ordinal: 2, nullable: true }),
+    ];
+    const body = Array.from({ length: 1205 }, (_, i) => `${i + 1},row-${i + 1}`).join("\n");
+    const raw = `id,label\n${body}`;
+    expect(() =>
+      stageCsvInsertRows({
+        raw,
+        delimiter: ",",
+        hasHeader: true,
+        nullToken: "\\N",
+        columns,
+      }),
+    ).toThrow("500-row generated mutation limit");
+
+    const batches = stageCsvInsertBatches({
+      raw,
+      delimiter: ",",
+      hasHeader: true,
+      nullToken: "\\N",
+      columns,
+    });
+    expect(batches).toHaveLength(3);
+    expect(batches[0]).toHaveLength(500);
+    expect(batches[1]).toHaveLength(500);
+    expect(batches[2]).toHaveLength(205);
+    expect(batches[2][204].cells[0]).toEqual({ kind: "text", value: "1205" });
+
+    // A NOT NULL violation on row 900 fails upfront before returning any batch.
+    const badRows = Array.from({ length: 950 }, (_, i) =>
+      i === 899 ? `\\N,bad` : `${i + 1},ok`,
+    ).join("\n");
+    expect(() =>
+      stageCsvInsertBatches({
+        raw: `id,label\n${badRows}`,
+        delimiter: ",",
+        hasHeader: true,
+        nullToken: "\\N",
+        columns,
+      }),
+    ).toThrow('CSV row 901: column "ID" is NOT NULL');
   });
 });

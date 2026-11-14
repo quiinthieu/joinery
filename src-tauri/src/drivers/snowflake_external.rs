@@ -503,8 +503,19 @@ impl SnowflakeExternal {
         max_rows: usize,
         max_bytes: usize,
     ) -> AppResult<MetadataResult> {
+        self.metadata_read_bound(sql, vec![], max_rows, max_bytes)
+            .await
+    }
+
+    async fn metadata_read_bound(
+        &self,
+        sql: &str,
+        binds: Vec<Value>,
+        max_rows: usize,
+        max_bytes: usize,
+    ) -> AppResult<MetadataResult> {
         let mut sink = MetadataSink::new(max_rows, max_bytes);
-        self.stream_bounded(sql, vec![], &mut sink, max_rows as u64, max_bytes as u64)
+        self.stream_bounded(sql, binds, &mut sink, max_rows as u64, max_bytes as u64)
             .await?;
         Ok(sink.data)
     }
@@ -2924,6 +2935,8 @@ impl Driver for SnowflakeExternal {
             &request.target_id,
             &request.inspection_revision,
         )?;
+        let slice = browsing::PreviewSlice::from_request(request);
+        let (sql, binds) = browsing::preview_query(&target, &columns, &slice)?;
         let preview_revision = self.begin_edit_preview(request)?;
         self.browse_operation(&request.revision, async {
             // A request may have waited behind a refresh or replacement inspection.
@@ -2935,13 +2948,14 @@ impl Driver for SnowflakeExternal {
             self.browse_context(Some(&context)).await?;
             self.require_browse_relation(&context, &target).await?;
             let rows = self
-                .metadata_read(
-                    &browsing::preview_sql(&target, &columns)?,
+                .metadata_read_bound(
+                    &sql,
+                    binds,
                     browsing::PREVIEW_LIMIT + 1,
                     browsing::PREVIEW_MAX_BYTES,
                 )
                 .await?;
-            let preview = browsing::parse_preview(&columns, &rows)?;
+            let preview = browsing::parse_preview_with_offset(&columns, &rows, slice.offset)?;
             self.require_browse_relation(&context, &target).await?;
             self.browse_context(Some(&context)).await?;
             self.browse_columns(

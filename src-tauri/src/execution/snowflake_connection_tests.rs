@@ -909,6 +909,7 @@ async fn sdk_relation_workflow_uses_console_lane_and_revokes_stale_targets() {
         revision: request.revision.clone(),
         target_id: request.target_id.clone(),
         inspection_revision: inspected.revision,
+        ..Default::default()
     };
     let preview = studio
         .preview_relation(&info.id, &preview_request)

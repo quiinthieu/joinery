@@ -5,7 +5,7 @@
 //! Names and DDL timestamps do not establish immutable object identity. Manual
 //! continuation freshness remains unsupported by the ordinary metadata lane.
 //! Limits below are provisional logical bounds, not RSS or workflow acceptance.
-use super::snowflake_browsing::BrowseRelation;
+use super::snowflake_browsing::{BrowseRelation, PreviewSlice};
 use super::snowflake_edit_codec::InspectedMutationTarget;
 use super::snowflake_metadata::{CONTEXT_MAX_BYTES, LiveContext};
 use super::snowflake_mutations::{
@@ -92,6 +92,7 @@ pub(crate) struct NativeEditBinding {
     relation: BrowseRelation,
     inspection_revision: String,
     columns: Vec<ColumnInspection>,
+    slice: PreviewSlice,
     codec: InspectedMutationTarget,
     charge: usize,
 }
@@ -116,6 +117,34 @@ impl NativeEditBinding {
         relation: &BrowseRelation,
         inspection_revision: &str,
         columns: &[ColumnInspection],
+    ) -> AppResult<Self> {
+        Self::with_slice(
+            session_id,
+            helper,
+            context,
+            browse_revision,
+            target_id,
+            relation,
+            inspection_revision,
+            columns,
+            PreviewSlice::default(),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "All native observation components must be pinned together"
+    )]
+    pub(crate) fn with_slice(
+        session_id: &str,
+        helper: &HelperGeneration,
+        context: &LiveContext,
+        browse_revision: &str,
+        target_id: &str,
+        relation: &BrowseRelation,
+        inspection_revision: &str,
+        columns: &[ColumnInspection],
+        slice: PreviewSlice,
     ) -> AppResult<Self> {
         if session_id.is_empty()
             || session_id.len() > 1024
@@ -145,6 +174,11 @@ impl NativeEditBinding {
             encoded_charge(&columns, MAX_BINDING_BYTES)?,
             MAX_BINDING_BYTES,
         )?;
+        add(
+            &mut charge,
+            encoded_charge(&slice, MAX_BINDING_BYTES)?,
+            MAX_BINDING_BYTES,
+        )?;
         // Owned struct/Vec fields, duplicated compiler identifiers/types and keys.
         add(
             &mut charge,
@@ -161,6 +195,7 @@ impl NativeEditBinding {
             relation: relation.clone(),
             inspection_revision: inspection_revision.into(),
             columns: columns.to_vec(),
+            slice,
             codec,
             charge,
         })
@@ -189,6 +224,9 @@ impl NativeEditBinding {
     pub(crate) fn columns(&self) -> &[ColumnInspection] {
         &self.columns
     }
+    pub(crate) fn slice(&self) -> &PreviewSlice {
+        &self.slice
+    }
     fn matches(&self, other: &Self) -> bool {
         self.session_id == other.session_id
             && self.helper.same_helper(&other.helper)
@@ -198,6 +236,7 @@ impl NativeEditBinding {
             && self.relation == other.relation
             && self.inspection_revision == other.inspection_revision
             && self.columns == other.columns
+            && self.slice == other.slice
     }
 }
 

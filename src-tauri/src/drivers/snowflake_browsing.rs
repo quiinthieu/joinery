@@ -854,26 +854,172 @@ fn check_dimensions(data_type: &str, full_type: &str, row: &[Option<String>]) ->
     Ok(())
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreviewSlice {
+    pub offset: u32,
+    pub sort: Option<crate::relation_inspection::RelationSort>,
+    pub filters: Vec<crate::relation_inspection::RelationFilter>,
+}
+
+impl PreviewSlice {
+    pub(crate) fn from_request(
+        request: &crate::relation_inspection::PreviewRelationRequest,
+    ) -> Self {
+        Self {
+            offset: request.offset,
+            sort: request.sort.clone(),
+            filters: request.filters.clone(),
+        }
+    }
+
+    pub(crate) fn is_default(&self) -> bool {
+        self.offset == 0 && self.sort.is_none() && self.filters.is_empty()
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn preview_sql(
     target: &BrowseRelation,
     columns: &[ColumnInspection],
 ) -> AppResult<String> {
+    preview_query(target, columns, &PreviewSlice::default()).map(|(sql, _)| sql)
+}
+
+pub(crate) fn preview_query(
+    target: &BrowseRelation,
+    columns: &[ColumnInspection],
+    slice: &PreviewSlice,
+) -> AppResult<(String, Vec<serde_json::Value>)> {
+    use crate::relation_inspection::{
+        MAX_PREVIEW_FILTER_VALUE_BYTES, MAX_PREVIEW_FILTERS, MAX_PREVIEW_OFFSET,
+        RelationFilterOperator, RelationSortDirection, RelationSortNulls,
+    };
     let name = qualified(target)?;
     verify_inspected_columns(columns)?;
+    if slice.offset > MAX_PREVIEW_OFFSET {
+        return Err(AppError::invalid(
+            "Snowflake preview offset cannot exceed 1,000,000 rows",
+        ));
+    }
+    if slice.filters.len() > MAX_PREVIEW_FILTERS {
+        return Err(AppError::invalid(
+            "Snowflake preview supports up to 16 column filters",
+        ));
+    }
+    let known: HashSet<&str> = columns.iter().map(|c| c.name.as_str()).collect();
     let projection = columns
         .iter()
         .map(|column| metadata::quote_identifier(&column.name))
         .collect::<AppResult<Vec<_>>>()?
         .join(", ");
-    Ok(format!(
-        "SELECT {projection} FROM {name} LIMIT {}",
-        PREVIEW_LIMIT + 1
+
+    let mut binds = Vec::new();
+    let mut where_clauses = Vec::with_capacity(slice.filters.len());
+    for filter in &slice.filters {
+        if !known.contains(filter.column.as_str()) {
+            return Err(AppError::invalid(
+                "Snowflake preview filter column is not part of the inspected relation",
+            ));
+        }
+        let col = metadata::quote_identifier(&filter.column)?;
+        match filter.operator {
+            RelationFilterOperator::IsNull => {
+                if filter.value.is_some() {
+                    return Err(AppError::invalid(
+                        "IS NULL filter must not include a scalar value",
+                    ));
+                }
+                where_clauses.push(format!("{col} IS NULL"));
+            }
+            RelationFilterOperator::IsNotNull => {
+                if filter.value.is_some() {
+                    return Err(AppError::invalid(
+                        "IS NOT NULL filter must not include a scalar value",
+                    ));
+                }
+                where_clauses.push(format!("{col} IS NOT NULL"));
+            }
+            RelationFilterOperator::Equals
+            | RelationFilterOperator::NotEquals
+            | RelationFilterOperator::Contains => {
+                let val = filter.value.as_deref().ok_or_else(|| {
+                    AppError::invalid("Comparison filter requires a scalar text value")
+                })?;
+                if val.len() > MAX_PREVIEW_FILTER_VALUE_BYTES || val.contains('\0') {
+                    return Err(AppError::invalid(
+                        "Snowflake preview filter value is invalid or exceeds 4,096 bytes",
+                    ));
+                }
+                if filter.operator == RelationFilterOperator::Contains && val.is_empty() {
+                    return Err(AppError::invalid("Contains filter value must not be empty"));
+                }
+                let expr = match filter.operator {
+                    RelationFilterOperator::Equals => format!("TO_VARCHAR({col}) = ?"),
+                    RelationFilterOperator::NotEquals => format!("TO_VARCHAR({col}) != ?"),
+                    RelationFilterOperator::Contains => {
+                        format!("CONTAINS(LOWER(TO_VARCHAR({col})), LOWER(?))")
+                    }
+                    _ => unreachable!(),
+                };
+                where_clauses.push(expr);
+                binds.push(serde_json::Value::String(val.to_owned()));
+            }
+        }
+    }
+
+    let order_clause = if let Some(sort) = &slice.sort {
+        if !known.contains(sort.column.as_str()) {
+            return Err(AppError::invalid(
+                "Snowflake preview sort column is not part of the inspected relation",
+            ));
+        }
+        let col = metadata::quote_identifier(&sort.column)?;
+        let dir = match sort.direction {
+            RelationSortDirection::Asc => "ASC",
+            RelationSortDirection::Desc => "DESC",
+        };
+        let nulls = match sort.nulls {
+            None => "",
+            Some(RelationSortNulls::First) => " NULLS FIRST",
+            Some(RelationSortNulls::Last) => " NULLS LAST",
+        };
+        format!(" ORDER BY {col} {dir}{nulls}")
+    } else {
+        String::new()
+    };
+
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_clauses.join(" AND "))
+    };
+    let offset_sql = if slice.offset > 0 {
+        format!(" OFFSET {}", slice.offset)
+    } else {
+        String::new()
+    };
+    Ok((
+        format!(
+            "SELECT {projection} FROM {name}{where_sql}{order_clause} LIMIT {}{offset_sql}",
+            PREVIEW_LIMIT + 1
+        ),
+        binds,
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn parse_preview(
     columns: &[ColumnInspection],
     result: &MetadataResult,
+) -> AppResult<RelationPreview> {
+    parse_preview_with_offset(columns, result, 0)
+}
+
+pub(crate) fn parse_preview_with_offset(
+    columns: &[ColumnInspection],
+    result: &MetadataResult,
+    offset: u32,
 ) -> AppResult<RelationPreview> {
     verify_inspected_columns(columns)?;
     // The collector must retain the sentinel. Byte truncation or discarded
@@ -914,6 +1060,7 @@ pub(crate) fn parse_preview(
             .collect(),
         rows: result.rows.iter().take(PREVIEW_LIMIT).cloned().collect(),
         truncated: result.rows.len() > PREVIEW_LIMIT,
+        offset: (offset > 0).then_some(offset),
         edit_snapshot_id: None,
     };
     bounded(&preview, PREVIEW_MAX_BYTES)?;
@@ -1879,5 +2026,139 @@ mod tests {
         let mut duplicate = columns.clone();
         duplicate[1].name = duplicate[0].name.clone();
         assert!(preview_sql(&target(), &duplicate).is_err());
+    }
+
+    #[test]
+    fn preview_query_builds_parameterized_filters_sort_and_offset_and_rejects_bad_slices() {
+        use crate::relation_inspection::{
+            MAX_PREVIEW_FILTERS, MAX_PREVIEW_OFFSET, RelationFilter, RelationFilterOperator,
+            RelationSort, RelationSortDirection, RelationSortNulls,
+        };
+        let columns = inspection();
+        let slice = PreviewSlice {
+            offset: 500,
+            sort: Some(RelationSort {
+                column: "quoted\"name".into(),
+                direction: RelationSortDirection::Desc,
+                nulls: Some(RelationSortNulls::Last),
+            }),
+            filters: vec![
+                RelationFilter {
+                    column: "ID".into(),
+                    operator: RelationFilterOperator::Equals,
+                    value: Some("42".into()),
+                },
+                RelationFilter {
+                    column: "quoted\"name".into(),
+                    operator: RelationFilterOperator::Contains,
+                    value: Some("O'Reilly % _".into()),
+                },
+                RelationFilter {
+                    column: "quoted\"name".into(),
+                    operator: RelationFilterOperator::IsNotNull,
+                    value: None,
+                },
+            ],
+        };
+        let (sql, binds) = preview_query(&target(), &columns, &slice).unwrap();
+        assert_eq!(
+            sql,
+            "SELECT \"ID\", \"quoted\"\"name\" FROM \"DB\".\"PUBLIC\".\"ITEM\" WHERE TO_VARCHAR(\"ID\") = ? AND CONTAINS(LOWER(TO_VARCHAR(\"quoted\"\"name\")), LOWER(?)) AND \"quoted\"\"name\" IS NOT NULL ORDER BY \"quoted\"\"name\" DESC NULLS LAST LIMIT 501 OFFSET 500"
+        );
+        assert_eq!(
+            binds,
+            vec![
+                serde_json::Value::String("42".into()),
+                serde_json::Value::String("O'Reilly % _".into()),
+            ]
+        );
+
+        let mut result = resolved_result(&["ID", "quoted\"name"]);
+        result.rows = vec![vec![Some("42".into()), Some("O'Reilly % _".into())]];
+        result.rows_seen = 1;
+        let parsed = parse_preview_with_offset(&columns, &result, 500).unwrap();
+        assert_eq!(parsed.offset, Some(500));
+        assert_eq!(
+            parse_preview_with_offset(&columns, &result, 0)
+                .unwrap()
+                .offset,
+            None
+        );
+
+        // Reject unknown sort/filter columns, out-of-bounds offset/filter count, and bad values.
+        assert!(
+            preview_query(
+                &target(),
+                &columns,
+                &PreviewSlice {
+                    offset: MAX_PREVIEW_OFFSET + 1,
+                    ..PreviewSlice::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            preview_query(
+                &target(),
+                &columns,
+                &PreviewSlice {
+                    sort: Some(RelationSort {
+                        column: "MISSING".into(),
+                        direction: RelationSortDirection::Asc,
+                        nulls: None,
+                    }),
+                    ..PreviewSlice::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            preview_query(
+                &target(),
+                &columns,
+                &PreviewSlice {
+                    filters: vec![RelationFilter {
+                        column: "ID".into(),
+                        operator: RelationFilterOperator::IsNull,
+                        value: Some("nope".into()),
+                    }],
+                    ..PreviewSlice::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            preview_query(
+                &target(),
+                &columns,
+                &PreviewSlice {
+                    filters: vec![RelationFilter {
+                        column: "ID".into(),
+                        operator: RelationFilterOperator::Contains,
+                        value: Some(String::new()),
+                    }],
+                    ..PreviewSlice::default()
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            preview_query(
+                &target(),
+                &columns,
+                &PreviewSlice {
+                    filters: vec![
+                        RelationFilter {
+                            column: "ID".into(),
+                            operator: RelationFilterOperator::IsNotNull,
+                            value: None,
+                        };
+                        MAX_PREVIEW_FILTERS + 1
+                    ],
+                    ..PreviewSlice::default()
+                }
+            )
+            .is_err()
+        );
     }
 }

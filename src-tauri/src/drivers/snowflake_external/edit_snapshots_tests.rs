@@ -60,6 +60,7 @@ async fn edit_request(h: &Harness) -> PreviewRelationRequest {
         revision: catalog.revision,
         target_id,
         inspection_revision: inspection.revision,
+        ..Default::default()
     }
 }
 

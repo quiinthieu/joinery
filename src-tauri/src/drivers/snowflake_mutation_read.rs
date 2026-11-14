@@ -1,5 +1,9 @@
 //! Closed owner-scoped metadata transport, without SQL or transaction authority.
 //! A successful single read does not establish a fresh complete inspection.
+use crate::relation_inspection::{
+    MAX_PREVIEW_FILTER_VALUE_BYTES, MAX_PREVIEW_FILTERS, MAX_PREVIEW_OFFSET, RelationFilter,
+    RelationFilterOperator, RelationSort,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -36,6 +40,12 @@ struct Target {
     name: String,
     table_type: String,
     columns: Option<Vec<String>>,
+    #[serde(default)]
+    offset: u32,
+    #[serde(default)]
+    sort: Option<RelationSort>,
+    #[serde(default)]
+    filters: Vec<RelationFilter>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -113,12 +123,56 @@ impl ReadState {
                 let t = r.target.ok_or("missing owner metadata target")?;
                 let cols = t.columns.as_ref().ok_or("missing owner preview columns")?;
                 let unique: HashSet<&str> = cols.iter().map(String::as_str).collect();
-                if !exact(
-                    &payload["target"],
-                    &["database", "schema", "name", "tableType", "columns"],
-                ) || [&t.database, &t.schema, &t.name]
-                    .into_iter()
-                    .any(|s| !identifier(s))
+                let target_obj = payload["target"]
+                    .as_object()
+                    .ok_or("invalid owner preview target")?;
+                let required_present = ["database", "schema", "name", "tableType", "columns"]
+                    .iter()
+                    .all(|k| target_obj.contains_key(*k));
+                let allowed_keys = target_obj.keys().all(|k| {
+                    matches!(
+                        k.as_str(),
+                        "database"
+                            | "schema"
+                            | "name"
+                            | "tableType"
+                            | "columns"
+                            | "offset"
+                            | "sort"
+                            | "filters"
+                    )
+                });
+                let valid_sort = t
+                    .sort
+                    .as_ref()
+                    .is_none_or(|sort| unique.contains(sort.column.as_str()));
+                let valid_filters = t.filters.len() <= MAX_PREVIEW_FILTERS
+                    && t.filters.iter().all(|f| {
+                        unique.contains(f.column.as_str())
+                            && match f.operator {
+                                RelationFilterOperator::IsNull
+                                | RelationFilterOperator::IsNotNull => f.value.is_none(),
+                                RelationFilterOperator::Equals
+                                | RelationFilterOperator::NotEquals => {
+                                    f.value.as_deref().is_some_and(|v| {
+                                        v.len() <= MAX_PREVIEW_FILTER_VALUE_BYTES
+                                            && !v.contains('\0')
+                                    })
+                                }
+                                RelationFilterOperator::Contains => f
+                                    .value
+                                    .as_deref()
+                                    .is_some_and(|v| text(v, MAX_PREVIEW_FILTER_VALUE_BYTES)),
+                            }
+                    });
+                if !required_present
+                    || !allowed_keys
+                    || t.offset > MAX_PREVIEW_OFFSET
+                    || !valid_sort
+                    || !valid_filters
+                    || [&t.database, &t.schema, &t.name]
+                        .into_iter()
+                        .any(|s| !identifier(s))
                     || r.expected.database.as_deref() != Some(t.database.as_str())
                     || t.schema == "INFORMATION_SCHEMA"
                     || !matches!(t.table_type.as_str(), "BASE TABLE" | "TEMPORARY TABLE")

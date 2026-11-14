@@ -216,12 +216,73 @@ pub struct RelationConstraintTableReference {
     pub table: TableRef,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub const MAX_PREVIEW_OFFSET: u32 = 1_000_000;
+pub const MAX_PREVIEW_FILTERS: usize = 16;
+pub const MAX_PREVIEW_FILTER_VALUE_BYTES: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationSortDirection {
+    Asc,
+    Desc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationSortNulls {
+    First,
+    Last,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelationSort {
+    pub column: String,
+    pub direction: RelationSortDirection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub nulls: Option<RelationSortNulls>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationFilterOperator {
+    Equals,
+    NotEquals,
+    Contains,
+    IsNull,
+    IsNotNull,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RelationFilter {
+    pub column: String,
+    pub operator: RelationFilterOperator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewRelationRequest {
     pub revision: String,
     pub target_id: String,
     pub inspection_revision: String,
+    #[serde(default, skip_serializing_if = "is_zero_offset")]
+    #[ts(optional, as = "Option<u32>")]
+    pub offset: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub sort: Option<RelationSort>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<RelationFilter>>")]
+    pub filters: Vec<RelationFilter>,
+}
+
+fn is_zero_offset(offset: &u32) -> bool {
+    *offset == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -303,6 +364,9 @@ pub struct RelationPreview {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<TextRow>,
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub offset: Option<u32>,
     /// Native retained originals only; this token grants no write authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -353,6 +417,25 @@ mod tests {
             serde_json::from_value::<PreviewRelationRequest>(serde_json::json!({
                 "revision": "r", "targetId": "opaque", "inspectionRevision": "i",
                 "orderBy": "secret()"
+            }))
+            .is_err()
+        );
+        let sliced: PreviewRelationRequest = serde_json::from_value(serde_json::json!({
+            "revision": "r",
+            "targetId": "opaque",
+            "inspectionRevision": "i",
+            "offset": 500,
+            "sort": { "column": "ID", "direction": "desc", "nulls": "last" },
+            "filters": [{ "column": "STATUS", "operator": "equals", "value": "OPEN" }]
+        }))
+        .unwrap();
+        assert_eq!(sliced.offset, 500);
+        assert_eq!(sliced.sort.as_ref().unwrap().column, "ID");
+        assert_eq!(sliced.filters.len(), 1);
+        assert!(
+            serde_json::from_value::<PreviewRelationRequest>(serde_json::json!({
+                "revision": "r", "targetId": "opaque", "inspectionRevision": "i",
+                "sort": { "column": "ID", "direction": "asc", "sql": "1=1" }
             }))
             .is_err()
         );

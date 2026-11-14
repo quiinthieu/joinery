@@ -202,6 +202,9 @@ impl SnowflakeExternal {
                 revision: binding.browse_revision().into(),
                 target_id: binding.target_id().into(),
                 inspection_revision: binding.inspection_revision().into(),
+                offset: binding.slice().offset,
+                sort: binding.slice().sort.clone(),
+                filters: binding.slice().filters.clone(),
             },
         )
     }

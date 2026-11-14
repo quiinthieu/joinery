@@ -2,12 +2,18 @@ import { useEffect, useId, useRef, useState } from "react";
 import type {
   BrowseCatalog,
   ChangePreview,
+  PreviewRelationRequest,
   RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
+  RelationFilter,
+  RelationFilterOperator,
   RelationInspection,
   RelationPreview,
+  RelationSort,
+  RelationSortDirection,
+  RelationSortNulls,
   SnowflakeGridCellInput,
   SnowflakeGridFinishAction,
   SnowflakeGridMode,
@@ -24,13 +30,49 @@ import {
   canColumnDefaultOnInsert,
   createBlankInsertRow,
   isWritableSnowflakeColumn,
-  stageCsvInsertRows,
+  stageCsvInsertBatches,
   type CsvFieldDelimiter,
   type StagedInsertRow,
 } from "./snowflake-grid-staging";
 
 const PAGE_ROWS = 25;
 const PAGE_COLUMNS = 20;
+const SERVER_PAGE_ROWS = 500;
+const MAX_SERVER_OFFSET = 1_000_000;
+const MAX_PREVIEW_FILTERS = 16;
+const INSERT_PAGE_ROWS = 25;
+
+interface AppliedPreviewSlice {
+  offset: number;
+  sort: RelationSort | null;
+  filters: RelationFilter[];
+}
+
+interface DraftFilterRow {
+  id: string;
+  column: string;
+  operator: RelationFilterOperator;
+  value: string;
+}
+
+const DEFAULT_PREVIEW_SLICE: AppliedPreviewSlice = {
+  offset: 0,
+  sort: null,
+  filters: [],
+};
+
+function buildPreviewRequest(
+  revision: string,
+  targetId: string,
+  inspectionRevision: string,
+  slice: AppliedPreviewSlice,
+): PreviewRelationRequest {
+  const req: PreviewRelationRequest = { revision, targetId, inspectionRevision };
+  if (slice.offset > 0) req.offset = slice.offset;
+  if (slice.sort) req.sort = slice.sort;
+  if (slice.filters.length > 0) req.filters = slice.filters;
+  return req;
+}
 
 function quotedName(...parts: string[]) {
   return parts.map((part) => `"${part.replaceAll('"', '""')}"`).join(".");
@@ -173,6 +215,13 @@ export function RelationBrowser({
     Record<number, Record<number, SnowflakeGridCellInput>>
   >({});
   const [insertedRows, setInsertedRows] = useState<StagedInsertRow[]>([]);
+  const [insertPage, setInsertPage] = useState(0);
+  const [csvImportQueue, setCsvImportQueue] = useState<{
+    remainingBatches: StagedInsertRow[][];
+    batchNumber: number;
+    totalBatches: number;
+    totalRows: number;
+  } | null>(null);
   const [consumedSnapshotId, setConsumedSnapshotId] = useState<string | null>(null);
   const [gridError, setGridError] = useState<string | null>(null);
   const [csvPanelOpen, setCsvPanelOpen] = useState(false);
@@ -180,6 +229,11 @@ export function RelationBrowser({
   const [csvDelimiter, setCsvDelimiter] = useState<CsvFieldDelimiter>(",");
   const [csvHasHeader, setCsvHasHeader] = useState(true);
   const [csvNullToken, setCsvNullToken] = useState("\\N");
+  const [draftSortColumn, setDraftSortColumn] = useState("");
+  const [draftSortDirection, setDraftSortDirection] = useState<RelationSortDirection>("asc");
+  const [draftSortNulls, setDraftSortNulls] = useState<"" | RelationSortNulls>("");
+  const [draftFilters, setDraftFilters] = useState<DraftFilterRow[]>([]);
+  const [appliedSlice, setAppliedSlice] = useState<AppliedPreviewSlice>(DEFAULT_PREVIEW_SLICE);
   const [catalog, setCatalog] = useState<BrowseCatalog | null>(null);
   const [inspection, setInspection] = useState<RelationInspection | null>(null);
   const [preview, setPreview] = useState<RelationPreview | null>(null);
@@ -223,10 +277,19 @@ export function RelationBrowser({
     setDeletedRows({});
     setUpdatedCells({});
     setInsertedRows([]);
+    setInsertPage(0);
+    setCsvImportQueue(null);
     setConsumedSnapshotId(null);
     setGridReview(null);
     setGridError(null);
     setCsvPanelOpen(false);
+  };
+  const resetPreviewSlice = () => {
+    setDraftSortColumn("");
+    setDraftSortDirection("asc");
+    setDraftSortNulls("");
+    setDraftFilters([]);
+    setAppliedSlice(DEFAULT_PREVIEW_SLICE);
   };
   useEffect(() => {
     mounted.current = true;
@@ -252,6 +315,7 @@ export function RelationBrowser({
       setBusy(false);
       setError(null);
       clearStagedGridEdits();
+      resetPreviewSlice();
     };
     invalidate();
     // Observe every transition, including a hold set and cleared within one
@@ -306,6 +370,7 @@ export function RelationBrowser({
   };
   const refresh = () => {
     clearStagedGridEdits();
+    resetPreviewSlice();
     setCatalog(null);
     setInspection(null);
     setPreview(null);
@@ -359,6 +424,7 @@ export function RelationBrowser({
     const target = catalog?.relations.find((entry) => entry.targetId === selected);
     if (!catalog || !target || target.availability !== "available") return;
     clearStagedGridEdits();
+    resetPreviewSlice();
     setInspection(null);
     setPreview(null);
     setRowPage(0);
@@ -371,45 +437,86 @@ export function RelationBrowser({
       if (current()) setInspection(result);
     });
   };
-  const loadPreview = () => {
+  const compileDraftSlice = (offset: number): AppliedPreviewSlice => {
+    const filters: RelationFilter[] = draftFilters.map((row, idx) => {
+      if (!row.column) {
+        throw new Error(`Filter ${idx + 1} must select a column.`);
+      }
+      if (row.operator === "isNull" || row.operator === "isNotNull") {
+        return { column: row.column, operator: row.operator };
+      }
+      if (row.operator === "contains" && row.value.length === 0) {
+        throw new Error(`Filter ${idx + 1} contains value must not be empty.`);
+      }
+      return { column: row.column, operator: row.operator, value: row.value };
+    });
+    const sort: RelationSort | null = draftSortColumn
+      ? {
+          column: draftSortColumn,
+          direction: draftSortDirection,
+          ...(draftSortNulls ? { nulls: draftSortNulls } : {}),
+        }
+      : null;
+    return { offset, sort, filters };
+  };
+  const fetchPreviewSlice = (nextSlice: AppliedPreviewSlice) => {
     if (!catalog || !inspection) return;
     clearStagedGridEdits();
-    setPreview(null);
     setRowPage(0);
     setColumnPage(0);
+    if (gridTx) {
+      if (gridTx.recordingError) return;
+      const txId = gridTx.transactionId;
+      void run(
+        async (current) => {
+          const result = await client.call("preview_snowflake_grid_transaction_relation", {
+            transactionId: txId,
+            request: buildPreviewRequest(
+              catalog.revision,
+              inspection.targetId,
+              inspection.revision,
+              nextSlice,
+            ),
+          });
+          if (current()) {
+            setAppliedSlice(nextSlice);
+            setPreview(result);
+          }
+        },
+        setGridError,
+        true,
+      );
+      return;
+    }
+    setPreview(null);
     void run(async (current) => {
       const result = await client.call("preview_relation", {
         sessionId,
-        request: {
-          revision: catalog.revision,
-          targetId: inspection.targetId,
-          inspectionRevision: inspection.revision,
-        },
+        request: buildPreviewRequest(
+          catalog.revision,
+          inspection.targetId,
+          inspection.revision,
+          nextSlice,
+        ),
       });
-      if (current()) setPreview(result);
+      if (current()) {
+        setAppliedSlice(nextSlice);
+        setPreview(result);
+      }
     });
+  };
+  const loadPreview = () => {
+    if (!catalog || !inspection) return;
+    try {
+      const slice = compileDraftSlice(0);
+      fetchPreviewSlice(slice);
+    } catch (err) {
+      setGridError(messageOf(err));
+    }
   };
   const reloadPendingPreview = () => {
     if (!gridTx || gridTx.recordingError || !catalog || !inspection) return;
-    const txId = gridTx.transactionId;
-    clearStagedGridEdits();
-    setRowPage(0);
-    setColumnPage(0);
-    void run(
-      async (current) => {
-        const result = await client.call("preview_snowflake_grid_transaction_relation", {
-          transactionId: txId,
-          request: {
-            revision: catalog.revision,
-            targetId: inspection.targetId,
-            inspectionRevision: inspection.revision,
-          },
-        });
-        if (current()) setPreview(result);
-      },
-      setGridError,
-      true,
-    );
+    fetchPreviewSlice(appliedSlice);
   };
   const finishGridTransaction = (action: SnowflakeGridFinishAction) => {
     if (!gridTx || gridBusy) return;
@@ -598,6 +705,8 @@ export function RelationBrowser({
     setError(null);
     setRowPage(0);
     setColumnPage(0);
+    clearStagedGridEdits();
+    resetPreviewSlice();
     relationSelector.current?.focus();
   };
   const matches =
@@ -677,20 +786,43 @@ export function RelationBrowser({
     if (!inspection) return;
     setGridError(null);
     try {
-      const staged = stageCsvInsertRows({
+      const batches = stageCsvInsertBatches({
         raw: csvRawText,
         delimiter: csvDelimiter,
         hasHeader: csvHasHeader,
         nullToken: csvNullToken,
         columns: inspection.columns,
       });
-      if (totalStagedMutations + staged.length > MAX_SNOWFLAKE_GRID_MUTATIONS) {
+      const totalRows = batches.reduce((acc, batch) => acc + batch.length, 0);
+      if (batches.length === 1 && !csvImportQueue) {
+        const staged = batches[0];
+        if (totalStagedMutations + staged.length > MAX_SNOWFLAKE_GRID_MUTATIONS) {
+          setGridError(
+            `Staging ${staged.length} CSV rows would exceed the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-mutation batch limit. Review or discard existing staged edits first.`,
+          );
+          return;
+        }
+        setInsertedRows((prev) => [...prev, ...staged]);
+        setInsertPage(0);
+        setCsvRawText("");
+        setCsvPanelOpen(false);
+        return;
+      }
+      if (totalStagedMutations > 0 || csvImportQueue) {
         setGridError(
-          `Staging ${staged.length} CSV rows would exceed the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-mutation batch limit.`,
+          `Multi-batch CSV import (${totalRows} rows across ${batches.length} batches) requires an empty staging queue. Review or discard existing staged edits first.`,
         );
         return;
       }
-      setInsertedRows((prev) => [...prev, ...staged]);
+      setGridMode("manual");
+      setInsertedRows(batches[0]);
+      setInsertPage(0);
+      setCsvImportQueue({
+        remainingBatches: batches.slice(1),
+        batchNumber: 1,
+        totalBatches: batches.length,
+        totalRows,
+      });
       setCsvRawText("");
       setCsvPanelOpen(false);
     } catch (err) {
@@ -718,14 +850,15 @@ export function RelationBrowser({
         request: {
           sessionId,
           transactionId: gridTx?.transactionId ?? null,
-          preview: {
-            revision: catalog.revision,
-            targetId: inspection.targetId,
-            inspectionRevision: inspection.revision,
-          },
+          preview: buildPreviewRequest(
+            catalog.revision,
+            inspection.targetId,
+            inspection.revision,
+            appliedSlice,
+          ),
           snapshotId: activeSnapshotId,
           mutations: stagedBuild.mutations,
-          mode: gridTx ? "manual" : gridMode,
+          mode: gridTx || csvImportQueue ? "manual" : gridMode,
           rollbackPrior: Boolean(gridTx),
         },
       });
@@ -772,14 +905,64 @@ export function RelationBrowser({
         }}
         onExecute={async (approval) => {
           dispatchedGridPlanRef.current = gridReview.plan.id;
+          const activeQueue = csvImportQueue;
           const result = await useStudio
             .getState()
             .executeSnowflakeGridPlan(gridReview.plan, approval);
-          if (mounted.current) {
-            clearStagedGridEdits();
-            if (result.outcome === "pending") {
-              setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
+          if (!mounted.current) return;
+          if (
+            result.outcome === "pending" &&
+            result.transactionId &&
+            !result.recordingError &&
+            activeQueue &&
+            activeQueue.remainingBatches.length > 0 &&
+            catalog &&
+            inspection
+          ) {
+            const [nextBatch, ...restBatches] = activeQueue.remainingBatches;
+            setDeletedRows({});
+            setUpdatedCells({});
+            setInsertedRows(nextBatch);
+            setInsertPage(0);
+            setConsumedSnapshotId(null);
+            setGridReview(null);
+            setGridError(null);
+            setCsvImportQueue({
+              remainingBatches: restBatches,
+              batchNumber: activeQueue.batchNumber + 1,
+              totalBatches: activeQueue.totalBatches,
+              totalRows: activeQueue.totalRows,
+            });
+            setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
+            const epoch = generation.current;
+            setBusy(true);
+            try {
+              const nextPreview = await client.call("preview_snowflake_grid_transaction_relation", {
+                transactionId: result.transactionId,
+                request: buildPreviewRequest(
+                  catalog.revision,
+                  inspection.targetId,
+                  inspection.revision,
+                  appliedSlice,
+                ),
+              });
+              if (mounted.current && generation.current === epoch) {
+                setPreview(nextPreview);
+              }
+            } catch (err) {
+              if (mounted.current && generation.current === epoch) {
+                setGridError(messageOf(err));
+              }
+            } finally {
+              if (mounted.current && generation.current === epoch) {
+                setBusy(false);
+              }
             }
+            return;
+          }
+          clearStagedGridEdits();
+          if (result.outcome === "pending") {
+            setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
           }
         }}
       />
@@ -797,7 +980,7 @@ export function RelationBrowser({
   return (
     <Modal
       title="Browse relations"
-      subtitle="Visible relations in this console’s current database. Read-only preview: up to 500 unordered rows, 2 MiB. Concurrent schema changes can invalidate results."
+      subtitle="Visible relations in this console’s current database. Preview up to 500 rows per page (2 MiB) with optional sorting, filtering, and server paging."
       wide
       onClose={onClose}
     >
@@ -893,6 +1076,8 @@ export function RelationBrowser({
               setMappingsError(null);
               setChecks(null);
               setChecksError(null);
+              clearStagedGridEdits();
+              resetPreviewSlice();
               setBusy(false);
             }}
           />
@@ -916,6 +1101,8 @@ export function RelationBrowser({
               setMappingsError(null);
               setChecks(null);
               setChecksError(null);
+              clearStagedGridEdits();
+              resetPreviewSlice();
               setBusy(false);
             }}
           >
@@ -1409,17 +1596,225 @@ export function RelationBrowser({
                 </table>
               </div>
             </details>
+            <section aria-label="Preview query slice">
+              <div className="query-actions">
+                <label>
+                  Sort{" "}
+                  <select
+                    aria-label="Preview sort column"
+                    disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                    value={draftSortColumn}
+                    onChange={(e) => setDraftSortColumn(e.target.value)}
+                  >
+                    <option value="">Unordered sample</option>
+                    {inspection.columns.map((col) => (
+                      <option key={col.name} value={col.name}>
+                        {col.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Direction{" "}
+                  <select
+                    aria-label="Preview sort direction"
+                    disabled={!draftSortColumn || busy || gridBusy || Boolean(csvImportQueue)}
+                    value={draftSortDirection}
+                    onChange={(e) => setDraftSortDirection(e.target.value as RelationSortDirection)}
+                  >
+                    <option value="asc">ASC</option>
+                    <option value="desc">DESC</option>
+                  </select>
+                </label>
+                <label>
+                  Nulls{" "}
+                  <select
+                    aria-label="Preview sort nulls"
+                    disabled={!draftSortColumn || busy || gridBusy || Boolean(csvImportQueue)}
+                    value={draftSortNulls}
+                    onChange={(e) => setDraftSortNulls(e.target.value as "" | RelationSortNulls)}
+                  >
+                    <option value="">Default</option>
+                    <option value="first">Nulls first</option>
+                    <option value="last">Nulls last</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  className="button small"
+                  disabled={
+                    busy ||
+                    gridBusy ||
+                    Boolean(csvImportQueue) ||
+                    draftFilters.length >= MAX_PREVIEW_FILTERS ||
+                    inspection.columns.length === 0
+                  }
+                  onClick={() =>
+                    setDraftFilters((prev) => [
+                      ...prev,
+                      {
+                        id: crypto.randomUUID(),
+                        column: inspection.columns[0]?.name ?? "",
+                        operator: "equals",
+                        value: "",
+                      },
+                    ])
+                  }
+                >
+                  Add filter
+                </button>
+                <button
+                  type="button"
+                  className="button small"
+                  disabled={
+                    busy || gridBusy || Boolean(csvImportQueue) || Boolean(gridTx?.recordingError)
+                  }
+                  onClick={loadPreview}
+                >
+                  Apply sort & filters
+                </button>
+                {(Boolean(draftSortColumn) ||
+                  draftFilters.length > 0 ||
+                  appliedSlice.offset > 0 ||
+                  Boolean(appliedSlice.sort) ||
+                  appliedSlice.filters.length > 0) && (
+                  <button
+                    type="button"
+                    className="button small"
+                    disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                    onClick={() => {
+                      resetPreviewSlice();
+                      if (preview) {
+                        fetchPreviewSlice(DEFAULT_PREVIEW_SLICE);
+                      }
+                    }}
+                  >
+                    Reset slice
+                  </button>
+                )}
+              </div>
+              {draftFilters.length > 0 && (
+                <div className="filter-builder">
+                  {draftFilters.map((filterRow, filterIdx) => {
+                    const needsValue =
+                      filterRow.operator === "equals" ||
+                      filterRow.operator === "notEquals" ||
+                      filterRow.operator === "contains";
+                    return (
+                      <div key={filterRow.id} className="query-actions">
+                        <select
+                          aria-label={`Filter ${filterIdx + 1} column`}
+                          disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                          value={filterRow.column}
+                          onChange={(e) =>
+                            setDraftFilters((prev) =>
+                              prev.map((entry) =>
+                                entry.id === filterRow.id
+                                  ? { ...entry, column: e.target.value }
+                                  : entry,
+                              ),
+                            )
+                          }
+                        >
+                          {inspection.columns.map((col) => (
+                            <option key={col.name} value={col.name}>
+                              {col.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label={`Filter ${filterIdx + 1} operator`}
+                          disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                          value={filterRow.operator}
+                          onChange={(e) =>
+                            setDraftFilters((prev) =>
+                              prev.map((entry) =>
+                                entry.id === filterRow.id
+                                  ? {
+                                      ...entry,
+                                      operator: e.target.value as RelationFilterOperator,
+                                    }
+                                  : entry,
+                              ),
+                            )
+                          }
+                        >
+                          <option value="equals">=</option>
+                          <option value="notEquals">!=</option>
+                          <option value="contains">contains (case-insensitive)</option>
+                          <option value="isNull">IS NULL</option>
+                          <option value="isNotNull">IS NOT NULL</option>
+                        </select>
+                        {needsValue && (
+                          <input
+                            aria-label={`Filter ${filterIdx + 1} value`}
+                            disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                            placeholder="Filter value"
+                            value={filterRow.value}
+                            onChange={(e) =>
+                              setDraftFilters((prev) =>
+                                prev.map((entry) =>
+                                  entry.id === filterRow.id
+                                    ? { ...entry, value: e.target.value }
+                                    : entry,
+                                ),
+                              )
+                            }
+                          />
+                        )}
+                        <button
+                          type="button"
+                          className="button small"
+                          aria-label={`Remove filter ${filterIdx + 1}`}
+                          disabled={busy || gridBusy || Boolean(csvImportQueue)}
+                          onClick={() =>
+                            setDraftFilters((prev) =>
+                              prev.filter((entry) => entry.id !== filterRow.id),
+                            )
+                          }
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           </>
         )}
         {preview && (
           <>
             <p role="status">
               {preview.rows.length} retained rows
+              {appliedSlice.offset > 0
+                ? ` (server offset ${appliedSlice.offset.toLocaleString()})`
+                : ""}
               {preview.truncated ? " · Preview limit reached" : ""}. NULL is shown as ∅; an empty
-              string as “”. This unordered sample has no continuation.
+              string as “”.{" "}
+              {appliedSlice.offset === 0 && !appliedSlice.sort && appliedSlice.filters.length === 0
+                ? "This unordered sample has no continuation."
+                : [
+                    appliedSlice.sort
+                      ? `Sorted by ${appliedSlice.sort.column} ${appliedSlice.sort.direction.toUpperCase()}`
+                      : "Unordered",
+                    appliedSlice.filters.length > 0
+                      ? `${appliedSlice.filters.length} filter${appliedSlice.filters.length === 1 ? "" : "s"} active`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
             </p>
             {gridEditableView && inspection && (
               <section aria-label="Snowflake grid editing controls">
+                {csvImportQueue && (
+                  <p role="status" className="safety-warning" style={{ display: "block" }}>
+                    <strong>Multi-batch CSV import:</strong> Batch {csvImportQueue.batchNumber} of{" "}
+                    {csvImportQueue.totalBatches} staged ({insertedRows.length} rows in this batch ·{" "}
+                    {csvImportQueue.totalRows.toLocaleString()} total CSV rows in manual
+                    transaction). Review and apply each batch, then Commit or Rollback transaction.
+                  </p>
+                )}
                 {!activeSnapshotId ? (
                   <p role="note">
                     {gridTx?.recordingError
@@ -1427,7 +1822,7 @@ export function RelationBrowser({
                       : gridTx
                         ? "Preview edit snapshot was consumed. Click Reload pending preview above to inspect uncommitted rows and stage continuation edits."
                         : !preview.editSnapshotId
-                          ? "Generated grid editing is unavailable for this relation or column type set (currently supported: UTF-8 text, fixed-point NUMBER/DECIMAL, and BOOLEAN on standard/temporary tables up to 128 columns)."
+                          ? "Generated grid editing is unavailable for this relation or column shape (supported on standard, temporary, and transient base tables up to 1,000 columns across text, NUMBER/DECIMAL, FLOAT, BOOLEAN, DATE, TIME, TIMESTAMP_NTZ/LTZ/TZ, BINARY, and VARIANT/OBJECT/ARRAY without duplicate object keys)."
                           : "Preview edit snapshot was consumed during plan preparation. Click Preview rows to obtain a fresh snapshot."}
                   </p>
                 ) : (
@@ -1437,8 +1832,8 @@ export function RelationBrowser({
                         Mode{" "}
                         <select
                           aria-label="Grid transaction mode"
-                          disabled={Boolean(gridTx) || busy || gridBusy}
-                          value={gridTx ? "manual" : gridMode}
+                          disabled={Boolean(gridTx) || Boolean(csvImportQueue) || busy || gridBusy}
+                          value={gridTx || csvImportQueue ? "manual" : gridMode}
                           onChange={(e) => setGridMode(e.target.value as SnowflakeGridMode)}
                         >
                           <option value="automatic">Auto-commit batch</option>
@@ -1449,7 +1844,10 @@ export function RelationBrowser({
                         type="button"
                         className="button small"
                         disabled={
-                          busy || gridBusy || totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
+                          busy ||
+                          gridBusy ||
+                          Boolean(csvImportQueue) ||
+                          totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
                         }
                         onClick={() =>
                           setInsertedRows((prev) => [
@@ -1463,7 +1861,7 @@ export function RelationBrowser({
                       <button
                         type="button"
                         className="button small"
-                        disabled={busy || gridBusy}
+                        disabled={busy || gridBusy || Boolean(csvImportQueue)}
                         onClick={() => setCsvPanelOpen((open) => !open)}
                       >
                         {csvPanelOpen ? "Hide CSV import" : "Import CSV rows…"}
@@ -1475,7 +1873,7 @@ export function RelationBrowser({
                           disabled={busy || gridBusy}
                           onClick={clearStagedGridEdits}
                         >
-                          Discard staged edits
+                          {csvImportQueue ? "Discard CSV import queue" : "Discard staged edits"}
                         </button>
                       )}
                       <button
@@ -1490,7 +1888,9 @@ export function RelationBrowser({
                         }
                         onClick={() => void prepareGridReview()}
                       >
-                        {`Review ${totalStagedMutations} change${totalStagedMutations === 1 ? "" : "s"}…`}
+                        {csvImportQueue
+                          ? `Review batch ${csvImportQueue.batchNumber}/${csvImportQueue.totalBatches} (${totalStagedMutations} rows)…`
+                          : `Review ${totalStagedMutations} change${totalStagedMutations === 1 ? "" : "s"}…`}
                       </button>
                     </div>
                     {stagedBuild.mixedUnknownInsertWarning && (
@@ -1560,7 +1960,7 @@ export function RelationBrowser({
                             rows={4}
                             value={csvRawText}
                             onChange={(e) => setCsvRawText(e.target.value)}
-                            placeholder="Paste CSV rows to stage into this reviewed Snowflake batch"
+                            placeholder="Paste CSV rows (up to 100,000 rows; >500 rows run as reviewed 500-row batches in one manual transaction)"
                           />
                         </label>
                         <div className="query-actions">
@@ -1578,6 +1978,31 @@ export function RelationBrowser({
                     {insertedRows.length > 0 && (
                       <section aria-label="Staged insert rows">
                         <h4>Staged inserts ({insertedRows.length})</h4>
+                        {insertedRows.length > INSERT_PAGE_ROWS && (
+                          <div className="query-actions">
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={insertPage === 0}
+                              onClick={() => setInsertPage((p) => Math.max(0, p - 1))}
+                            >
+                              Previous staged inserts
+                            </button>
+                            <span>
+                              Staged rows {insertPage * INSERT_PAGE_ROWS + 1}–
+                              {Math.min((insertPage + 1) * INSERT_PAGE_ROWS, insertedRows.length)}{" "}
+                              of {insertedRows.length}
+                            </span>
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={(insertPage + 1) * INSERT_PAGE_ROWS >= insertedRows.length}
+                              onClick={() => setInsertPage((p) => p + 1)}
+                            >
+                              Next staged inserts
+                            </button>
+                          </div>
+                        )}
                         <div className="relation-table-scroll">
                           <table>
                             <caption>Staged insert rows</caption>
@@ -1592,97 +2017,113 @@ export function RelationBrowser({
                               </tr>
                             </thead>
                             <tbody>
-                              {insertedRows.map((draftRow, draftIdx) => (
-                                <tr key={draftRow.id}>
-                                  <td>
-                                    <button
-                                      type="button"
-                                      className="button small"
-                                      aria-label={`Remove insert row ${draftIdx + 1}`}
-                                      onClick={() =>
-                                        setInsertedRows((prev) =>
-                                          prev.filter((entry) => entry.id !== draftRow.id),
-                                        )
-                                      }
-                                    >
-                                      Remove
-                                    </button>
-                                  </td>
-                                  {inspection.columns.map((col, colIdx) => {
-                                    if (!isWritableSnowflakeColumn(col)) return null;
-                                    const cell = draftRow.cells[colIdx] ?? {
-                                      kind: "text" as const,
-                                      value: "",
-                                    };
-                                    const allowDefault = canColumnDefaultOnInsert(col);
-                                    return (
-                                      <td key={colIdx}>
-                                        <select
-                                          aria-label={`Insert row ${draftIdx + 1} ${col.name} mode`}
-                                          value={cell.kind}
-                                          onChange={(e) => {
-                                            const mode = e.target
-                                              .value as SnowflakeGridCellInput["kind"];
-                                            const nextCell: SnowflakeGridCellInput =
-                                              mode === "default"
-                                                ? { kind: "default" }
-                                                : mode === "null"
-                                                  ? { kind: "null" }
-                                                  : {
-                                                      kind: "text",
-                                                      value:
-                                                        cell.kind === "text"
-                                                          ? cell.value
-                                                          : col.resultKind === "boolean"
-                                                            ? "false"
-                                                            : "",
-                                                    };
+                              {insertedRows
+                                .slice(
+                                  insertPage * INSERT_PAGE_ROWS,
+                                  (insertPage + 1) * INSERT_PAGE_ROWS,
+                                )
+                                .map((draftRow, localIdx) => {
+                                  const draftIdx = insertPage * INSERT_PAGE_ROWS + localIdx;
+                                  return (
+                                    <tr key={draftRow.id}>
+                                      <td>
+                                        <button
+                                          type="button"
+                                          className="button small"
+                                          aria-label={`Remove insert row ${draftIdx + 1}`}
+                                          disabled={Boolean(csvImportQueue)}
+                                          onClick={() =>
                                             setInsertedRows((prev) =>
-                                              prev.map((entry) =>
-                                                entry.id === draftRow.id
-                                                  ? {
-                                                      ...entry,
-                                                      cells: { ...entry.cells, [colIdx]: nextCell },
-                                                    }
-                                                  : entry,
-                                              ),
-                                            );
-                                          }}
+                                              prev.filter((entry) => entry.id !== draftRow.id),
+                                            )
+                                          }
                                         >
-                                          {allowDefault && <option value="default">DEFAULT</option>}
-                                          {col.nullable && <option value="null">NULL</option>}
-                                          <option value="text">Value</option>
-                                        </select>
-                                        {cell.kind === "text" && (
-                                          <input
-                                            aria-label={`Insert row ${draftIdx + 1} ${col.name} value`}
-                                            value={cell.value}
-                                            onChange={(e) => {
-                                              const nextVal = e.target.value;
-                                              setInsertedRows((prev) =>
-                                                prev.map((entry) =>
-                                                  entry.id === draftRow.id
-                                                    ? {
-                                                        ...entry,
-                                                        cells: {
-                                                          ...entry.cells,
-                                                          [colIdx]: {
-                                                            kind: "text",
-                                                            value: nextVal,
-                                                          },
-                                                        },
-                                                      }
-                                                    : entry,
-                                                ),
-                                              );
-                                            }}
-                                          />
-                                        )}
+                                          Remove
+                                        </button>
                                       </td>
-                                    );
-                                  })}
-                                </tr>
-                              ))}
+                                      {inspection.columns.map((col, colIdx) => {
+                                        if (!isWritableSnowflakeColumn(col)) return null;
+                                        const cell = draftRow.cells[colIdx] ?? {
+                                          kind: "text" as const,
+                                          value: "",
+                                        };
+                                        const allowDefault = canColumnDefaultOnInsert(col);
+                                        return (
+                                          <td key={colIdx}>
+                                            <select
+                                              aria-label={`Insert row ${draftIdx + 1} ${col.name} mode`}
+                                              disabled={Boolean(csvImportQueue)}
+                                              value={cell.kind}
+                                              onChange={(e) => {
+                                                const mode = e.target
+                                                  .value as SnowflakeGridCellInput["kind"];
+                                                const nextCell: SnowflakeGridCellInput =
+                                                  mode === "default"
+                                                    ? { kind: "default" }
+                                                    : mode === "null"
+                                                      ? { kind: "null" }
+                                                      : {
+                                                          kind: "text",
+                                                          value:
+                                                            cell.kind === "text"
+                                                              ? cell.value
+                                                              : col.resultKind === "boolean"
+                                                                ? "false"
+                                                                : "",
+                                                        };
+                                                setInsertedRows((prev) =>
+                                                  prev.map((entry) =>
+                                                    entry.id === draftRow.id
+                                                      ? {
+                                                          ...entry,
+                                                          cells: {
+                                                            ...entry.cells,
+                                                            [colIdx]: nextCell,
+                                                          },
+                                                        }
+                                                      : entry,
+                                                  ),
+                                                );
+                                              }}
+                                            >
+                                              {allowDefault && (
+                                                <option value="default">DEFAULT</option>
+                                              )}
+                                              {col.nullable && <option value="null">NULL</option>}
+                                              <option value="text">Value</option>
+                                            </select>
+                                            {cell.kind === "text" && (
+                                              <input
+                                                aria-label={`Insert row ${draftIdx + 1} ${col.name} value`}
+                                                disabled={Boolean(csvImportQueue)}
+                                                value={cell.value}
+                                                onChange={(e) => {
+                                                  const nextVal = e.target.value;
+                                                  setInsertedRows((prev) =>
+                                                    prev.map((entry) =>
+                                                      entry.id === draftRow.id
+                                                        ? {
+                                                            ...entry,
+                                                            cells: {
+                                                              ...entry.cells,
+                                                              [colIdx]: {
+                                                                kind: "text",
+                                                                value: nextVal,
+                                                              },
+                                                            },
+                                                          }
+                                                        : entry,
+                                                    ),
+                                                  );
+                                                }}
+                                              />
+                                            )}
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  );
+                                })}
                             </tbody>
                           </table>
                         </div>
@@ -1693,6 +2134,45 @@ export function RelationBrowser({
               </section>
             )}
             <div className="query-actions">
+              <button
+                type="button"
+                aria-label="Previous server page"
+                disabled={
+                  appliedSlice.offset === 0 ||
+                  busy ||
+                  gridBusy ||
+                  Boolean(csvImportQueue) ||
+                  Boolean(gridTx?.recordingError)
+                }
+                onClick={() =>
+                  fetchPreviewSlice({
+                    ...appliedSlice,
+                    offset: Math.max(0, appliedSlice.offset - SERVER_PAGE_ROWS),
+                  })
+                }
+              >
+                Previous 500
+              </button>
+              <button
+                type="button"
+                aria-label="Next server page"
+                disabled={
+                  !preview.truncated ||
+                  appliedSlice.offset + SERVER_PAGE_ROWS > MAX_SERVER_OFFSET ||
+                  busy ||
+                  gridBusy ||
+                  Boolean(csvImportQueue) ||
+                  Boolean(gridTx?.recordingError)
+                }
+                onClick={() =>
+                  fetchPreviewSlice({
+                    ...appliedSlice,
+                    offset: appliedSlice.offset + SERVER_PAGE_ROWS,
+                  })
+                }
+              >
+                Next 500
+              </button>
               <button disabled={rowPage === 0} onClick={() => setRowPage(rowPage - 1)}>
                 Previous rows
               </button>

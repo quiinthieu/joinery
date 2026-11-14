@@ -117,7 +117,11 @@ impl SnowflakeExternal {
             let preview = if read_preview {
                 let owner = owner.ok_or_else(protocol_error)?;
                 let rows = self.grid_preview_read(binding, owner).await?;
-                Some(browsing::parse_preview(binding.columns(), &rows)?)
+                Some(browsing::parse_preview_with_offset(
+                    binding.columns(),
+                    &rows,
+                    binding.slice().offset,
+                )?)
             } else {
                 None
             };
@@ -239,20 +243,39 @@ impl SnowflakeExternal {
         binding: &NativeEditBinding,
         owner: GridReadOwner<'_>,
     ) -> AppResult<MetadataResult> {
-        browsing::preview_sql(binding.relation(), binding.columns())?;
+        browsing::preview_query(binding.relation(), binding.columns(), binding.slice())?;
         let columns = binding
             .columns()
             .iter()
             .map(|column| column.name.as_str())
             .collect::<Vec<_>>();
         let relation = binding.relation();
-        let target = json!({
+        let slice = binding.slice();
+        let mut target = json!({
             "database": relation.database,
             "schema": relation.table.schema,
             "name": relation.table.name,
             "tableType": relation.table_type,
             "columns": columns,
         });
+        if !slice.is_default() {
+            let obj = target.as_object_mut().ok_or_else(protocol_error)?;
+            if slice.offset > 0 {
+                obj.insert("offset".into(), json!(slice.offset));
+            }
+            if let Some(sort) = &slice.sort {
+                obj.insert(
+                    "sort".into(),
+                    serde_json::to_value(sort).map_err(|_| protocol_error())?,
+                );
+            }
+            if !slice.filters.is_empty() {
+                obj.insert(
+                    "filters".into(),
+                    serde_json::to_value(&slice.filters).map_err(|_| protocol_error())?,
+                );
+            }
+        }
         self.grid_owner_read(
             binding.context(),
             owner,

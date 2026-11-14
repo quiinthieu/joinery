@@ -2262,3 +2262,215 @@ it("restores a fresh edit snapshot when cancelling ReviewDialog without losing s
     planId: "cancel-plan-2",
   });
 });
+
+it("applies server sort, filter, and 500-row offset pagination and binds edits to the active slice", async () => {
+  setupWritableSnowflakeGrid();
+  let previewCalls = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") {
+      previewCalls += 1;
+      return {
+        ...preview,
+        truncated: previewCalls === 1,
+        offset: previewCalls === 2 ? 500 : undefined,
+        editSnapshotId: `snap-slice-${previewCalls}`,
+      } satisfies RelationPreview;
+    }
+    if (method === "prepare_snowflake_grid_plan") {
+      return {
+        plan: {
+          id: "sliced-plan-1",
+          sessionId: "s",
+          reviewedSnowflakeGrid: true,
+          statements: [{ sql: "UPDATE ...", kind: "write", missingWhere: false }],
+          warnings: [],
+          requiresApproval: true,
+          requiresPassphrase: false,
+          confirmationText: null,
+          expiresAt: 1_900_000_000_000,
+        },
+        rowCount: 1,
+        sql: ["UPDATE ..."],
+        bindings: [["888"]],
+      } satisfies ChangePreview;
+    }
+    if (method === "cancel_snowflake_grid_plan") return "snap-slice-2";
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+
+  fireEvent.change(screen.getByLabelText("Preview sort column"), { target: { value: "exact" } });
+  fireEvent.change(screen.getByLabelText("Preview sort direction"), {
+    target: { value: "desc" },
+  });
+  fireEvent.change(screen.getByLabelText("Preview sort nulls"), { target: { value: "last" } });
+  fireEvent.click(screen.getByRole("button", { name: "Add filter" }));
+  fireEvent.change(screen.getByLabelText("Filter 1 operator"), { target: { value: "contains" } });
+  fireEvent.change(screen.getByLabelText("Filter 1 value"), { target: { value: "9007" } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply sort & filters" }));
+
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+  expect(client.call).toHaveBeenCalledWith("preview_relation", {
+    sessionId: "s",
+    request: {
+      revision: "catalog-1",
+      targetId: "opaque-target",
+      inspectionRevision: "inspection-1",
+      sort: { column: "exact", direction: "desc", nulls: "last" },
+      filters: [{ column: "exact", operator: "contains", value: "9007" }],
+    },
+  });
+
+  // Advance to the next 500-row server window and verify prepared edits carry the active slice.
+  fireEvent.click(screen.getByRole("button", { name: "Next server page" }));
+  await screen.findByText(/server offset 500/i);
+  expect(client.call).toHaveBeenCalledWith("preview_relation", {
+    sessionId: "s",
+    request: {
+      revision: "catalog-1",
+      targetId: "opaque-target",
+      inspectionRevision: "inspection-1",
+      offset: 500,
+      sort: { column: "exact", direction: "desc", nulls: "last" },
+      filters: [{ column: "exact", operator: "contains", value: "9007" }],
+    },
+  });
+
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "888" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+  expect(client.call).toHaveBeenLastCalledWith("prepare_snowflake_grid_plan", {
+    request: {
+      sessionId: "s",
+      transactionId: null,
+      preview: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspection-1",
+        offset: 500,
+        sort: { column: "exact", direction: "desc", nulls: "last" },
+        filters: [{ column: "exact", operator: "contains", value: "9007" }],
+      },
+      snapshotId: "snap-slice-2",
+      mutations: [
+        {
+          kind: "update",
+          rowIndex: 0,
+          changes: [{ columnIndex: 0, value: { kind: "text", value: "888" } }],
+        },
+      ],
+      mode: "automatic",
+      rollbackPrior: false,
+    },
+  });
+});
+
+it("imports >500 CSV rows across reviewed 500-row batches inside one manual Snowflake transaction", async () => {
+  setupWritableSnowflakeGrid();
+  let prepareCalls = 0;
+  let executeCalls = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") {
+      return { ...preview, editSnapshotId: "snap-csv-batch-1" } satisfies RelationPreview;
+    }
+    if (method === "preview_snowflake_grid_transaction_relation") {
+      return { ...preview, editSnapshotId: "snap-csv-batch-2" } satisfies RelationPreview;
+    }
+    if (method === "prepare_snowflake_grid_plan") {
+      prepareCalls += 1;
+      return {
+        plan: {
+          id: `csv-plan-${prepareCalls}`,
+          sessionId: "s",
+          reviewedSnowflakeGrid: true,
+          statements: [{ sql: "INSERT INTO ...", kind: "write", missingWhere: false }],
+          warnings: [],
+          requiresApproval: true,
+          requiresPassphrase: false,
+          confirmationText: null,
+          expiresAt: 1_900_000_000_000,
+        },
+        rowCount: prepareCalls === 1 ? 500 : 2,
+        sql: ["INSERT INTO ..."],
+        bindings: [["1"]],
+      } satisfies ChangePreview;
+    }
+    if (method === "authorize_plan") return `csv-approval-${prepareCalls}`;
+    if (method === "execute_snowflake_grid_plan") {
+      executeCalls += 1;
+      return {
+        sessionId: "s",
+        operationId: `op-csv-${executeCalls}`,
+        outcome: "pending",
+        transactionId: "tx-csv-multi-1",
+        recordingError: null,
+        metadataRefreshRequired: false,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    if (method === "finish_snowflake_grid_transaction") {
+      return {
+        sessionId: "s",
+        operationId: "op-csv-commit",
+        outcome: "committed",
+        transactionId: null,
+        recordingError: null,
+        metadataRefreshRequired: true,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  fireEvent.click(screen.getByRole("button", { name: "Import CSV rows…" }));
+  const csvRows = Array.from({ length: 502 }, (_, idx) => `${idx + 1}`).join("\n");
+  fireEvent.change(screen.getByLabelText("CSV rows to stage"), {
+    target: { value: `exact\n${csvRows}` },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Stage CSV rows" }));
+
+  // Batch 1 of 2 (500 rows) is staged in forced manual mode.
+  await screen.findByText(/Batch 1 of 2 staged/i);
+  fireEvent.click(screen.getByRole("button", { name: "Review batch 1/2 (500 rows)…" }));
+  await screen.findByText("Review pending changes");
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+  // Pending preview auto-reloads and Batch 2 of 2 (2 rows) is ready for review.
+  const reviewBatch2 = await screen.findByRole("button", { name: "Review batch 2/2 (2 rows)…" });
+  await vi.waitFor(() => {
+    expect((reviewBatch2 as HTMLButtonElement).disabled).toBe(false);
+  });
+  fireEvent.click(reviewBatch2);
+  await screen.findByText("Review pending changes");
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+  // After all batches execute, Commit transaction commits the manual transaction atomically.
+  const commitBtn = await screen.findByRole("button", { name: "Commit transaction" });
+  await vi.waitFor(() => {
+    expect((commitBtn as HTMLButtonElement).disabled).toBe(false);
+  });
+  fireEvent.click(commitBtn);
+  await screen.findByRole("button", { name: "Resume session metadata" });
+  expect(executeCalls).toBe(2);
+  expect(client.call).toHaveBeenCalledWith("finish_snowflake_grid_transaction", {
+    transactionId: "tx-csv-multi-1",
+    action: "commit",
+  });
+});

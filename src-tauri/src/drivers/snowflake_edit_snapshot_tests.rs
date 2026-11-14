@@ -648,3 +648,72 @@ async fn thousand_column_binding_retains_and_prepares_within_snapshot_budget() {
     drop(plan);
     assert_eq!(store.usage(), (0, 0));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn snapshot_binding_rejects_cross_page_or_sort_filter_slice_drift() {
+    use crate::{
+        drivers::snowflake_browsing::PreviewSlice,
+        relation_inspection::{
+            RelationFilter, RelationFilterOperator, RelationSort, RelationSortDirection,
+        },
+    };
+    let h = reaped_handle().await;
+    let obs = Observations::new();
+    let slice_a = PreviewSlice {
+        offset: 500,
+        sort: Some(RelationSort {
+            column: "text".into(),
+            direction: RelationSortDirection::Asc,
+            nulls: None,
+        }),
+        filters: vec![RelationFilter {
+            column: "boolean".into(),
+            operator: RelationFilterOperator::Equals,
+            value: Some("true".into()),
+        }],
+    };
+    let slice_b = PreviewSlice {
+        offset: 0,
+        ..slice_a.clone()
+    };
+    let make_a = || {
+        NativeEditBinding::with_slice(
+            "observer-session",
+            &h,
+            &obs.context,
+            &obs.browse,
+            &obs.target,
+            &obs.relation,
+            &obs.inspection,
+            &obs.columns,
+            slice_a.clone(),
+        )
+        .unwrap()
+    };
+    let binding_b = NativeEditBinding::with_slice(
+        "observer-session",
+        &h,
+        &obs.context,
+        &obs.browse,
+        &obs.target,
+        &obs.relation,
+        &obs.inspection,
+        &obs.columns,
+        slice_b,
+    )
+    .unwrap();
+    let store = SnapshotStore::new();
+    let id = store.retain(make_a(), rows()).unwrap();
+    // Cannot prepare against a different slice; the valid snapshot remains intact for slice_a.
+    conflict(store.prepare("observer-session", &id, &binding_b, &delete(0)));
+    assert_eq!(store.usage().1, 1);
+
+    let binding_a = make_a();
+    let plan = store
+        .prepare("observer-session", &id, &binding_a, &delete(0))
+        .unwrap();
+    conflict(plan.validate_current(&binding_b));
+    plan.validate_current(&binding_a).unwrap();
+    drop(plan);
+    assert_eq!(store.usage(), (0, 0));
+}

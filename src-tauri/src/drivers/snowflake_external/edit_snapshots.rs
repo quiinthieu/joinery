@@ -115,7 +115,7 @@ impl SnowflakeExternal {
             .filter(|slot| slot.revision == request.inspection_revision)
             .and_then(|slot| slot.columns.as_deref())
             .ok_or_else(stale_browse)?;
-        NativeEditBinding::new(
+        NativeEditBinding::with_slice(
             &self.session_id,
             &self.process.helper_generation(),
             &snapshot.context,
@@ -124,6 +124,7 @@ impl SnowflakeExternal {
             relation,
             &request.inspection_revision,
             columns,
+            browsing::PreviewSlice::from_request(request),
         )
     }
 

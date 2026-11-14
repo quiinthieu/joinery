@@ -6,6 +6,7 @@ import type {
 } from "../../ipc/generated";
 
 export const MAX_SNOWFLAKE_GRID_MUTATIONS = 500;
+export const MAX_SNOWFLAKE_CSV_IMPORT_ROWS = 100_000;
 
 export type CsvFieldDelimiter = "," | "\t" | ";" | "|";
 
@@ -273,13 +274,17 @@ export function parseCsvRows(raw: string, delimiter: CsvFieldDelimiter): string[
   return rows;
 }
 
-export function stageCsvInsertRows(args: {
-  raw: string;
-  delimiter: CsvFieldDelimiter;
-  hasHeader: boolean;
-  nullToken: string;
-  columns: readonly ColumnInspection[];
-}): StagedInsertRow[] {
+function mapCsvRowsToInsertRows(
+  args: {
+    raw: string;
+    delimiter: CsvFieldDelimiter;
+    hasHeader: boolean;
+    nullToken: string;
+    columns: readonly ColumnInspection[];
+  },
+  maxRows: number,
+  maxRowsMessage: string,
+): StagedInsertRow[] {
   const { raw, delimiter, hasHeader, nullToken, columns } = args;
   const parsed = parseCsvRows(raw, delimiter);
   if (parsed.length === 0) {
@@ -341,10 +346,8 @@ export function stageCsvInsertRows(args: {
   if (dataRows.length === 0) {
     throw new Error("CSV input contains no data rows");
   }
-  if (dataRows.length > MAX_SNOWFLAKE_GRID_MUTATIONS) {
-    throw new Error(
-      `CSV batch exceeds the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-row generated mutation limit`,
-    );
+  if (dataRows.length > maxRows) {
+    throw new Error(maxRowsMessage);
   }
 
   const mappedSet = new Set(columnMapping);
@@ -402,4 +405,47 @@ export function stageCsvInsertRows(args: {
     });
     return { id: crypto.randomUUID(), cells };
   });
+}
+
+export function stageCsvInsertRows(args: {
+  raw: string;
+  delimiter: CsvFieldDelimiter;
+  hasHeader: boolean;
+  nullToken: string;
+  columns: readonly ColumnInspection[];
+}): StagedInsertRow[] {
+  return mapCsvRowsToInsertRows(
+    args,
+    MAX_SNOWFLAKE_GRID_MUTATIONS,
+    `CSV batch exceeds the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-row generated mutation limit`,
+  );
+}
+
+/**
+ * Validates up to 100,000 CSV data rows upfront and splits them into 500-row
+ * generated-mutation batches for atomic multi-batch Snowflake transaction execution.
+ */
+export function stageCsvInsertBatches(
+  args: {
+    raw: string;
+    delimiter: CsvFieldDelimiter;
+    hasHeader: boolean;
+    nullToken: string;
+    columns: readonly ColumnInspection[];
+  },
+  batchSize: number = MAX_SNOWFLAKE_GRID_MUTATIONS,
+): StagedInsertRow[][] {
+  if (batchSize <= 0 || batchSize > MAX_SNOWFLAKE_GRID_MUTATIONS) {
+    throw new Error(`CSV batch size must be between 1 and ${MAX_SNOWFLAKE_GRID_MUTATIONS} rows`);
+  }
+  const allRows = mapCsvRowsToInsertRows(
+    args,
+    MAX_SNOWFLAKE_CSV_IMPORT_ROWS,
+    `CSV import exceeds the ${MAX_SNOWFLAKE_CSV_IMPORT_ROWS.toLocaleString()}-row multi-batch limit`,
+  );
+  const batches: StagedInsertRow[][] = [];
+  for (let i = 0; i < allRows.length; i += batchSize) {
+    batches.push(allRows.slice(i, i + batchSize));
+  }
+  return batches;
 }

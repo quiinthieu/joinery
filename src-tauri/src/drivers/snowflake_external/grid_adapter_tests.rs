@@ -55,6 +55,7 @@ async fn prepared(h: &Harness, mutations: &[SnapshotMutation]) -> PreparedSnowfl
         revision: catalog.revision,
         target_id,
         inspection_revision: inspection.revision,
+        ..Default::default()
     };
     let preview = h.driver.preview_relation(&request).await.unwrap();
     assert_eq!(

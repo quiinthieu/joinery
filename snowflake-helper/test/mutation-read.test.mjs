@@ -611,3 +611,49 @@ test("fixed zero-row and aggregate byte bounds expose incomplete metadata instea
     }
   }
 });
+
+test("preview slice builds parameterized WHERE, ORDER BY, and OFFSET and rejects unknown columns or raw SQL keys", () => {
+  const sliced = request(
+    payload("preview", {
+      target: {
+        ...target,
+        columns: ["ID", "NOTES"],
+        offset: 500,
+        sort: { column: "ID", direction: "desc", nulls: "last" },
+        filters: [
+          { column: "NOTES", operator: "contains", value: "100%_literal" },
+          { column: "ID", operator: "equals", value: "42" },
+          { column: "NOTES", operator: "isNotNull" },
+        ],
+      },
+    }),
+  );
+  assert.equal(validateMutationReadRequest(sliced, identityHelper()), true);
+  const spec = mutationReadSpec(sliced);
+  assert.equal(
+    spec.sql,
+    'SELECT "ID", "NOTES" FROM "TEST"."PUBLIC"."T" WHERE CONTAINS(LOWER(TO_VARCHAR("NOTES")), LOWER(?)) AND TO_VARCHAR("ID") = ? AND "NOTES" IS NOT NULL ORDER BY "ID" DESC NULLS LAST LIMIT 501 OFFSET 500',
+  );
+  assert.deepEqual(spec.binds, ["100%_literal", "42"]);
+
+  for (const invalidTarget of [
+    { ...target, columns: ["ID"], offset: 1_000_001 },
+    { ...target, columns: ["ID"], offset: -1 },
+    { ...target, columns: ["ID"], sort: { column: "MISSING", direction: "asc" } },
+    { ...target, columns: ["ID"], sort: { column: "ID", direction: "asc", rawSql: "1=1" } },
+    {
+      ...target,
+      columns: ["ID"],
+      filters: [{ column: "ID", operator: "isNull", value: "bad" }],
+    },
+    {
+      ...target,
+      columns: ["ID"],
+      filters: [{ column: "ID", operator: "contains", value: "" }],
+    },
+    { ...target, columns: ["ID"], orderBy: "ID DESC" },
+  ]) {
+    const bad = request(payload("preview", { target: invalidTarget }));
+    assert.equal(validateMutationReadRequest(bad, identityHelper()), false);
+  }
+});

@@ -284,6 +284,7 @@ async fn browse_and_prepare(
         revision: catalog.revision,
         target_id,
         inspection_revision: inspection.revision,
+        ..Default::default()
     };
     let preview = studio.preview_relation(session_id, &req).await.unwrap();
     let snapshot_id = preview.edit_snapshot_id.as_deref().unwrap();
@@ -388,6 +389,7 @@ async fn grid_studio_automatic_commits_settles_evidence_and_enforces_policy() {
         revision: catalog_ro.revision,
         target_id: target_ro,
         inspection_revision: inspect_ro.revision,
+        ..Default::default()
     };
     let preview_ro = studio
         .preview_relation(&info_ro.id, &preview_req_ro)
@@ -1864,6 +1866,7 @@ async fn grid_studio_reviewed_plan_authorizes_executes_continues_and_finishes() 
         revision: catalog.revision,
         target_id,
         inspection_revision: inspection.revision,
+        ..Default::default()
     };
     let rel_preview = studio
         .preview_relation(&info.id, &preview_req)
