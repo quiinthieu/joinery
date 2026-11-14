@@ -22,7 +22,10 @@ use crate::{
 };
 #[cfg(unix)]
 use crate::{
-    drivers::snowflake_external::{ExternalBrowserOptions, SnowflakeExternal},
+    drivers::{
+        snowflake_edit_snapshot::PreparedSnowflakeEdits,
+        snowflake_external::{ExternalBrowserOptions, SnowflakeExternal},
+    },
     snowflake_cleanup::SnowflakeCleanup,
     snowflake_runtime::SnowflakeRuntime,
 };
@@ -108,13 +111,6 @@ struct Session {
     profile: ConnectionProfile,
     driver: Arc<dyn Driver>,
     #[cfg(unix)]
-    #[cfg_attr(
-        not(all(test, feature = "test-harness")),
-        allow(
-            dead_code,
-            reason = "Studio grid run owner precedes public UI staging and IPC wiring"
-        )
-    )]
     snowflake_external: Option<Arc<SnowflakeExternal>>,
     lane: tokio::sync::Mutex<()>,
     cancellation_gate: tokio::sync::Mutex<()>,
@@ -184,6 +180,13 @@ enum Action {
     SnowflakeDdl {
         request: SnowflakeDdlRequest,
         preflight: SnowflakeDdlPreflightResponse,
+        mode: SafeMode,
+    },
+    #[cfg(unix)]
+    SnowflakeGrid {
+        target: snowflake_grid::SnowflakeGridPlanTarget,
+        edits: PreparedSnowflakeEdits,
+        digest: String,
         mode: SafeMode,
     },
 }
@@ -1664,6 +1667,16 @@ impl Studio {
                 serde_json::to_vec(&(request, preflight, mode))
                     .map_err(|_| AppError::internal("Could not fingerprint reviewed DDL"))?,
             ),
+            #[cfg(unix)]
+            Action::SnowflakeGrid {
+                target,
+                digest,
+                mode,
+                ..
+            } => fingerprint
+                .update(serde_json::to_vec(&(target, digest, mode)).map_err(|_| {
+                    AppError::internal("Could not fingerprint reviewed grid edits")
+                })?),
         }
         let digest = hex::encode(fingerprint.finalize());
         plans.insert(
@@ -1766,6 +1779,12 @@ impl Studio {
                 | Action::SnowflakeDdl { .. }
                 | Action::SnowflakeConsole { .. }
         ) {
+            return Err(AppError::invalid(
+                "Use the dedicated typed command to execute this prepared action",
+            ));
+        }
+        #[cfg(unix)]
+        if matches!(stored.action, Action::SnowflakeGrid { .. }) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
             ));
@@ -2182,6 +2201,7 @@ impl Studio {
             | Action::TransactionControl { .. }
             | Action::SnowflakeDml { .. }
             | Action::SnowflakeDdl { .. }
+            | Action::SnowflakeGrid { .. }
             | Action::SnowflakeConsole { .. } => {}
         }
         if let Some(summary) = &mut execution_summary {
@@ -5482,6 +5502,52 @@ fn classify_browse_sql(
     Ok((plan, needs_review))
 }
 
+#[cfg(not(unix))]
+impl Studio {
+    pub async fn prepare_snowflake_grid_plan(
+        &self,
+        _request: &PrepareSnowflakeGridEditsRequest,
+    ) -> AppResult<ChangePreview> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake generated edits are unavailable on this platform",
+        ))
+    }
+
+    pub async fn execute_snowflake_grid_plan(
+        self: &Arc<Self>,
+        _plan_id: &str,
+        _approval: Option<&str>,
+    ) -> AppResult<SnowflakeGridResult> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake generated edits are unavailable on this platform",
+        ))
+    }
+
+    pub async fn preview_snowflake_grid_transaction_relation(
+        &self,
+        _transaction_id: &str,
+        _request: &PreviewRelationRequest,
+    ) -> AppResult<RelationPreview> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake generated edits are unavailable on this platform",
+        ))
+    }
+
+    pub async fn execute_snowflake_grid_finish(
+        self: &Arc<Self>,
+        _transaction_id: &str,
+        _action: SnowflakeGridFinishAction,
+    ) -> AppResult<SnowflakeGridResult> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake generated edits are unavailable on this platform",
+        ))
+    }
+}
+
 fn expired() -> AppError {
     AppError::new(
         ErrorCode::ApprovalExpired,
@@ -7359,6 +7425,7 @@ mod browse_classification_tests {
                                     schema_diff: false,
                                     ddl_editing: false,
                                     snowflake_reviewed_ddl: false,
+                                    snowflake_grid_editing: false,
                                     lock_inspection: false,
                                     explain_analyze: false,
                                     oauth_browser: false,
@@ -7461,6 +7528,7 @@ mod browse_classification_tests {
                         schema_diff: false,
                         ddl_editing: false,
                         snowflake_reviewed_ddl: false,
+                        snowflake_grid_editing: false,
                         lock_inspection: false,
                         explain_analyze: false,
                         oauth_browser: false,
@@ -7657,6 +7725,7 @@ mod browse_classification_tests {
                         schema_diff: false,
                         ddl_editing: false,
                         snowflake_reviewed_ddl: false,
+                        snowflake_grid_editing: false,
                         lock_inspection: false,
                         explain_analyze: false,
                         oauth_browser: false,

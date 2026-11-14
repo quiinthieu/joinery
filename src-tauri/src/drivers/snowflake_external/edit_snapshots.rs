@@ -127,12 +127,8 @@ impl SnowflakeExternal {
         )
     }
 
-    /// Native preparation only. Future dispatch must validate fresh remote
-    /// context/columns and reserve durable outcome capacity before any SQL.
-    #[allow(
-        dead_code,
-        reason = "Native snapshot preparation precedes the typed batch dispatcher; no IPC write route"
-    )]
+    /// Native preparation only. Dispatch validates fresh remote context/columns
+    /// and reserves durable outcome capacity before any SQL.
     pub(crate) async fn prepare_relation_edits(
         &self,
         request: &PreviewRelationRequest,

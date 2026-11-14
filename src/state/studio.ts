@@ -31,6 +31,8 @@ import type {
   TransactionControlResult,
   SnowflakeDmlResult,
   SnowflakeDdlResult,
+  SnowflakeGridFinishAction,
+  SnowflakeGridResult,
   TransactionControlAuthority,
   SnowflakeConsolePlan,
   SnowflakeConsoleReceiptSummary,
@@ -250,6 +252,11 @@ interface StudioState {
   sessionTransactionPending: Record<string, boolean>;
   sessionMetadataRefreshRequired: Record<string, boolean>;
   sessionDdlCatalogRefreshRequired: Record<string, boolean>;
+  sessionSnowflakeGridPending: Record<string, boolean>;
+  sessionSnowflakeGridTransactions: Record<
+    string,
+    { transactionId: string; recordingError: string | null }
+  >;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -305,6 +312,15 @@ interface StudioState {
     approval?: string | null,
     ownerTabId?: string,
   ): Promise<SnowflakeDdlResult>;
+  executeSnowflakeGridPlan(
+    plan: PreparedPlan,
+    approval?: string | null,
+  ): Promise<SnowflakeGridResult>;
+  finishSnowflakeGridTransaction(
+    sessionId: string,
+    transactionId: string,
+    action: SnowflakeGridFinishAction,
+  ): Promise<SnowflakeGridResult>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
@@ -678,6 +694,8 @@ function purgeSessionRuntimeMaps(
     | "sessionTransactionPending"
     | "sessionMetadataRefreshRequired"
     | "sessionDdlCatalogRefreshRequired"
+    | "sessionSnowflakeGridPending"
+    | "sessionSnowflakeGridTransactions"
   >,
   sessionIds: Iterable<string>,
 ) {
@@ -689,6 +707,8 @@ function purgeSessionRuntimeMaps(
   const sessionTransactionPending = { ...state.sessionTransactionPending };
   const sessionMetadataRefreshRequired = { ...state.sessionMetadataRefreshRequired };
   const sessionDdlCatalogRefreshRequired = { ...state.sessionDdlCatalogRefreshRequired };
+  const sessionSnowflakeGridPending = { ...state.sessionSnowflakeGridPending };
+  const sessionSnowflakeGridTransactions = { ...state.sessionSnowflakeGridTransactions };
   for (const id of sessionIds) {
     contextRequests.delete(id);
     pendingContextRequests.delete(id);
@@ -697,6 +717,8 @@ function purgeSessionRuntimeMaps(
     delete sessionTransactionPending[id];
     delete sessionMetadataRefreshRequired[id];
     delete sessionDdlCatalogRefreshRequired[id];
+    delete sessionSnowflakeGridPending[id];
+    delete sessionSnowflakeGridTransactions[id];
     delete sessionContextAuthorities[id];
     delete sessionStates[id];
     delete sessionContexts[id];
@@ -711,6 +733,8 @@ function purgeSessionRuntimeMaps(
     sessionTransactionPending,
     sessionMetadataRefreshRequired,
     sessionDdlCatalogRefreshRequired,
+    sessionSnowflakeGridPending,
+    sessionSnowflakeGridTransactions,
   };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
@@ -763,13 +787,23 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
 }
 
 /** Frontend scheduling only; the driver independently validates one-use authority. */
-export function revokeSchemaSelectionBeforeWork(sessionId: string, transactionControl = false) {
+export function revokeSchemaSelectionBeforeWork(
+  sessionId: string,
+  transactionControl = false,
+  allowGridTransaction = false,
+) {
   const state = useStudio.getState();
   assertOrdinarySession(sessionId);
   if (state.sessionContextSwitching[sessionId])
     throw new Error("Wait for the schema change to finish first");
   if (state.sessionTransactionPending[sessionId])
     throw new Error("Wait for the transaction action to finish first");
+  if (
+    !allowGridTransaction &&
+    (state.sessionSnowflakeGridPending[sessionId] ||
+      state.sessionSnowflakeGridTransactions[sessionId])
+  )
+    throw new Error("Finish or roll back the open Snowflake grid transaction first");
   if (
     !transactionControl &&
     state.sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly"
@@ -827,6 +861,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   sessionTransactionPending: {},
   sessionMetadataRefreshRequired: {},
   sessionDdlCatalogRefreshRequired: {},
+  sessionSnowflakeGridPending: {},
+  sessionSnowflakeGridTransactions: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -1646,12 +1682,22 @@ export const useStudio = create<StudioState>((set, get) => ({
   isSessionContextPending(sessionId) {
     return (
       get().sessionTransactionPending[sessionId] === true ||
+      get().sessionSnowflakeGridPending[sessionId] === true ||
+      Boolean(get().sessionSnowflakeGridTransactions[sessionId]) ||
       (pendingContextRequests.get(sessionId)?.size ?? 0) > 0
     );
   },
   async refreshSessionContexts(sessionId, throwOnError = false) {
     if (isSnowflakeConsoleSession(get(), sessionId)) {
       if (throwOnError) assertOrdinarySession(sessionId);
+      return false;
+    }
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    ) {
+      if (throwOnError)
+        throw new Error("Finish or roll back the open Snowflake grid transaction first");
       return false;
     }
     if (get().sessionMetadataRefreshRequired[sessionId] && !throwOnError) return false;
@@ -1764,6 +1810,11 @@ export const useStudio = create<StudioState>((set, get) => ({
     assertOrdinarySession(sessionId);
     if (get().sessionTransactionPending[sessionId])
       throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    )
+      throw new Error("Finish or roll back the open Snowflake grid transaction first");
     const sdk = hasSdkObservation(get(), sessionId);
     const authority = get().sessionContextAuthorities[sessionId];
     const runtime = get().sessionStates[sessionId];
@@ -2174,6 +2225,176 @@ export const useStudio = create<StudioState>((set, get) => ({
         const pending = { ...state.sessionTransactionPending };
         delete pending[sessionId];
         return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeGridPlan(plan, approval) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId] || get().sessionSnowflakeGridPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const hadOpenGridTx = Boolean(get().sessionSnowflakeGridTransactions[sessionId]);
+    revokeSchemaSelectionBeforeWork(sessionId, false, true);
+    set((state) => ({
+      sessionSnowflakeGridPending: { ...state.sessionSnowflakeGridPending, [sessionId]: true },
+    }));
+    try {
+      const result = await client.call("execute_snowflake_grid_plan", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake grid execution response");
+      }
+      if (result.retired || result.outcome === "unknown" || !isSessionActive(get(), sessionId)) {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (
+        (result.outcome === "pending" || (hadOpenGridTx && result.outcome === "rejected")) &&
+        result.transactionId
+      ) {
+        set((state) => ({
+          sessionSnowflakeGridTransactions: {
+            ...state.sessionSnowflakeGridTransactions,
+            [sessionId]: {
+              transactionId: result.transactionId!,
+              recordingError: result.recordingError,
+            },
+          },
+        }));
+      } else {
+        set((state) => {
+          const nextGridTx = { ...state.sessionSnowflakeGridTransactions };
+          delete nextGridTx[sessionId];
+          return {
+            sessionSnowflakeGridTransactions: nextGridTx,
+            sessionMetadataRefreshRequired: {
+              ...state.sessionMetadataRefreshRequired,
+              [sessionId]: true,
+            },
+            sessionStates: {
+              ...state.sessionStates,
+              [sessionId]: unknownSdkRuntime(sessionId),
+            },
+            sessionContextRevision: {
+              ...state.sessionContextRevision,
+              [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+            },
+          };
+        });
+      }
+      const outcomeLabel =
+        result.outcome === "committed"
+          ? "committed"
+          : result.outcome === "pending"
+            ? `manual transaction pending (${result.transactionId ?? "active"})`
+            : result.outcome === "rolledBack"
+              ? "rolled back"
+              : result.outcome === "rejected"
+                ? "rejected"
+                : "outcome unknown";
+      get().notify(
+        `Snowflake grid edits ${outcomeLabel}${result.retired ? "; session retired" : ""}${result.recordingError ? `. Recording blocked: ${result.recordingError}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      throw error;
+    } finally {
+      set((state) => {
+        const pending = { ...state.sessionSnowflakeGridPending };
+        delete pending[sessionId];
+        return { sessionSnowflakeGridPending: pending };
+      });
+    }
+  },
+  async finishSnowflakeGridTransaction(sessionId, transactionId, action) {
+    if (get().sessionTransactionPending[sessionId] || get().sessionSnowflakeGridPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    set((state) => ({
+      sessionSnowflakeGridPending: { ...state.sessionSnowflakeGridPending, [sessionId]: true },
+    }));
+    try {
+      const result = await client.call("finish_snowflake_grid_transaction", {
+        transactionId,
+        action,
+      });
+      if (result.retired || result.outcome === "unknown") {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (
+        (result.outcome === "pending" || result.outcome === "rejected") &&
+        result.transactionId
+      ) {
+        set((state) => ({
+          sessionSnowflakeGridTransactions: {
+            ...state.sessionSnowflakeGridTransactions,
+            [sessionId]: {
+              transactionId: result.transactionId!,
+              recordingError: result.recordingError,
+            },
+          },
+        }));
+      } else {
+        set((state) => {
+          const nextGridTx = { ...state.sessionSnowflakeGridTransactions };
+          delete nextGridTx[sessionId];
+          return {
+            sessionSnowflakeGridTransactions: nextGridTx,
+            ...(isSessionActive(state, sessionId)
+              ? {
+                  sessionMetadataRefreshRequired: {
+                    ...state.sessionMetadataRefreshRequired,
+                    [sessionId]: true,
+                  },
+                  sessionStates: {
+                    ...state.sessionStates,
+                    [sessionId]: unknownSdkRuntime(sessionId),
+                  },
+                  sessionContextRevision: {
+                    ...state.sessionContextRevision,
+                    [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                  },
+                }
+              : {}),
+          };
+        });
+      }
+      const label = action === "commit" ? "COMMIT" : "ROLLBACK";
+      const outcomeLabel =
+        result.outcome === "committed"
+          ? "committed"
+          : result.outcome === "rolledBack"
+            ? "rolled back"
+            : result.outcome === "rejected"
+              ? "rejected"
+              : "outcome unknown";
+      get().notify(
+        `Snowflake grid ${label} ${outcomeLabel}${result.retired ? "; session retired" : ""}${result.recordingError ? `. Recording warning: ${result.recordingError}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      throw error;
+    } finally {
+      set((state) => {
+        const pending = { ...state.sessionSnowflakeGridPending };
+        delete pending[sessionId];
+        return { sessionSnowflakeGridPending: pending };
       });
     }
   },

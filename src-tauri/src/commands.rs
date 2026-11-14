@@ -1128,6 +1128,47 @@ pub async fn refresh_snowflake_ddl_metadata(
 }
 
 #[tauri::command]
+pub async fn prepare_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    request: PrepareSnowflakeGridEditsRequest,
+) -> AppResult<ChangePreview> {
+    studio.prepare_snowflake_grid_plan(&request).await
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeGridResult> {
+    studio
+        .execute_snowflake_grid_plan(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn preview_snowflake_grid_transaction_relation(
+    studio: State<'_, Arc<Studio>>,
+    transaction_id: String,
+    request: PreviewRelationRequest,
+) -> AppResult<RelationPreview> {
+    studio
+        .preview_snowflake_grid_transaction_relation(&transaction_id, &request)
+        .await
+}
+
+#[tauri::command]
+pub async fn finish_snowflake_grid_transaction(
+    studio: State<'_, Arc<Studio>>,
+    transaction_id: String,
+    action: SnowflakeGridFinishAction,
+) -> AppResult<SnowflakeGridResult> {
+    studio
+        .execute_snowflake_grid_finish(&transaction_id, action)
+        .await
+}
+
+#[tauri::command]
 pub async fn commit_transaction(
     studio: State<'_, Arc<Studio>>,
     session_id: String,

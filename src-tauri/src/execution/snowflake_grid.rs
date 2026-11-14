@@ -1,13 +1,6 @@
 //! TaskTracker-owned Studio execution for native Snowflake generated edits.
 //! Retains the physical manual owner, compact originals and rollback authority
 //! across detached callers, storage faults, session removal and app shutdown.
-#![cfg_attr(
-    not(all(test, feature = "test-harness")),
-    allow(
-        dead_code,
-        reason = "Studio grid run owner precedes public UI staging and IPC wiring"
-    )
-)]
 
 use super::batch_outcome_recording::{
     BatchOutcomeCell, MintedGridAuthority, ProtectedRollbackSource,
@@ -25,6 +18,7 @@ use crate::{
                 PreparedGridOperation,
             },
         },
+        snowflake_mutations::{CellValue, MAX_ROWS},
         snowflake_process::{HelperRetirementObserver, Operation, Report},
     },
     persistence::batch_outcomes::{
@@ -33,7 +27,19 @@ use crate::{
     },
 };
 use futures_util::FutureExt;
+use serde::Serialize;
 use std::sync::atomic::AtomicUsize;
+
+#[derive(Clone, Serialize)]
+pub(super) enum SnowflakeGridPlanTarget {
+    Initial {
+        mode: Mode,
+    },
+    Continuation {
+        transaction_id: String,
+        rollback_prior: bool,
+    },
+}
 
 #[cfg(all(test, unix, feature = "test-harness"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +160,7 @@ pub(crate) struct SnowflakeGridExecution {
     pub operation_id: String,
     pub transaction_id: Option<String>,
     pub outcome: Outcome,
+    #[cfg_attr(not(all(test, unix, feature = "test-harness")), allow(dead_code))]
     pub report: Report,
     pub recording_error: Option<AppError>,
 }
@@ -505,7 +512,313 @@ fn report_outcome(report: &Report) -> Outcome {
         .map_or(Outcome::Unknown, |summary| summary.outcome)
 }
 
+fn convert_grid_cell(cell: &SnowflakeGridCellInput) -> CellValue {
+    match cell {
+        SnowflakeGridCellInput::Default => CellValue::Default,
+        SnowflakeGridCellInput::Null => CellValue::Null,
+        SnowflakeGridCellInput::Text { value } => CellValue::Text(value.clone()),
+    }
+}
+
+fn convert_grid_mutations(mutations: &[SnowflakeGridMutation]) -> AppResult<Vec<SnapshotMutation>> {
+    if mutations.is_empty() {
+        return Err(AppError::invalid(
+            "Stage at least one row change before reviewing",
+        ));
+    }
+    if mutations.len() > MAX_ROWS {
+        return Err(AppError::new(
+            ErrorCode::ResultLimitReached,
+            "Generated Snowflake edits allow at most 500 row mutations per batch",
+        ));
+    }
+    Ok(mutations
+        .iter()
+        .map(|mutation| match mutation {
+            SnowflakeGridMutation::Insert { values } => SnapshotMutation::Insert {
+                values: values
+                    .iter()
+                    .map(|item| (item.column_index, convert_grid_cell(&item.value)))
+                    .collect(),
+            },
+            SnowflakeGridMutation::Update { row_index, changes } => SnapshotMutation::Update {
+                row_index: *row_index,
+                changes: changes
+                    .iter()
+                    .map(|item| (item.column_index, convert_grid_cell(&item.value)))
+                    .collect(),
+            },
+            SnowflakeGridMutation::Delete { row_index } => SnapshotMutation::Delete {
+                row_index: *row_index,
+            },
+        })
+        .collect())
+}
+
+fn map_grid_outcome(outcome: Outcome) -> SnowflakeGridBatchOutcome {
+    match outcome {
+        Outcome::Committed => SnowflakeGridBatchOutcome::Committed,
+        Outcome::Pending => SnowflakeGridBatchOutcome::Pending,
+        Outcome::RolledBack => SnowflakeGridBatchOutcome::RolledBack,
+        Outcome::Rejected => SnowflakeGridBatchOutcome::Rejected,
+        Outcome::Unknown => SnowflakeGridBatchOutcome::Unknown,
+    }
+}
+
 impl Studio {
+    fn to_grid_result(
+        &self,
+        session_id: String,
+        exec: SnowflakeGridExecution,
+    ) -> SnowflakeGridResult {
+        let retired = self
+            .sessions
+            .lock()
+            .get(&session_id)
+            .is_none_or(|s| s.closed.load(Ordering::Acquire) || s.driver.is_closed());
+        SnowflakeGridResult {
+            session_id,
+            operation_id: exec.operation_id,
+            outcome: map_grid_outcome(exec.outcome),
+            transaction_id: exec.transaction_id,
+            recording_error: exec.recording_error.map(|error| error.message),
+            metadata_refresh_required: true,
+            retired,
+        }
+    }
+
+    pub async fn prepare_snowflake_grid_plan(
+        &self,
+        request: &PrepareSnowflakeGridEditsRequest,
+    ) -> AppResult<ChangePreview> {
+        let mutations = convert_grid_mutations(&request.mutations)?;
+        let (target, edits) = if let Some(tx_id) = &request.transaction_id {
+            if request.mode != SnowflakeGridMode::Manual {
+                return Err(AppError::invalid(
+                    "Continuing an open Snowflake grid transaction requires manual mode",
+                ));
+            }
+            if !request.rollback_prior {
+                return Err(AppError::invalid(
+                    "Continuing generated edits requires explicit whole-transaction rollback permission",
+                ));
+            }
+            let owner_session = self
+                .snowflake_grid
+                .owners
+                .lock()
+                .get(tx_id)
+                .map(|owner| owner.session_id.clone())
+                .ok_or_else(conflict)?;
+            if owner_session != request.session_id {
+                return Err(conflict());
+            }
+            let edits = self
+                .prepare_snowflake_grid_continuation_edits(
+                    tx_id,
+                    &request.preview,
+                    &request.snapshot_id,
+                    &mutations,
+                )
+                .await?;
+            (
+                SnowflakeGridPlanTarget::Continuation {
+                    transaction_id: tx_id.clone(),
+                    rollback_prior: true,
+                },
+                edits,
+            )
+        } else {
+            let mode = match request.mode {
+                SnowflakeGridMode::Automatic => Mode::Automatic,
+                SnowflakeGridMode::Manual => Mode::Manual,
+            };
+            let edits = self
+                .prepare_snowflake_grid_edits(
+                    &request.session_id,
+                    &request.preview,
+                    &request.snapshot_id,
+                    &mutations,
+                )
+                .await?;
+            (SnowflakeGridPlanTarget::Initial { mode }, edits)
+        };
+        let sql: Vec<String> = edits
+            .compiled()
+            .units()
+            .iter()
+            .map(|unit| unit.sql().to_owned())
+            .collect();
+        let bindings: Vec<Vec<Option<String>>> = edits
+            .compiled()
+            .units()
+            .iter()
+            .map(|unit| {
+                unit.bindings()
+                    .iter()
+                    .map(|binding| binding.value().map(str::to_owned))
+                    .collect()
+            })
+            .collect();
+        let statements = sql
+            .iter()
+            .map(|statement_sql| StatementPlan {
+                sql: statement_sql.clone(),
+                kind: StatementKind::Write,
+                missing_where: false,
+                span: None,
+            })
+            .collect::<Vec<_>>();
+        let plan = {
+            let _configuration = self.configuration_mutation_guard()?;
+            let session = self.session(&request.session_id)?;
+            if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+                return Err(disconnected());
+            }
+            let profile = self.persistence.profile(&session.profile.id)?;
+            writable_grid_profile(&profile)?;
+            let mut plan = safety::plan_for_statements(&request.session_id, &profile, statements)?;
+            plan.reviewed_snowflake_grid = true;
+            plan.requires_approval = true;
+            let digest = hex::encode(Sha256::digest(
+                serde_json::to_vec(&(&target, edits.snapshot_id(), &sql, &bindings))
+                    .map_err(|_| AppError::internal("Could not fingerprint Snowflake grid plan"))?,
+            ));
+            plan.binding_digest = Some(digest.clone());
+            plan.warnings.push(
+                "Generated edits target the fully qualified SQL name shown above using exact retained original-row predicates. Concurrent schema changes or duplicate keyless rows are checked by per-statement cardinality; any mismatch rolls back the transaction."
+                    .into(),
+            );
+            match &target {
+                SnowflakeGridPlanTarget::Initial {
+                    mode: Mode::Automatic,
+                } => plan.warnings.push(
+                    "This batch runs inside BEGIN TRANSACTION ... COMMIT on this Snowflake session and may resume a billable warehouse."
+                        .into(),
+                ),
+                SnowflakeGridPlanTarget::Initial { mode: Mode::Manual } => plan.warnings.push(
+                    "This batch starts an explicit manual transaction on this Snowflake session and leaves it PENDING until you explicitly Commit or Rollback."
+                        .into(),
+                ),
+                SnowflakeGridPlanTarget::Continuation { transaction_id, .. } => plan.warnings.push(
+                    format!(
+                        "This batch continues open manual transaction {transaction_id}; any statement failure or cardinality mismatch rolls back the entire transaction."
+                    ),
+                ),
+            }
+            let bytes = edits
+                .compiled()
+                .accounted_bytes()
+                .saturating_add(sql.iter().map(String::len).sum::<usize>());
+            let effective_mode = safety::effective_mode(&profile);
+            self.store_plan(
+                plan,
+                Action::SnowflakeGrid {
+                    target,
+                    edits,
+                    digest,
+                    mode: effective_mode,
+                },
+                bytes,
+            )?
+        };
+        Ok(ChangePreview {
+            plan,
+            row_count: mutations.len(),
+            sql,
+            bindings,
+        })
+    }
+
+    pub async fn execute_snowflake_grid_plan(
+        self: &Arc<Self>,
+        plan_id: &str,
+        approval: Option<&str>,
+    ) -> AppResult<SnowflakeGridResult> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let (session_id, target, edits) = {
+            let _configuration = self.configuration_mutation_guard()?;
+            if self.dml_tasks.is_closed() {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "Joinery is closing; no database write was started",
+                ));
+            }
+            let stored = self.plans.lock().remove(plan_id).ok_or_else(expired)?;
+            if stored.deadline <= Instant::now() {
+                return Err(expired());
+            }
+            let Action::SnowflakeGrid {
+                target,
+                edits,
+                digest,
+                mode,
+            } = stored.action
+            else {
+                return Err(AppError::invalid(
+                    "This is not a reviewed Snowflake grid edit plan",
+                ));
+            };
+            if stored.plan.binding_digest.as_deref() != Some(digest.as_str()) {
+                return Err(expired());
+            }
+            let session = self.session(&stored.plan.session_id)?;
+            if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+                return Err(disconnected());
+            }
+            let profile = self.persistence.profile(&session.profile.id)?;
+            writable_grid_profile(&profile)?;
+            if mode != safety::effective_mode(&profile)
+                || stored.plan.requires_passphrase != (mode == SafeMode::PasswordGated)
+            {
+                return Err(expired());
+            }
+            if stored.approval.is_none() || stored.approval.as_deref() != approval {
+                return Err(AppError::new(
+                    ErrorCode::ApprovalRequired,
+                    "Review and authorize these generated Snowflake edits before applying them",
+                ));
+            }
+            (stored.plan.session_id, target, edits)
+        };
+        let exec = match target {
+            SnowflakeGridPlanTarget::Initial { mode } => {
+                self.execute_snowflake_grid_edits(&session_id, edits, mode)
+                    .await?
+            }
+            SnowflakeGridPlanTarget::Continuation {
+                transaction_id,
+                rollback_prior,
+            } => {
+                self.continue_snowflake_grid_edits(&transaction_id, edits, rollback_prior)
+                    .await?
+            }
+        };
+        Ok(self.to_grid_result(session_id, exec))
+    }
+
+    pub async fn execute_snowflake_grid_finish(
+        self: &Arc<Self>,
+        transaction_id: &str,
+        action: SnowflakeGridFinishAction,
+    ) -> AppResult<SnowflakeGridResult> {
+        let session_id = self
+            .snowflake_grid
+            .owners
+            .lock()
+            .get(transaction_id)
+            .map(|owner| owner.session_id.clone())
+            .ok_or_else(conflict)?;
+        let finish_action = match action {
+            SnowflakeGridFinishAction::Commit => FinishAction::Commit,
+            SnowflakeGridFinishAction::Rollback => FinishAction::Rollback,
+        };
+        let exec = self
+            .finish_snowflake_grid_transaction(transaction_id, finish_action)
+            .await?;
+        Ok(self.to_grid_result(session_id, exec))
+    }
+
     pub(crate) async fn prepare_snowflake_grid_edits(
         &self,
         session_id: &str,
@@ -537,7 +850,7 @@ impl Studio {
             .await
     }
 
-    pub(crate) async fn preview_snowflake_grid_transaction_relation(
+    pub async fn preview_snowflake_grid_transaction_relation(
         &self,
         transaction_id: &str,
         request: &PreviewRelationRequest,

@@ -573,6 +573,8 @@ export function App() {
         workspaceRecoveryHeld() ||
         hasPendingConnections() ||
         Object.values(snap.snowflakeConsoleReceipts).some(consoleReceiptHeld) ||
+        Object.keys(snap.sessionSnowflakeGridPending).length > 0 ||
+        Object.keys(snap.sessionSnowflakeGridTransactions).length > 0 ||
         snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
@@ -1134,6 +1136,11 @@ export function App() {
     const pooledSessions = state.sessionPool[profile.id] ?? [];
     if (
       pooledSessions.length > 0 ||
+      Boolean(
+        primarySessionId &&
+        (state.sessionSnowflakeGridPending[primarySessionId] ||
+          state.sessionSnowflakeGridTransactions[primarySessionId]),
+      ) ||
       sessionHasOpenTransaction(state.sessionStates, primarySessionId) ||
       pooledSessions.some((entry) =>
         sessionHasOpenTransaction(state.sessionStates, entry.info.id),

@@ -1,12 +1,5 @@
 //! Lane-owned observations only. A bracket is neither remote object identity nor
 //! an edit/transaction capability, and never repairs drift or replays a read.
-#![cfg_attr(
-    not(all(test, feature = "test-harness")),
-    allow(
-        dead_code,
-        reason = "Freshness bracket precedes public UI staging and IPC wiring"
-    )
-)]
 use super::*;
 use crate::drivers::snowflake_edit_snapshot::NativeEditBinding;
 

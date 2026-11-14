@@ -463,6 +463,7 @@ pub(crate) fn plan_for_statements(
     Ok(PreparedPlan {
         reviewed_snowflake_dml: false,
         reviewed_snowflake_ddl: false,
+        reviewed_snowflake_grid: false,
         id: new_id(),
         session_id: session_id.into(),
         statements,

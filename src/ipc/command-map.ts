@@ -90,6 +90,9 @@ import type {
   SnowflakeDdlPreflightResponse,
   SnowflakeDdlRequest,
   SnowflakeDdlResult,
+  PrepareSnowflakeGridEditsRequest,
+  SnowflakeGridFinishAction,
+  SnowflakeGridResult,
   SnowflakeConsoleRequest,
   SnowflakeConsolePlan,
   SnowflakeConsoleStart,
@@ -591,6 +594,22 @@ export interface JoineryCommandMap {
   refresh_snowflake_ddl_metadata: {
     args: { sessionId: string };
     result: SessionContextOptions;
+  };
+  prepare_snowflake_grid_plan: {
+    args: { request: PrepareSnowflakeGridEditsRequest };
+    result: ChangePreview;
+  };
+  execute_snowflake_grid_plan: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeGridResult;
+  };
+  preview_snowflake_grid_transaction_relation: {
+    args: { transactionId: string; request: PreviewRelationRequest };
+    result: RelationPreview;
+  };
+  finish_snowflake_grid_transaction: {
+    args: { transactionId: string; action: SnowflakeGridFinishAction };
+    result: SnowflakeGridResult;
   };
   set_transaction_mode: {
     args: { sessionId: string; mode: TransactionMode };

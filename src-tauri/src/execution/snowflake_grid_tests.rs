@@ -1834,3 +1834,218 @@ async fn grid_studio_inflight_protected_rollback_allows_global_flush_and_settled
         studio.shutdown_and_wait().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn grid_studio_reviewed_plan_authorizes_executes_continues_and_finishes() {
+    let _guard = FIXTURE_LANE.lock().await;
+    let f = grid_fixture();
+    let (studio, info) = connected(&f).await;
+    assert!(info.capabilities.snowflake_grid_editing);
+
+    let catalog = studio.relation_catalog(&info.id).await.unwrap();
+    let target_id = catalog
+        .relations
+        .iter()
+        .find(|r| r.table.schema == "PUBLIC" && r.table.name == "ORDERS")
+        .unwrap()
+        .target_id
+        .clone();
+    let inspection = studio
+        .inspect_relation(
+            &info.id,
+            &InspectRelationRequest {
+                revision: catalog.revision.clone(),
+                target_id: target_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let preview_req = PreviewRelationRequest {
+        revision: catalog.revision,
+        target_id,
+        inspection_revision: inspection.revision,
+    };
+    let rel_preview = studio
+        .preview_relation(&info.id, &preview_req)
+        .await
+        .unwrap();
+    let snapshot_id = rel_preview.edit_snapshot_id.clone().unwrap();
+
+    // 1. Unapproved execution is rejected and consumes the one-shot plan.
+    let unapproved = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: None,
+            preview: preview_req.clone(),
+            snapshot_id: snapshot_id.clone(),
+            mutations: vec![SnowflakeGridMutation::Update {
+                row_index: 0,
+                changes: vec![SnowflakeGridColumnValue {
+                    column_index: 1,
+                    value: SnowflakeGridCellInput::Text {
+                        value: "unapproved".into(),
+                    },
+                }],
+            }],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: false,
+        })
+        .await
+        .unwrap();
+    assert!(unapproved.plan.reviewed_snowflake_grid);
+    assert!(unapproved.plan.requires_approval);
+    assert_eq!(
+        studio
+            .execute_snowflake_grid_plan(&unapproved.plan.id, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalRequired
+    );
+    assert_eq!(
+        dml_count(&f),
+        0,
+        "unapproved grid plan must never dispatch SQL"
+    );
+
+    // 2. Re-preview for a fresh linear snapshot, then prepare + authorize + execute initial Manual batch.
+    let rel_preview = studio
+        .preview_relation(&info.id, &preview_req)
+        .await
+        .unwrap();
+    let snapshot_id = rel_preview.edit_snapshot_id.clone().unwrap();
+    let initial_preview = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: None,
+            preview: preview_req.clone(),
+            snapshot_id,
+            mutations: vec![
+                SnowflakeGridMutation::Update {
+                    row_index: 0,
+                    changes: vec![SnowflakeGridColumnValue {
+                        column_index: 1,
+                        value: SnowflakeGridCellInput::Text {
+                            value: "public-ipc-step-1".into(),
+                        },
+                    }],
+                },
+                SnowflakeGridMutation::Insert {
+                    values: vec![
+                        SnowflakeGridColumnValue {
+                            column_index: 0,
+                            value: SnowflakeGridCellInput::Text { value: "99".into() },
+                        },
+                        SnowflakeGridColumnValue {
+                            column_index: 1,
+                            value: SnowflakeGridCellInput::Text {
+                                value: "inserted-via-ipc".into(),
+                            },
+                        },
+                    ],
+                },
+            ],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(initial_preview.row_count, 2);
+    assert_eq!(initial_preview.sql.len(), 2);
+    assert_eq!(initial_preview.bindings.len(), 2);
+    let approval = studio
+        .authorize(&initial_preview.plan.id, None, None)
+        .unwrap();
+    let pending = studio
+        .execute_snowflake_grid_plan(&initial_preview.plan.id, Some(&approval))
+        .await
+        .unwrap();
+    assert_eq!(pending.outcome, SnowflakeGridBatchOutcome::Pending);
+    assert!(!pending.retired);
+    assert!(pending.recording_error.is_none());
+    let tx_id = pending.transaction_id.unwrap();
+
+    // 3. Owner-scoped pending preview + continuation plan + Commit finish.
+    let cont_rel_preview = studio
+        .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+        .await
+        .unwrap();
+    assert_eq!(
+        cont_rel_preview.rows[0][1].as_deref(),
+        Some("public-ipc-step-1")
+    );
+    let cont_plan = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: Some(tx_id.clone()),
+            preview: preview_req.clone(),
+            snapshot_id: cont_rel_preview.edit_snapshot_id.unwrap(),
+            mutations: vec![SnowflakeGridMutation::Delete { row_index: 2 }],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: true,
+        })
+        .await
+        .unwrap();
+    let cont_approval = studio.authorize(&cont_plan.plan.id, None, None).unwrap();
+    let cont_res = studio
+        .execute_snowflake_grid_plan(&cont_plan.plan.id, Some(&cont_approval))
+        .await
+        .unwrap();
+    assert_eq!(cont_res.outcome, SnowflakeGridBatchOutcome::Pending);
+    assert_eq!(cont_res.transaction_id.as_deref(), Some(tx_id.as_str()));
+
+    // 4. Insert-only continuation batch using DEFAULT column expression, then Commit.
+    let cont_rel_preview2 = studio
+        .preview_snowflake_grid_transaction_relation(&tx_id, &preview_req)
+        .await
+        .unwrap();
+    let default_insert_plan = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: Some(tx_id.clone()),
+            preview: preview_req.clone(),
+            snapshot_id: cont_rel_preview2.edit_snapshot_id.unwrap(),
+            mutations: vec![SnowflakeGridMutation::Insert {
+                values: vec![
+                    SnowflakeGridColumnValue {
+                        column_index: 0,
+                        value: SnowflakeGridCellInput::Default,
+                    },
+                    SnowflakeGridColumnValue {
+                        column_index: 1,
+                        value: SnowflakeGridCellInput::Text {
+                            value: "default-id-insert".into(),
+                        },
+                    },
+                ],
+            }],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: true,
+        })
+        .await
+        .unwrap();
+    let default_insert_approval = studio
+        .authorize(&default_insert_plan.plan.id, None, None)
+        .unwrap();
+    let default_insert_res = studio
+        .execute_snowflake_grid_plan(&default_insert_plan.plan.id, Some(&default_insert_approval))
+        .await
+        .unwrap();
+    assert_eq!(
+        default_insert_res.outcome,
+        SnowflakeGridBatchOutcome::Pending
+    );
+
+    let committed = studio
+        .execute_snowflake_grid_finish(&tx_id, SnowflakeGridFinishAction::Commit)
+        .await
+        .unwrap();
+    assert_eq!(committed.outcome, SnowflakeGridBatchOutcome::Committed);
+    assert_eq!(committed.transaction_id.as_deref(), Some(tx_id.as_str()));
+    assert!(committed.recording_error.is_none());
+    assert!(!committed.retired);
+    assert!(committed.metadata_refresh_required);
+    assert!(studio.snowflake_grid.is_empty());
+
+    studio.shutdown_and_wait().await.unwrap();
+}

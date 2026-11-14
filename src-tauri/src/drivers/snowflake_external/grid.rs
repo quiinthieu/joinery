@@ -1,13 +1,6 @@
-//! Typed generated edits on one physical helper. No public editing capability.
+//! Typed generated edits on one physical helper.
 //! Callers must retain the private manual owner before invoking `execute` and
 //! supply real durable admission/original recording; there are no no-op defaults.
-#![cfg_attr(
-    not(all(test, feature = "test-harness")),
-    allow(
-        dead_code,
-        reason = "Typed native adapter precedes public UI staging and IPC wiring"
-    )
-)]
 use super::*;
 use crate::drivers::{
     snowflake_batch::{BatchRequest, FinishAction, Mode, Outcome},
@@ -120,6 +113,7 @@ impl GridNoDispatch {
 pub(crate) struct GridOutcome {
     pub report: Report,
     pub recording_error: Option<AppError>,
+    #[cfg_attr(not(all(test, unix, feature = "test-harness")), allow(dead_code))]
     pub manual: Option<Arc<GridManualTransaction>>,
 }
 

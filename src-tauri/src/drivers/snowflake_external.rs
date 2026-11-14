@@ -412,6 +412,9 @@ impl SnowflakeExternal {
                 ddl_editing: false,
                 snowflake_reviewed_ddl: config.reviewed_ddl
                     && profile.safe_mode != SafeMode::ReadOnly,
+                snowflake_grid_editing: config.reviewed_dml
+                    && !config.reviewed_console
+                    && profile.safe_mode != SafeMode::ReadOnly,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: false,

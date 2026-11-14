@@ -1,18 +1,33 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type {
   BrowseCatalog,
+  ChangePreview,
   RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
   RelationInspection,
   RelationPreview,
+  SnowflakeGridCellInput,
+  SnowflakeGridFinishAction,
+  SnowflakeGridMode,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { querySessionForTab, revokeSchemaSelectionBeforeWork, useStudio } from "../../state/studio";
 import { Modal } from "../../components/ui/Modal";
+import { ReviewDialog } from "../safety/ReviewDialog";
 import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
 import { DdlPanel } from "./ObjectInspectorView";
+import {
+  MAX_SNOWFLAKE_GRID_MUTATIONS,
+  buildSnowflakeGridMutations,
+  canColumnDefaultOnInsert,
+  createBlankInsertRow,
+  isWritableSnowflakeColumn,
+  stageCsvInsertRows,
+  type CsvFieldDelimiter,
+  type StagedInsertRow,
+} from "./snowflake-grid-staging";
 
 const PAGE_ROWS = 25;
 const PAGE_COLUMNS = 20;
@@ -112,10 +127,20 @@ export function RelationBrowser({
   const profile = useStudio((state) =>
     state.bootstrap?.profiles.find((entry) => entry.id === session?.connectionId),
   );
+  const gridTx = useStudio((state) => state.sessionSnowflakeGridTransactions[sessionId] ?? null);
+  const gridBusy = useStudio((state) => Boolean(state.sessionSnowflakeGridPending[sessionId]));
+  const metadataRefreshRequired = useStudio((state) =>
+    Boolean(
+      state.sessionMetadataRefreshRequired[sessionId] ||
+      state.sessionDdlCatalogRefreshRequired[sessionId],
+    ),
+  );
   const blocked = useStudio(
     (state) =>
       !!(
         state.sessionTransactionPending[sessionId] ||
+        state.sessionSnowflakeGridPending[sessionId] ||
+        state.sessionSnowflakeGridTransactions[sessionId] ||
         state.sessionMetadataRefreshRequired[sessionId] ||
         state.sessionDdlCatalogRefreshRequired[sessionId] ||
         state.sessionContextSwitching[sessionId] ||
@@ -135,7 +160,26 @@ export function RelationBrowser({
     session?.capabilities.snowflakeReviewedDdl === true &&
     profile?.snowflake?.reviewedDdl === true &&
     profile.safeMode !== "readOnly";
+  const canEditGrid =
+    session?.capabilities.snowflakeGridEditing === true &&
+    profile?.snowflake?.reviewedDml === true &&
+    !profile?.snowflake?.reviewedConsole &&
+    profile.safeMode !== "readOnly";
   const [ddlRequest, setDdlRequest] = useState<SnowflakeDdlDialogRequest | null>(null);
+  const [gridReview, setGridReview] = useState<ChangePreview | null>(null);
+  const [gridMode, setGridMode] = useState<SnowflakeGridMode>("automatic");
+  const [deletedRows, setDeletedRows] = useState<Record<number, true>>({});
+  const [updatedCells, setUpdatedCells] = useState<
+    Record<number, Record<number, SnowflakeGridCellInput>>
+  >({});
+  const [insertedRows, setInsertedRows] = useState<StagedInsertRow[]>([]);
+  const [consumedSnapshotId, setConsumedSnapshotId] = useState<string | null>(null);
+  const [gridError, setGridError] = useState<string | null>(null);
+  const [csvPanelOpen, setCsvPanelOpen] = useState(false);
+  const [csvRawText, setCsvRawText] = useState("");
+  const [csvDelimiter, setCsvDelimiter] = useState<CsvFieldDelimiter>(",");
+  const [csvHasHeader, setCsvHasHeader] = useState(true);
+  const [csvNullToken, setCsvNullToken] = useState("\\N");
   const [catalog, setCatalog] = useState<BrowseCatalog | null>(null);
   const [inspection, setInspection] = useState<RelationInspection | null>(null);
   const [preview, setPreview] = useState<RelationPreview | null>(null);
@@ -171,8 +215,18 @@ export function RelationBrowser({
   const retainedSelection = useRef({ catalog, mappings, selected, sessionId, ownerTabId });
   retainedSelection.current = { catalog, mappings, selected, sessionId, ownerTabId };
   const mounted = useRef(false);
+  const pendingRefreshAfterResume = useRef(false);
   const renderedContext = useRef(contextKey);
   renderedContext.current = contextKey;
+  const clearStagedGridEdits = () => {
+    setDeletedRows({});
+    setUpdatedCells({});
+    setInsertedRows([]);
+    setConsumedSnapshotId(null);
+    setGridReview(null);
+    setGridError(null);
+    setCsvPanelOpen(false);
+  };
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -196,6 +250,7 @@ export function RelationBrowser({
       setSelected("");
       setBusy(false);
       setError(null);
+      clearStagedGridEdits();
     };
     invalidate();
     // Observe every transition, including a hold set and cleared within one
@@ -212,6 +267,7 @@ export function RelationBrowser({
   const run = async (
     work: (current: () => boolean) => Promise<void>,
     onFailure?: (message: string) => void,
+    allowGridTransaction = false,
   ) => {
     const request = ++generation.current;
     const current = () =>
@@ -222,7 +278,7 @@ export function RelationBrowser({
     setBusy(true);
     setError(null);
     try {
-      revokeSchemaSelectionBeforeWork(sessionId);
+      revokeSchemaSelectionBeforeWork(sessionId, false, allowGridTransaction);
       await work(current);
     } catch (err) {
       if (current()) {
@@ -248,6 +304,7 @@ export function RelationBrowser({
     }
   };
   const refresh = () => {
+    clearStagedGridEdits();
     setCatalog(null);
     setInspection(null);
     setPreview(null);
@@ -266,16 +323,41 @@ export function RelationBrowser({
       if (current()) setCatalog(result);
     });
   };
+  useEffect(() => {
+    if (pendingRefreshAfterResume.current && !metadataRefreshRequired && !gridTx && !gridBusy) {
+      pendingRefreshAfterResume.current = false;
+      refresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [contextKey, metadataRefreshRequired, gridTx, gridBusy]);
+  const resumeMetadata = () => {
+    if (busy || gridBusy || gridTx) return;
+    setBusy(true);
+    setError(null);
+    pendingRefreshAfterResume.current = true;
+    void useStudio
+      .getState()
+      .refreshSessionContexts(sessionId, true)
+      .catch((err) => {
+        pendingRefreshAfterResume.current = false;
+        if (mounted.current) {
+          setBusy(false);
+          setError(messageOf(err));
+        }
+      });
+  };
   // Opening the browser is explicit user intent to load current visible metadata.
   useEffect(() => {
     // Defer dispatch until after React's development effect replay. One open
     // must not start duplicate catalog reads during StrictMode setup/cleanup.
     const timer = setTimeout(refresh, 0);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
   const inspect = () => {
     const target = catalog?.relations.find((entry) => entry.targetId === selected);
     if (!catalog || !target || target.availability !== "available") return;
+    clearStagedGridEdits();
     setInspection(null);
     setPreview(null);
     setRowPage(0);
@@ -290,6 +372,7 @@ export function RelationBrowser({
   };
   const loadPreview = () => {
     if (!catalog || !inspection) return;
+    clearStagedGridEdits();
     setPreview(null);
     setRowPage(0);
     setColumnPage(0);
@@ -304,6 +387,41 @@ export function RelationBrowser({
       });
       if (current()) setPreview(result);
     });
+  };
+  const reloadPendingPreview = () => {
+    if (!gridTx || gridTx.recordingError || !catalog || !inspection) return;
+    const txId = gridTx.transactionId;
+    clearStagedGridEdits();
+    setRowPage(0);
+    setColumnPage(0);
+    void run(
+      async (current) => {
+        const result = await client.call("preview_snowflake_grid_transaction_relation", {
+          transactionId: txId,
+          request: {
+            revision: catalog.revision,
+            targetId: inspection.targetId,
+            inspectionRevision: inspection.revision,
+          },
+        });
+        if (current()) setPreview(result);
+      },
+      setGridError,
+      true,
+    );
+  };
+  const finishGridTransaction = (action: SnowflakeGridFinishAction) => {
+    if (!gridTx || gridBusy) return;
+    setGridError(null);
+    void useStudio
+      .getState()
+      .finishSnowflakeGridTransaction(sessionId, gridTx.transactionId, action)
+      .then(() => {
+        if (mounted.current) clearStagedGridEdits();
+      })
+      .catch((err) => {
+        if (mounted.current) setGridError(messageOf(err));
+      });
   };
   const loadDefinition = () => {
     const target = catalog?.relations.find((entry) => entry.targetId === selected);
@@ -496,6 +614,154 @@ export function RelationBrowser({
           .map((part) => `"${part.replaceAll('"', '""')}"`)
           .join(".")
       : "";
+  const activeSnapshotId =
+    canEditGrid &&
+    preview?.editSnapshotId &&
+    preview.editSnapshotId !== consumedSnapshotId &&
+    !gridTx?.recordingError
+      ? preview.editSnapshotId
+      : null;
+  const gridEditableView = canEditGrid && Boolean(inspection) && Boolean(preview);
+  const stagedBuild =
+    gridEditableView && inspection
+      ? buildSnowflakeGridMutations({
+          deletedRows,
+          updatedCells,
+          insertedRows,
+          columns: inspection.columns,
+        })
+      : { mutations: [], mixedUnknownInsertWarning: null };
+  const totalStagedMutations = stagedBuild.mutations.length;
+
+  const setCellOverride = (
+    absRowIndex: number,
+    colIndex: number,
+    nextValue: SnowflakeGridCellInput | null,
+  ) => {
+    const originalVal = preview?.rows[absRowIndex]?.[colIndex];
+    const matchesOriginal =
+      nextValue === null ||
+      (nextValue.kind === "null" && originalVal === null) ||
+      (nextValue.kind === "text" && originalVal !== null && nextValue.value === originalVal);
+    setUpdatedCells((prev) => {
+      const next = { ...prev };
+      const rowMap = { ...(next[absRowIndex] ?? {}) };
+      if (matchesOriginal) {
+        delete rowMap[colIndex];
+      } else {
+        rowMap[colIndex] = nextValue;
+      }
+      if (Object.keys(rowMap).length === 0) {
+        delete next[absRowIndex];
+      } else {
+        next[absRowIndex] = rowMap;
+      }
+      return next;
+    });
+  };
+
+  const toggleDeleteRow = (absRowIndex: number) => {
+    setDeletedRows((prev) => {
+      const next = { ...prev };
+      if (next[absRowIndex]) {
+        delete next[absRowIndex];
+      } else {
+        next[absRowIndex] = true;
+      }
+      return next;
+    });
+  };
+
+  const handleStageCsv = () => {
+    if (!inspection) return;
+    setGridError(null);
+    try {
+      const staged = stageCsvInsertRows({
+        raw: csvRawText,
+        delimiter: csvDelimiter,
+        hasHeader: csvHasHeader,
+        nullToken: csvNullToken,
+        columns: inspection.columns,
+      });
+      if (totalStagedMutations + staged.length > MAX_SNOWFLAKE_GRID_MUTATIONS) {
+        setGridError(
+          `Staging ${staged.length} CSV rows would exceed the ${MAX_SNOWFLAKE_GRID_MUTATIONS}-mutation batch limit.`,
+        );
+        return;
+      }
+      setInsertedRows((prev) => [...prev, ...staged]);
+      setCsvRawText("");
+      setCsvPanelOpen(false);
+    } catch (err) {
+      setGridError(messageOf(err));
+    }
+  };
+
+  const prepareGridReview = async () => {
+    if (
+      !catalog ||
+      !inspection ||
+      !activeSnapshotId ||
+      totalStagedMutations === 0 ||
+      totalStagedMutations > MAX_SNOWFLAKE_GRID_MUTATIONS ||
+      stagedBuild.mixedUnknownInsertWarning ||
+      busy ||
+      gridBusy
+    )
+      return;
+    setGridError(null);
+    setBusy(true);
+    setConsumedSnapshotId(activeSnapshotId);
+    try {
+      const changePreview = await client.call("prepare_snowflake_grid_plan", {
+        request: {
+          sessionId,
+          transactionId: gridTx?.transactionId ?? null,
+          preview: {
+            revision: catalog.revision,
+            targetId: inspection.targetId,
+            inspectionRevision: inspection.revision,
+          },
+          snapshotId: activeSnapshotId,
+          mutations: stagedBuild.mutations,
+          mode: gridTx ? "manual" : gridMode,
+          rollbackPrior: Boolean(gridTx),
+        },
+      });
+      if (mounted.current) {
+        setGridReview(changePreview);
+      }
+    } catch (err) {
+      if (mounted.current) {
+        setGridError(messageOf(err));
+      }
+    } finally {
+      if (mounted.current) {
+        setBusy(false);
+      }
+    }
+  };
+
+  if (gridReview && profile)
+    return (
+      <ReviewDialog
+        plan={gridReview.plan}
+        preview={gridReview}
+        profile={profile}
+        onClose={() => setGridReview(null)}
+        onExecute={async (approval) => {
+          const result = await useStudio
+            .getState()
+            .executeSnowflakeGridPlan(gridReview.plan, approval);
+          if (mounted.current) {
+            clearStagedGridEdits();
+            if (result.outcome === "pending") {
+              setPreview((current) => (current ? { ...current, editSnapshotId: undefined } : null));
+            }
+          }
+        }}
+      />
+    );
   if (ddlRequest && profile)
     return (
       <SnowflakeDdlDialog
@@ -515,27 +781,82 @@ export function RelationBrowser({
     >
       <div className="modal-body relation-browser">
         <div className="query-actions">
-          <button className="button small" onClick={refresh}>
+          <button className="button small" disabled={Boolean(gridTx) || gridBusy} onClick={refresh}>
             Refresh relations
           </button>
+          {metadataRefreshRequired && !gridTx && !gridBusy && (
+            <button className="button small primary" disabled={busy} onClick={resumeMetadata}>
+              Resume session metadata
+            </button>
+          )}
           <span role="status">
-            {busy
+            {busy || gridBusy
               ? "Loading…"
               : catalog
                 ? `${catalog.relations.length} visible relations · ${catalog.database}`
                 : "Refresh required"}
           </span>
         </div>
+        {gridTx && (
+          <section
+            aria-label="Pending Snowflake grid transaction"
+            className="safety-warning"
+            style={{ display: "block" }}
+          >
+            <p role="status">
+              <strong>Open manual Snowflake grid transaction:</strong> {gridTx.transactionId}
+            </p>
+            {gridTx.recordingError && (
+              <p className="inline-error" role="alert">
+                Outcome recording blocked: {gridTx.recordingError}. Continuation and Commit are
+                disabled; Rollback remains available.
+              </p>
+            )}
+            <div className="query-actions">
+              <button
+                type="button"
+                className="button small"
+                disabled={
+                  busy || gridBusy || Boolean(gridTx.recordingError) || !catalog || !inspection
+                }
+                onClick={reloadPendingPreview}
+              >
+                Reload pending preview
+              </button>
+              <button
+                type="button"
+                className="button small primary"
+                disabled={busy || gridBusy || Boolean(gridTx.recordingError)}
+                onClick={() => finishGridTransaction("commit")}
+              >
+                Commit transaction
+              </button>
+              <button
+                type="button"
+                className="button small danger"
+                disabled={gridBusy}
+                onClick={() => finishGridTransaction("rollback")}
+              >
+                Rollback transaction
+              </button>
+            </div>
+          </section>
+        )}
         {error && (
           <p className="inline-error" role="alert">
             {error}
+          </p>
+        )}
+        {gridError && (
+          <p className="inline-error" role="alert">
+            {gridError}
           </p>
         )}
         <label>
           Find relation
           <input
             aria-label="Find relation"
-            disabled={busy}
+            disabled={busy || Boolean(gridTx) || gridBusy}
             value={search}
             onChange={(event) => {
               generation.current++;
@@ -559,7 +880,7 @@ export function RelationBrowser({
           <select
             ref={relationSelector}
             aria-label="Relation"
-            disabled={busy || !catalog}
+            disabled={busy || !catalog || Boolean(gridTx) || gridBusy}
             value={selected}
             onChange={(event) => {
               generation.current++;
@@ -605,12 +926,16 @@ export function RelationBrowser({
         <div className="query-actions">
           <button
             className="button small"
-            disabled={busy || target?.availability !== "available"}
+            disabled={busy || Boolean(gridTx) || gridBusy || target?.availability !== "available"}
             onClick={inspect}
           >
             Inspect relation
           </button>
-          <button className="button small" disabled={busy || !inspection} onClick={loadPreview}>
+          <button
+            className="button small"
+            disabled={busy || Boolean(gridTx) || gridBusy || !inspection}
+            onClick={loadPreview}
+          >
             Preview rows
           </button>
           <button
@@ -1071,6 +1396,280 @@ export function RelationBrowser({
               {preview.truncated ? " · Preview limit reached" : ""}. NULL is shown as ∅; an empty
               string as “”. This unordered sample has no continuation.
             </p>
+            {gridEditableView && inspection && (
+              <section aria-label="Snowflake grid editing controls">
+                {!activeSnapshotId ? (
+                  <p role="note">
+                    {gridTx?.recordingError
+                      ? "Outcome recording is blocked on this manual transaction. Roll back before editing further."
+                      : gridTx
+                        ? "Preview edit snapshot was consumed. Click Reload pending preview above to inspect uncommitted rows and stage continuation edits."
+                        : !preview.editSnapshotId
+                          ? "Generated grid editing is unavailable for this relation or column type set (currently supported: UTF-8 text, fixed-point NUMBER/DECIMAL, and BOOLEAN on standard/temporary tables up to 128 columns)."
+                          : "Preview edit snapshot was consumed during plan preparation. Click Preview rows to obtain a fresh snapshot."}
+                  </p>
+                ) : (
+                  <>
+                    <div className="query-actions">
+                      <label>
+                        Mode{" "}
+                        <select
+                          aria-label="Grid transaction mode"
+                          disabled={Boolean(gridTx) || busy || gridBusy}
+                          value={gridTx ? "manual" : gridMode}
+                          onChange={(e) => setGridMode(e.target.value as SnowflakeGridMode)}
+                        >
+                          <option value="automatic">Auto-commit batch</option>
+                          <option value="manual">Manual transaction</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="button small"
+                        disabled={
+                          busy || gridBusy || totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
+                        }
+                        onClick={() =>
+                          setInsertedRows((prev) => [
+                            ...prev,
+                            createBlankInsertRow(inspection.columns),
+                          ])
+                        }
+                      >
+                        Add row
+                      </button>
+                      <button
+                        type="button"
+                        className="button small"
+                        disabled={busy || gridBusy}
+                        onClick={() => setCsvPanelOpen((open) => !open)}
+                      >
+                        {csvPanelOpen ? "Hide CSV import" : "Import CSV rows…"}
+                      </button>
+                      {totalStagedMutations > 0 && (
+                        <button
+                          type="button"
+                          className="button small"
+                          disabled={busy || gridBusy}
+                          onClick={clearStagedGridEdits}
+                        >
+                          Discard staged edits
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="button small primary"
+                        disabled={
+                          busy ||
+                          gridBusy ||
+                          totalStagedMutations === 0 ||
+                          totalStagedMutations > MAX_SNOWFLAKE_GRID_MUTATIONS ||
+                          Boolean(stagedBuild.mixedUnknownInsertWarning)
+                        }
+                        onClick={() => void prepareGridReview()}
+                      >
+                        {`Review ${totalStagedMutations} change${totalStagedMutations === 1 ? "" : "s"}…`}
+                      </button>
+                    </div>
+                    {stagedBuild.mixedUnknownInsertWarning && (
+                      <p className="inline-error" role="alert">
+                        {stagedBuild.mixedUnknownInsertWarning}
+                      </p>
+                    )}
+                    {csvPanelOpen && (
+                      <section aria-label="Stage CSV rows">
+                        <div className="query-actions">
+                          <label>
+                            Delimiter{" "}
+                            <select
+                              aria-label="CSV delimiter"
+                              value={csvDelimiter}
+                              onChange={(e) => setCsvDelimiter(e.target.value as CsvFieldDelimiter)}
+                            >
+                              <option value=",">Comma (,)</option>
+                              <option value={"\t"}>Tab</option>
+                              <option value=";">Semicolon (;)</option>
+                              <option value="|">Pipe (|)</option>
+                            </select>
+                          </label>
+                          <label>
+                            <input
+                              type="checkbox"
+                              aria-label="First CSV row is header"
+                              checked={csvHasHeader}
+                              onChange={(e) => setCsvHasHeader(e.target.checked)}
+                            />{" "}
+                            First row is header
+                          </label>
+                          <label>
+                            NULL token{" "}
+                            <input
+                              aria-label="CSV NULL token"
+                              value={csvNullToken}
+                              onChange={(e) => setCsvNullToken(e.target.value)}
+                              style={{ width: "5rem" }}
+                            />
+                          </label>
+                          <label>
+                            Load CSV file{" "}
+                            <input
+                              type="file"
+                              aria-label="Load CSV file"
+                              accept=".csv,.tsv,text/csv,text/tab-separated-values,text/plain"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                void file
+                                  .text()
+                                  .then((content) => {
+                                    if (mounted.current) setCsvRawText(content);
+                                  })
+                                  .catch((err) => {
+                                    if (mounted.current) setGridError(messageOf(err));
+                                  });
+                              }}
+                            />
+                          </label>
+                        </div>
+                        <label>
+                          CSV content
+                          <textarea
+                            aria-label="CSV rows to stage"
+                            rows={4}
+                            value={csvRawText}
+                            onChange={(e) => setCsvRawText(e.target.value)}
+                            placeholder="Paste CSV rows to stage into this reviewed Snowflake batch"
+                          />
+                        </label>
+                        <div className="query-actions">
+                          <button
+                            type="button"
+                            className="button small primary"
+                            disabled={!csvRawText.trim()}
+                            onClick={handleStageCsv}
+                          >
+                            Stage CSV rows
+                          </button>
+                        </div>
+                      </section>
+                    )}
+                    {insertedRows.length > 0 && (
+                      <section aria-label="Staged insert rows">
+                        <h4>Staged inserts ({insertedRows.length})</h4>
+                        <div className="relation-table-scroll">
+                          <table>
+                            <caption>Staged insert rows</caption>
+                            <thead>
+                              <tr>
+                                <th>Action</th>
+                                {inspection.columns.map((col, colIdx) =>
+                                  isWritableSnowflakeColumn(col) ? (
+                                    <th key={colIdx}>{col.name}</th>
+                                  ) : null,
+                                )}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {insertedRows.map((draftRow, draftIdx) => (
+                                <tr key={draftRow.id}>
+                                  <td>
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Remove insert row ${draftIdx + 1}`}
+                                      onClick={() =>
+                                        setInsertedRows((prev) =>
+                                          prev.filter((entry) => entry.id !== draftRow.id),
+                                        )
+                                      }
+                                    >
+                                      Remove
+                                    </button>
+                                  </td>
+                                  {inspection.columns.map((col, colIdx) => {
+                                    if (!isWritableSnowflakeColumn(col)) return null;
+                                    const cell = draftRow.cells[colIdx] ?? {
+                                      kind: "text" as const,
+                                      value: "",
+                                    };
+                                    const allowDefault = canColumnDefaultOnInsert(col);
+                                    return (
+                                      <td key={colIdx}>
+                                        <select
+                                          aria-label={`Insert row ${draftIdx + 1} ${col.name} mode`}
+                                          value={cell.kind}
+                                          onChange={(e) => {
+                                            const mode = e.target
+                                              .value as SnowflakeGridCellInput["kind"];
+                                            const nextCell: SnowflakeGridCellInput =
+                                              mode === "default"
+                                                ? { kind: "default" }
+                                                : mode === "null"
+                                                  ? { kind: "null" }
+                                                  : {
+                                                      kind: "text",
+                                                      value:
+                                                        cell.kind === "text"
+                                                          ? cell.value
+                                                          : col.resultKind === "boolean"
+                                                            ? "false"
+                                                            : "",
+                                                    };
+                                            setInsertedRows((prev) =>
+                                              prev.map((entry) =>
+                                                entry.id === draftRow.id
+                                                  ? {
+                                                      ...entry,
+                                                      cells: { ...entry.cells, [colIdx]: nextCell },
+                                                    }
+                                                  : entry,
+                                              ),
+                                            );
+                                          }}
+                                        >
+                                          {allowDefault && <option value="default">DEFAULT</option>}
+                                          {col.nullable && <option value="null">NULL</option>}
+                                          <option value="text">Value</option>
+                                        </select>
+                                        {cell.kind === "text" && (
+                                          <input
+                                            aria-label={`Insert row ${draftIdx + 1} ${col.name} value`}
+                                            value={cell.value}
+                                            onChange={(e) => {
+                                              const nextVal = e.target.value;
+                                              setInsertedRows((prev) =>
+                                                prev.map((entry) =>
+                                                  entry.id === draftRow.id
+                                                    ? {
+                                                        ...entry,
+                                                        cells: {
+                                                          ...entry.cells,
+                                                          [colIdx]: {
+                                                            kind: "text",
+                                                            value: nextVal,
+                                                          },
+                                                        },
+                                                      }
+                                                    : entry,
+                                                ),
+                                              );
+                                            }}
+                                          />
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+                    )}
+                  </>
+                )}
+              </section>
+            )}
             <div className="query-actions">
               <button disabled={rowPage === 0} onClick={() => setRowPage(rowPage - 1)}>
                 Previous rows
@@ -1101,33 +1700,112 @@ export function RelationBrowser({
             </div>
             <div className="relation-table-scroll">
               <table>
-                <caption>Read-only preview</caption>
+                <caption>
+                  {activeSnapshotId ? "Editable Snowflake preview" : "Read-only preview"}
+                </caption>
                 <thead>
                   <tr>
+                    {activeSnapshotId && <th>Row action</th>}
                     {columns.map((column) => (
                       <th key={column.id}>{column.name}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, index) => (
-                    <tr key={rowPage * PAGE_ROWS + index}>
-                      {columns.map((column, i) => {
-                        const value = row[columnPage * PAGE_COLUMNS + i];
-                        return (
-                          <td key={column.id}>
-                            {value === null ? (
-                              <span aria-label="NULL">∅</span>
-                            ) : value === "" ? (
-                              <span aria-label="Empty string">“”</span>
-                            ) : (
-                              value
-                            )}
+                  {rows.map((row, index) => {
+                    const absRowIndex = rowPage * PAGE_ROWS + index;
+                    const rowDeleted = Boolean(deletedRows[absRowIndex]);
+                    return (
+                      <tr key={absRowIndex}>
+                        {activeSnapshotId && (
+                          <td>
+                            <button
+                              type="button"
+                              className="button small"
+                              aria-label={
+                                rowDeleted
+                                  ? `Undo delete row ${absRowIndex + 1}`
+                                  : `Mark row ${absRowIndex + 1} for delete`
+                              }
+                              onClick={() => toggleDeleteRow(absRowIndex)}
+                            >
+                              {rowDeleted ? "Undo delete" : "Delete"}
+                            </button>
                           </td>
-                        );
-                      })}
-                    </tr>
-                  ))}
+                        )}
+                        {columns.map((column, i) => {
+                          const colIndex = columnPage * PAGE_COLUMNS + i;
+                          const value = row[colIndex];
+                          const inspectedCol = inspection?.columns[colIndex];
+                          const cellEditable =
+                            Boolean(activeSnapshotId) &&
+                            !rowDeleted &&
+                            Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
+                          if (cellEditable && inspectedCol) {
+                            const override = updatedCells[absRowIndex]?.[colIndex];
+                            const effective: SnowflakeGridCellInput =
+                              override ??
+                              (value === null ? { kind: "null" } : { kind: "text", value });
+                            return (
+                              <td key={column.id}>
+                                <input
+                                  aria-label={`Row ${absRowIndex + 1} ${column.name}`}
+                                  disabled={effective.kind === "null"}
+                                  placeholder={effective.kind === "null" ? "NULL" : ""}
+                                  value={effective.kind === "text" ? effective.value : ""}
+                                  onChange={(e) =>
+                                    setCellOverride(absRowIndex, colIndex, {
+                                      kind: "text",
+                                      value: e.target.value,
+                                    })
+                                  }
+                                />
+                                {inspectedCol.nullable && (
+                                  <button
+                                    type="button"
+                                    className="button small"
+                                    aria-label={`Toggle NULL for row ${absRowIndex + 1} ${column.name}`}
+                                    onClick={() =>
+                                      setCellOverride(
+                                        absRowIndex,
+                                        colIndex,
+                                        effective.kind === "null"
+                                          ? { kind: "text", value: value ?? "" }
+                                          : { kind: "null" },
+                                      )
+                                    }
+                                  >
+                                    {effective.kind === "null" ? "Text" : "NULL"}
+                                  </button>
+                                )}
+                                {override && (
+                                  <button
+                                    type="button"
+                                    className="button small"
+                                    aria-label={`Revert row ${absRowIndex + 1} ${column.name}`}
+                                    onClick={() => setCellOverride(absRowIndex, colIndex, null)}
+                                  >
+                                    Revert
+                                  </button>
+                                )}
+                              </td>
+                            );
+                          }
+                          return (
+                            <td key={column.id}>
+                              {value === null ? (
+                                <span aria-label="NULL">∅</span>
+                              ) : value === "" ? (
+                                <span aria-label="Empty string">“”</span>
+                              ) : (
+                                value
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

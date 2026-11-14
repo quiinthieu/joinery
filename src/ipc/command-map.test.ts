@@ -8,12 +8,15 @@ import type {
 } from "./command-map";
 import type {
   Bootstrap,
+  ChangePreview,
   PreparedPlan,
   RelationDefinition,
   RelationConstraints,
   RelationCheckConstraints,
   RelationConstraintMappings,
+  RelationPreview,
   SchemaDdlPlan,
+  SnowflakeGridResult,
   TableSchema,
 } from "./generated";
 
@@ -104,6 +107,45 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     });
     expectTypeOf(releasePreviewPromise).toEqualTypeOf<Promise<void>>();
 
+    const prepareGridPromise = typedClient.call("prepare_snowflake_grid_plan", {
+      request: {
+        sessionId: "session-1",
+        transactionId: null,
+        preview: {
+          revision: "catalog-1",
+          targetId: "opaque-target",
+          inspectionRevision: "inspect-1",
+        },
+        snapshotId: "snap-1",
+        mutations: [{ kind: "delete", rowIndex: 0 }],
+        mode: "manual",
+        rollbackPrior: false,
+      },
+    });
+    expectTypeOf(prepareGridPromise).toEqualTypeOf<Promise<ChangePreview>>();
+
+    const executeGridPromise = typedClient.call("execute_snowflake_grid_plan", {
+      planId: "plan-1",
+      approval: "approval-1",
+    });
+    expectTypeOf(executeGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
+
+    const pendingPreviewPromise = typedClient.call("preview_snowflake_grid_transaction_relation", {
+      transactionId: "tx-1",
+      request: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspect-1",
+      },
+    });
+    expectTypeOf(pendingPreviewPromise).toEqualTypeOf<Promise<RelationPreview>>();
+
+    const finishGridPromise = typedClient.call("finish_snowflake_grid_transaction", {
+      transactionId: "tx-1",
+      action: "commit",
+    });
+    expectTypeOf(finishGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
+
     await Promise.all([
       bootstrapPromise,
       definitionPromise,
@@ -114,8 +156,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       explicitGenericPromise,
       migrationPrepPromise,
       releasePreviewPromise,
+      prepareGridPromise,
+      executeGridPromise,
+      pendingPreviewPromise,
+      finishGridPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(9);
+    expect(callMock).toHaveBeenCalledTimes(13);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -210,6 +256,12 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       void c.call("release_csv_import_preview", {
         sessionId: "session-1",
         sourceToken: "source-1",
+      });
+
+      void c.call("finish_snowflake_grid_transaction", {
+        transactionId: "tx-1",
+        // @ts-expect-error — finish_snowflake_grid_transaction rejects arbitrary SQL actions
+        action: "savepoint",
       });
     };
 

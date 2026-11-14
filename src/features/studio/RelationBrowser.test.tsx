@@ -3,14 +3,18 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { StrictMode } from "react";
 import type {
   BrowseCatalog,
+  ChangePreview,
   ColumnInfo,
+  ConnectionProfile,
   RelationCheckConstraints,
   RelationConstraintMappings,
   RelationConstraints,
   RelationDefinition,
   RelationInspection,
   RelationPreview,
+  SessionContextOptions,
   SessionInfo,
+  SnowflakeGridResult,
 } from "../../ipc/generated";
 import { client } from "../../ipc/client";
 import { RelationBrowser } from "./RelationBrowser";
@@ -246,6 +250,8 @@ beforeEach(() => {
     sessionTransactionPending: {},
     sessionMetadataRefreshRequired: {},
     sessionDdlCatalogRefreshRequired: {},
+    sessionSnowflakeGridPending: {},
+    sessionSnowflakeGridTransactions: {},
     sessions: {},
     tabs: [],
   });
@@ -1758,4 +1764,398 @@ it.each(
   });
   expect(screen.queryByRole("table", { name: "CHECK constraint inventory" })).toBeNull();
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+function setupWritableSnowflakeGrid() {
+  const profile: ConnectionProfile = {
+    id: "sf-write-profile",
+    name: "Snowflake Sandbox",
+    groupId: "",
+    environment: "staging",
+    engine: "snowflake",
+    host: "org-acct.snowflakecomputing.com",
+    port: 443,
+    database: "DB",
+    username: "USER",
+    tlsMode: "verifyFull",
+    caCertPath: null,
+    safeMode: "confirm",
+    rememberPassword: false,
+    storeQueryText: true,
+    storeDrafts: true,
+    ssh: null,
+    snowflake: {
+      authentication: "externalBrowser",
+      role: "DEV_ROLE",
+      warehouse: "DEV_WH",
+      schema: "S",
+      reviewedDml: true,
+      reviewedDdl: false,
+      reviewedConsole: false,
+    },
+  };
+  const session: SessionInfo = {
+    id: "s",
+    connectionId: profile.id,
+    engine: "snowflake",
+    serverVersion: "8.40.0",
+    latencyMs: 5,
+    encrypted: true,
+    capabilities: {
+      sql: true,
+      transactions: false,
+      cancellation: true,
+      tableBrowsing: false,
+      relationBrowsing: true,
+      snowflakeGridEditing: true,
+      tableEditing: false,
+      tableFiltering: false,
+      processes: false,
+    },
+  };
+  useStudio.setState({
+    bootstrap: {
+      profiles: [profile],
+      groups: [],
+      passphraseConfigured: false,
+      supportedEngines: ["snowflake"],
+      resultBudgetBytes: 67_108_864,
+      rowLimit: 50_000,
+      workspace: null,
+      savedQueries: [],
+      bookmarks: [],
+      sqlFormatSettings: {
+        keywordCase: "upper",
+        indentWidth: 2,
+        linesBetweenQueries: 2,
+      },
+      sqlSnippets: [],
+    },
+    sessions: { [profile.id]: session },
+  });
+  return { profile, session };
+}
+
+it("stages inline updates, deletes, and CSV inserts through ReviewDialog and resumes session metadata", async () => {
+  setupWritableSnowflakeGrid();
+  const editablePreview: RelationPreview = {
+    ...preview,
+    editSnapshotId: "snap-auto-1",
+  };
+  const preparedPreview: ChangePreview = {
+    plan: {
+      id: "grid-plan-auto",
+      sessionId: "s",
+      reviewedSnowflakeGrid: true,
+      statements: [
+        {
+          sql: 'DELETE FROM "DB"."S"."Quoted Table" WHERE ...',
+          kind: "write",
+          missingWhere: false,
+        },
+        { sql: 'UPDATE "DB"."S"."Quoted Table" SET ...', kind: "write", missingWhere: false },
+        {
+          sql: 'INSERT INTO "DB"."S"."Quoted Table" VALUES (...)',
+          kind: "write",
+          missingWhere: false,
+        },
+      ],
+      warnings: ["Generated edits target the fully qualified SQL name shown above."],
+      requiresApproval: true,
+      requiresPassphrase: false,
+      confirmationText: null,
+      expiresAt: 1_900_000_000_000,
+    },
+    rowCount: 3,
+    sql: [
+      'DELETE FROM "DB"."S"."Quoted Table" WHERE "exact" IS NULL',
+      'UPDATE "DB"."S"."Quoted Table" SET "exact" = CAST(? AS NUMBER(38,0))',
+      'INSERT INTO "DB"."S"."Quoted Table" ("exact") VALUES (CAST(? AS NUMBER(38,0)))',
+    ],
+    bindings: [[], ["100"], ["200"]],
+  };
+  const autoCommitted: SnowflakeGridResult = {
+    sessionId: "s",
+    operationId: "op-auto-1",
+    outcome: "committed",
+    transactionId: null,
+    recordingError: null,
+    metadataRefreshRequired: true,
+    retired: false,
+  };
+  const resumedOptions: SessionContextOptions = {
+    state: {
+      sessionId: "s",
+      transactionMode: "autoCommit",
+      transactionState: "idle",
+      contextKind: "schema",
+      activeContext: "S",
+      database: "DB",
+      role: "DEV_ROLE",
+      searchPath: ["S"],
+      contextFingerprint: "fp-resumed",
+      transactionObservation: {
+        status: "observed",
+        transactionId: null,
+        abortOnError: false,
+        usability: "unknown",
+      },
+    },
+    available: ["S"],
+    revision: "ctx-rev-1",
+  };
+
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") return editablePreview;
+    if (method === "prepare_snowflake_grid_plan") return preparedPreview;
+    if (method === "authorize_plan") return "approval-auto-1";
+    if (method === "execute_snowflake_grid_plan") return autoCommitted;
+    if (method === "session_contexts") return resumedOptions;
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "100" } });
+  fireEvent.click(screen.getByRole("button", { name: "Mark row 2 for delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Import CSV rows…" }));
+  fireEvent.change(screen.getByLabelText("CSV rows to stage"), {
+    target: { value: "exact\n200\n" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Stage CSV rows" }));
+
+  const reviewButton = screen.getByRole("button", { name: "Review 3 changes…" });
+  expect((reviewButton as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(reviewButton);
+
+  await screen.findByText("Review pending changes");
+  expect(client.call).toHaveBeenCalledWith("prepare_snowflake_grid_plan", {
+    request: {
+      sessionId: "s",
+      transactionId: null,
+      preview: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspection-1",
+      },
+      snapshotId: "snap-auto-1",
+      mutations: [
+        { kind: "delete", rowIndex: 1 },
+        {
+          kind: "update",
+          rowIndex: 0,
+          changes: [{ columnIndex: 0, value: { kind: "text", value: "100" } }],
+        },
+        {
+          kind: "insert",
+          values: [{ columnIndex: 0, value: { kind: "text", value: "200" } }],
+        },
+      ],
+      mode: "automatic",
+      rollbackPrior: false,
+    },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+  await screen.findByRole("button", { name: "Resume session metadata" });
+  expect(useStudio.getState().sessionMetadataRefreshRequired.s).toBe(true);
+
+  fireEvent.click(screen.getByRole("button", { name: "Resume session metadata" }));
+  await screen.findByText("1 visible relations · DB");
+  expect(client.call).toHaveBeenCalledWith("session_contexts", {
+    sessionId: "s",
+    resumeMetadata: true,
+  });
+  expect(useStudio.getState().sessionMetadataRefreshRequired.s).toBe(false);
+});
+
+it("supports manual Snowflake grid transactions across pending preview reload, continuation, and commit", async () => {
+  setupWritableSnowflakeGrid();
+  const initialPreview: RelationPreview = {
+    ...preview,
+    editSnapshotId: "snap-manual-1",
+  };
+  const pendingPreview: RelationPreview = {
+    columns: [column],
+    rows: [["555"], [null], [""]],
+    truncated: false,
+    editSnapshotId: "snap-manual-2",
+  };
+  let prepareCalls = 0;
+  let executeCalls = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") return initialPreview;
+    if (method === "preview_snowflake_grid_transaction_relation") return pendingPreview;
+    if (method === "prepare_snowflake_grid_plan") {
+      prepareCalls += 1;
+      return {
+        plan: {
+          id: `manual-plan-${prepareCalls}`,
+          sessionId: "s",
+          reviewedSnowflakeGrid: true,
+          statements: [{ sql: "UPDATE ...", kind: "write", missingWhere: false }],
+          warnings: [],
+          requiresApproval: true,
+          requiresPassphrase: false,
+          confirmationText: null,
+          expiresAt: 1_900_000_000_000,
+        },
+        rowCount: 1,
+        sql: ["UPDATE ..."],
+        bindings: [["555"]],
+      } satisfies ChangePreview;
+    }
+    if (method === "authorize_plan") return `approval-${prepareCalls}`;
+    if (method === "execute_snowflake_grid_plan") {
+      executeCalls += 1;
+      return {
+        sessionId: "s",
+        operationId: `op-manual-${executeCalls}`,
+        outcome: "pending",
+        transactionId: "tx-manual-99",
+        recordingError: null,
+        metadataRefreshRequired: true,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    if (method === "finish_snowflake_grid_transaction") {
+      return {
+        sessionId: "s",
+        operationId: "op-finish-commit",
+        outcome: "committed",
+        transactionId: "tx-manual-99",
+        recordingError: null,
+        metadataRefreshRequired: true,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  fireEvent.change(screen.getByLabelText("Grid transaction mode"), {
+    target: { value: "manual" },
+  });
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "555" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+
+  const banner = await screen.findByRole("region", { name: "Pending Snowflake grid transaction" });
+  expect(within(banner).getByText(/tx-manual-99/)).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Refresh relations" }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect((screen.getByRole("button", { name: "Preview rows" }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  expect(screen.getByText("1 visible relations · DB")).toBeTruthy();
+
+  fireEvent.click(within(banner).getByRole("button", { name: "Reload pending preview" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+  expect(client.call).toHaveBeenCalledWith("preview_snowflake_grid_transaction_relation", {
+    transactionId: "tx-manual-99",
+    request: {
+      revision: "catalog-1",
+      targetId: "opaque-target",
+      inspectionRevision: "inspection-1",
+    },
+  });
+  expect((screen.getByLabelText("Row 1 exact") as HTMLInputElement).value).toBe("555");
+
+  fireEvent.click(screen.getByRole("button", { name: "Mark row 2 for delete" }));
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+  expect(client.call).toHaveBeenLastCalledWith("prepare_snowflake_grid_plan", {
+    request: {
+      sessionId: "s",
+      transactionId: "tx-manual-99",
+      preview: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspection-1",
+      },
+      snapshotId: "snap-manual-2",
+      mutations: [{ kind: "delete", rowIndex: 1 }],
+      mode: "manual",
+      rollbackPrior: true,
+    },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+  await screen.findByRole("region", { name: "Pending Snowflake grid transaction" });
+
+  fireEvent.click(screen.getByRole("button", { name: "Commit transaction" }));
+  await screen.findByRole("button", { name: "Resume session metadata" });
+  expect(client.call).toHaveBeenCalledWith("finish_snowflake_grid_transaction", {
+    transactionId: "tx-manual-99",
+    action: "commit",
+  });
+  expect(useStudio.getState().sessionSnowflakeGridTransactions.s).toBeUndefined();
+});
+
+it("disables continuation and commit when recordingError is set while preserving protected Rollback", async () => {
+  setupWritableSnowflakeGrid();
+  useStudio.setState({
+    sessionSnowflakeGridTransactions: {
+      s: {
+        transactionId: "tx-blocked-1",
+        recordingError: "SQLite disk full during batch capture",
+      },
+    },
+  });
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "finish_snowflake_grid_transaction") {
+      return {
+        sessionId: "s",
+        operationId: "op-rollback-blocked",
+        outcome: "rolledBack",
+        transactionId: "tx-blocked-1",
+        recordingError: "SQLite disk full during batch capture",
+        metadataRefreshRequired: true,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  const banner = await screen.findByRole("region", { name: "Pending Snowflake grid transaction" });
+  expect(within(banner).getByRole("alert").textContent).toMatch(/SQLite disk full/);
+  expect(
+    (within(banner).getByRole("button", { name: "Reload pending preview" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    (within(banner).getByRole("button", { name: "Commit transaction" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  const rollbackBtn = within(banner).getByRole("button", {
+    name: "Rollback transaction",
+  }) as HTMLButtonElement;
+  expect(rollbackBtn.disabled).toBe(false);
+
+  fireEvent.click(rollbackBtn);
+  await screen.findByRole("button", { name: "Resume session metadata" });
+  expect(client.call).toHaveBeenCalledWith("finish_snowflake_grid_transaction", {
+    transactionId: "tx-blocked-1",
+    action: "rollback",
+  });
+  expect(useStudio.getState().sessionSnowflakeGridTransactions.s).toBeUndefined();
 });

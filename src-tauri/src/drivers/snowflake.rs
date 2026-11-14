@@ -220,6 +220,7 @@ impl Snowflake {
                 schema_diff: false,
                 ddl_editing: false,
                 snowflake_reviewed_ddl: false,
+                snowflake_grid_editing: false,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: true,

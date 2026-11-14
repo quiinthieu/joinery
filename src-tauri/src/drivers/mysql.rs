@@ -237,6 +237,7 @@ impl Mysql {
                     schema_diff: true,
                     ddl_editing: true,
                     snowflake_reviewed_ddl: false,
+                    snowflake_grid_editing: false,
                     lock_inspection: true,
                     explain_analyze: actual_plan.is_some(),
                     oauth_browser: false,

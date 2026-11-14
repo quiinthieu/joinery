@@ -236,6 +236,10 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub snowflake_reviewed_ddl: bool,
+    /// Reviewed native Snowflake relation grid editing and manual batch transactions.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub snowflake_grid_editing: bool,
     /// Active lock-wait and blocker chain inspection.
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
@@ -443,6 +447,10 @@ pub struct PreparedPlan {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub reviewed_snowflake_ddl: bool,
+    /// Dedicated typed reviewed Snowflake relation grid route; never a generic SQL job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_grid: bool,
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
@@ -2138,6 +2146,88 @@ pub struct SnowflakeDdlResult {
     pub state: SessionRuntimeState,
     pub retired: bool,
     pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SnowflakeGridCellInput {
+    Default,
+    Null,
+    Text { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeGridColumnValue {
+    pub column_index: usize,
+    pub value: SnowflakeGridCellInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SnowflakeGridMutation {
+    Insert {
+        values: Vec<SnowflakeGridColumnValue>,
+    },
+    Update {
+        #[serde(rename = "rowIndex")]
+        row_index: usize,
+        changes: Vec<SnowflakeGridColumnValue>,
+    },
+    Delete {
+        #[serde(rename = "rowIndex")]
+        row_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridMode {
+    Automatic,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareSnowflakeGridEditsRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub transaction_id: Option<String>,
+    pub preview: PreviewRelationRequest,
+    pub snapshot_id: String,
+    pub mutations: Vec<SnowflakeGridMutation>,
+    pub mode: SnowflakeGridMode,
+    #[serde(default)]
+    pub rollback_prior: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridFinishAction {
+    Commit,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridBatchOutcome {
+    Committed,
+    Pending,
+    RolledBack,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeGridResult {
+    pub session_id: String,
+    pub operation_id: String,
+    pub outcome: SnowflakeGridBatchOutcome,
+    pub transaction_id: Option<String>,
+    pub recording_error: Option<String>,
+    pub metadata_refresh_required: bool,
+    pub retired: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
