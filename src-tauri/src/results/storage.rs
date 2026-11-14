@@ -24,9 +24,18 @@ pub(super) struct Spool {
     #[cfg(test)]
     pub inject_partial_write_failure: bool,
 }
+#[cfg(unix)]
+pub(super) fn restrict_spool_permissions(file: &File) -> AppResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|_| io_error())
+}
+
 impl Spool {
     pub fn new() -> AppResult<Self> {
         let file = tempfile::tempfile().map_err(|_| io_error())?;
+        #[cfg(unix)]
+        restrict_spool_permissions(&file)?;
         Ok(Self {
             file,
             bytes: 0,

@@ -1169,6 +1169,7 @@ mod tests {
         assert_eq!(store.usage(), (0, 0));
     }
 
+    #[cfg(unix)]
     #[test]
     fn anonymous_spool_is_private_unlinked_and_closed_on_drop() {
         use std::os::fd::AsRawFd;
@@ -1193,6 +1194,38 @@ mod tests {
         if let Ok(meta) = std::fs::metadata(format!("/dev/fd/{fd}")) {
             assert_ne!((meta.dev(), meta.ino()), (dev, ino));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restrict_spool_permissions_clamps_permissive_o_tmpfile_modes_to_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let file = tempfile::tempfile().unwrap();
+        file.set_permissions(std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o644);
+        storage::restrict_spool_permissions(&file).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn anonymous_spool_spills_reads_and_releases_cleanly_on_non_unix() {
+        let store = ResultStore::new(8192, 10);
+        store.set_temporary_disk_enabled(true);
+        let result = store.create("private", 0, columns(), None).unwrap();
+        let payload = "x".repeat(9000);
+        assert!(
+            store
+                .append(&result.id, vec![vec![Some(payload.clone())]])
+                .unwrap()
+        );
+        store.finish(&result.id, false).unwrap();
+        assert!(store.disk_usage() > 0);
+        let page = store.range(&result.id, 0, 1).unwrap();
+        assert_eq!(page.rows, vec![vec![Some(payload)]]);
+        store.release(&result.id);
+        assert_eq!(store.disk_usage(), 0);
     }
     #[test]
     fn large_single_rows_remain_retainable_and_frame_limits_are_separate() {
