@@ -193,9 +193,21 @@ test("a PostgreSQL result limit reports the untouched script suffix in run, hist
     await expect(match).toContainText(
       "Attempts may not reach the server; completed statements may be uncommitted",
     );
+    const tabsBefore = await page
+      .getByRole("tablist", { name: "Workspaces" })
+      .getByRole("tab")
+      .count();
     await palette.getByRole("textbox", { name: "Search commands" }).press("Enter");
-    await expect(palette).toHaveCount(0);
+    await expect(palette.getByRole("alert")).toContainText(
+      "SQL text was not stored for this query.",
+    );
+    await expect(palette).toBeVisible();
     await expect(page.locator(".toast")).toContainText("Only execution metadata was saved");
+    await expect(page.getByRole("tablist", { name: "Workspaces" }).getByRole("tab")).toHaveCount(
+      tabsBefore,
+    );
+    await page.keyboard.press("Escape");
+    await expect(palette).toHaveCount(0);
   } finally {
     if (profileId && created) {
       const cleanup = await rpc<SessionInfo>(request, "connect", { id: profileId, secrets });

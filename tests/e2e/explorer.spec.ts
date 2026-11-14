@@ -362,8 +362,14 @@ test("Search Everywhere jumps across simultaneous PostgreSQL and MySQL connectio
       .getByRole("tablist", { name: "Search scope" })
       .getByRole("tab", { name: "History" })
       .click();
-    await palette.getByRole("textbox", { name: "Search commands" }).fill("r3_everywhere_");
-    await page.keyboard.press("Enter");
+    const historySearch = palette.getByRole("textbox", { name: "Search commands" });
+    await historySearch.fill("r3_everywhere_");
+    await expect(
+      palette
+        .locator(".palette-commands button[data-palette-index]")
+        .filter({ hasText: "r3_everywhere_" }),
+    ).toHaveCount(1);
+    await historySearch.press("Enter");
     await expect(palette).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "SQL editor" })).toContainText("r3_everywhere_");
 

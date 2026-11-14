@@ -62,6 +62,7 @@ test("retained console preserves adjacency, recovers a lost start response and r
         JOINERY_TEST_DATA_ROOT: root,
         JOINERY_TEST_PORT: String(port),
         JOINERY_TEST_SYNTHETIC_SNOWFLAKE: "1",
+        JOINERY_TEST_NODE: process.env.JOINERY_TEST_NODE ?? process.execPath,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
