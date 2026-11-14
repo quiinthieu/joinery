@@ -1130,9 +1130,6 @@ export class Helper {
     if (a.mutationRead && readBytes > a.mutationRead.maxBytes) throw error("resultLimitReached");
     if (publish) this.send(a.request, "columns", { columns });
     const stream = (a.stream = statement.streamRows());
-    const booleanColumns = columns.some((c) => c.type.toLowerCase() === "boolean")
-      ? columns.map((c) => c.type.toLowerCase() === "boolean")
-      : null;
     let rowsSeen = 0,
       rowsRetained = 0,
       bytes = readBytes,
@@ -1185,12 +1182,7 @@ export class Helper {
           row.some((v) => v !== null && typeof v !== "string")
         )
           throw error("resultLimitReached");
-        const normalizedRow = booleanColumns
-          ? row.map((v, i) =>
-              booleanColumns[i] ? (v === "TRUE" ? "true" : v === "FALSE" ? "false" : v) : v,
-            )
-          : row;
-        const size = Buffer.byteLength(JSON.stringify(normalizedRow)) + 1;
+        const size = Buffer.byteLength(JSON.stringify(row)) + 1;
         if (!publish) {
           if (
             values.length >=
@@ -1204,7 +1196,7 @@ export class Helper {
           )
             throw error("resultLimitReached");
           bytes += size;
-          values.push(normalizedRow);
+          values.push(row);
           continue;
         }
         const p = a.mutationRead ?? a.request.payload;
@@ -1221,7 +1213,7 @@ export class Helper {
         }
         if (batch.length >= LIMITS.batchRows || batchBytes + size > LIMITS.batchBytes - 128)
           await flush();
-        batch.push(normalizedRow);
+        batch.push(row);
         batchBytes += size;
         if (batch.length >= LIMITS.batchRows) await flush();
         else if (!timer)

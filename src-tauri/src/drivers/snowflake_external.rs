@@ -1931,12 +1931,17 @@ impl SnowflakeExternal {
         let mut columns_open = true;
         let mut retaining = true;
         let mut sink_error = None;
+        let mut boolean_columns = Vec::new();
         loop {
             let available_columns = operation.columns.borrow().clone();
             if !described && let Some(columns) = available_columns {
-                if let Err(error) =
-                    sink.describe(columns.into_iter().enumerate().map(column_info).collect())
-                {
+                let infos: Vec<ColumnInfo> =
+                    columns.into_iter().enumerate().map(column_info).collect();
+                boolean_columns = infos
+                    .iter()
+                    .map(|c| c.kind == ColumnKind::Boolean)
+                    .collect();
+                if let Err(error) = sink.describe(infos) {
                     sink_error = Some(error);
                     retaining = false;
                     self.discard(&token, &mut operation).await?;
@@ -1949,9 +1954,10 @@ impl SnowflakeExternal {
                 batch = operation.rows.recv() => {
                     let Some(mut batch) = batch else { break; };
                     if !described { self.start_shutdown(); return Err(protocol_error()); }
-                    let rows = std::mem::take(&mut batch.rows);
+                    let mut rows = std::mem::take(&mut batch.rows);
                     drop(batch); // Return the supervisor's bounded queue credit before granting more.
                     if retaining {
+                        normalize_wire_booleans(&boolean_columns, &mut rows);
                         match sink.rows(rows) {
                             Ok(true) => {},
                             Ok(false) => { retaining = false; sink.limit("Result retention limit reached"); },
@@ -4484,6 +4490,23 @@ fn binds_json(binds: &[TypedBind]) -> AppResult<Vec<Value>> {
         })
         .collect()
 }
+fn normalize_wire_booleans(boolean_columns: &[bool], rows: &mut [TextRow]) {
+    if !boolean_columns.iter().any(|&is_bool| is_bool) {
+        return;
+    }
+    for row in rows {
+        for (cell, &is_bool) in row.iter_mut().zip(boolean_columns) {
+            if is_bool && let Some(value) = cell.as_mut() {
+                if value == "TRUE" {
+                    *value = "true".to_owned();
+                } else if value == "FALSE" {
+                    *value = "false".to_owned();
+                }
+            }
+        }
+    }
+}
+
 fn column_info((index, column): (usize, Column)) -> ColumnInfo {
     let ty = column.data_type.to_ascii_uppercase();
     let kind = match ty.as_str() {
@@ -8012,5 +8035,34 @@ process.stdin.on('end', retire);
             SnowflakeDdlOutcome::Succeeded
         );
         h.finish().await;
+    }
+}
+
+#[cfg(test)]
+mod wire_boolean_tests {
+    use super::normalize_wire_booleans;
+
+    #[test]
+    fn wire_boolean_normalization_lowercases_boolean_columns_only() {
+        let mut rows = vec![
+            vec![Some("TRUE".to_owned()), Some("TRUE".to_owned()), None],
+            vec![
+                Some("FALSE".to_owned()),
+                Some("FALSE".to_owned()),
+                Some("true".to_owned()),
+            ],
+        ];
+        normalize_wire_booleans(&[true, false, true], &mut rows);
+        assert_eq!(
+            rows,
+            vec![
+                vec![Some("true".to_owned()), Some("TRUE".to_owned()), None],
+                vec![
+                    Some("false".to_owned()),
+                    Some("FALSE".to_owned()),
+                    Some("true".to_owned()),
+                ],
+            ]
+        );
     }
 }

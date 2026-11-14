@@ -412,6 +412,7 @@ impl ReviewedConsoleRun<'_> {
         };
         let deadline = tokio::time::sleep_until(deadline_at);
         tokio::pin!(deadline);
+        let mut boolean_columns = Vec::new();
         loop {
             // ACK is sticky in the supervisor. Check again when columns become
             // visible: the ACK may have arrived between the first read and the
@@ -451,9 +452,13 @@ impl ReviewedConsoleRun<'_> {
                 && let Some(columns) = available_columns
             {
                 described = true;
-                if let Err(error) =
-                    sink.describe(columns.into_iter().enumerate().map(column_info).collect())
-                {
+                let infos: Vec<ColumnInfo> =
+                    columns.into_iter().enumerate().map(column_info).collect();
+                boolean_columns = infos
+                    .iter()
+                    .map(|c| c.kind == ColumnKind::Boolean)
+                    .collect();
+                if let Err(error) = sink.describe(infos) {
                     delivery_error = Some(error);
                     retaining = false;
                     if let Err(error) = driver.discard(&token, &mut operation).await {
@@ -483,12 +488,13 @@ impl ReviewedConsoleRun<'_> {
                 batch = operation.rows.recv() => {
                     if expired(&mut delivery_error) { break; }
                     let Some(mut batch) = batch else { break; };
-                    let rows = std::mem::take(&mut batch.rows);
+                    let mut rows = std::mem::take(&mut batch.rows);
                     drop(batch);
                     if !described && recording.error.is_none() {
                         delivery_error.get_or_insert_with(protocol_error); driver.start_shutdown(); break;
                     }
                     if retaining {
+                        normalize_wire_booleans(&boolean_columns, &mut rows);
                         let count = rows.len() as u64;
                         match sink.rows(rows) {
                             Ok(true) => retained_rows = retained_rows.saturating_add(count),

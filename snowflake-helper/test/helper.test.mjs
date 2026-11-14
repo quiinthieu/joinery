@@ -1463,8 +1463,8 @@ test("real snowflake-sdk Column extraction preserves SQL null, boolean lowercase
   assert.deepEqual(
     events.filter((e) => e.id === "2" && e.type === "rows").flatMap((e) => e.rows),
     [
-      ["true", "TRUE"],
-      ["false", "FALSE"],
+      ["TRUE", "TRUE"],
+      ["FALSE", "FALSE"],
       [null, null],
     ],
   );

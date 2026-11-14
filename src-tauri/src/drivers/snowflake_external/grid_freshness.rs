@@ -343,12 +343,17 @@ impl SnowflakeExternal {
         let mut sink = MetadataSink::new(max_rows, max_bytes);
         let mut described = false;
         let mut columns_open = true;
+        let mut boolean_columns = Vec::new();
         loop {
             let columns = operation.columns.borrow().clone();
             if !described && let Some(columns) = columns {
-                if let Err(error) =
-                    sink.describe(columns.into_iter().enumerate().map(column_info).collect())
-                {
+                let infos: Vec<ColumnInfo> =
+                    columns.into_iter().enumerate().map(column_info).collect();
+                boolean_columns = infos
+                    .iter()
+                    .map(|c| c.kind == ColumnKind::Boolean)
+                    .collect();
+                if let Err(error) = sink.describe(infos) {
                     self.start_shutdown();
                     return Err(error);
                 }
@@ -360,8 +365,9 @@ impl SnowflakeExternal {
                 batch = operation.rows.recv() => {
                     let Some(mut batch) = batch else { break };
                     if !described { self.start_shutdown(); return Err(protocol_error()); }
-                    let rows = std::mem::take(&mut batch.rows);
+                    let mut rows = std::mem::take(&mut batch.rows);
                     drop(batch);
+                    normalize_wire_booleans(&boolean_columns, &mut rows);
                     if let Err(error) = sink.rows(rows) { self.start_shutdown(); return Err(error); }
                     if operation.report().is_none() {
                         match self.process.credit(&token, 1) {
