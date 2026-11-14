@@ -1129,18 +1129,27 @@ mod tests {
                 .unwrap()
         );
         let ram = store.usage().0;
+        let readonly = tempfile::NamedTempFile::new().unwrap();
+        let readonly_path = readonly.path().to_string_lossy().into_owned();
+        let readonly_name = readonly
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         {
             let mut state = store.state.lock();
             state.results.get_mut(&a.id).unwrap().spool = Some({
                 let mut spool = Spool::new().unwrap();
-                spool.file = std::fs::File::open("/dev/null").unwrap();
+                spool.file = std::fs::File::open(readonly.path()).unwrap();
                 spool
             });
         }
         let error = store
             .append(&a.id, vec![vec![Some("x".repeat(9000))]])
             .unwrap_err();
-        assert!(!error.message.contains("/dev/null"));
+        assert!(!error.message.contains(&readonly_path));
+        assert!(!error.message.contains(&readonly_name));
         assert_eq!(store.disk_usage(), 0);
         assert_eq!(store.usage().0, ram);
         assert_eq!(store.row(&a.id, 0).unwrap(), vec![Some("prefix".into())]);
@@ -1208,9 +1217,8 @@ mod tests {
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
     }
 
-    #[cfg(not(unix))]
     #[test]
-    fn anonymous_spool_spills_reads_and_releases_cleanly_on_non_unix() {
+    fn anonymous_spool_spills_reads_and_releases_cleanly() {
         let store = ResultStore::new(8192, 10);
         store.set_temporary_disk_enabled(true);
         let result = store.create("private", 0, columns(), None).unwrap();
@@ -1222,8 +1230,22 @@ mod tests {
         );
         store.finish(&result.id, false).unwrap();
         assert!(store.disk_usage() > 0);
-        let page = store.range(&result.id, 0, 1).unwrap();
-        assert_eq!(page.rows, vec![vec![Some(payload)]]);
+        assert_eq!(
+            store.row(&result.id, 0).unwrap(),
+            vec![Some(payload.clone())]
+        );
+        let frame = store.range(&result.id, 0, 1).unwrap();
+        let mut reader =
+            arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(frame), None).unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert!(reader.next().is_none());
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.value(0), payload);
         store.release(&result.id);
         assert_eq!(store.disk_usage(), 0);
     }

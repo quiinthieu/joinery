@@ -5526,7 +5526,9 @@ impl Studio {
     #[cfg(any(test, feature = "test-harness"))]
     pub async fn reset_fixtures(&self) -> AppResult<()> {
         let _recovery_activity = self.begin_recovery_activity()?;
-        let (pending, cleanup) = {
+        #[cfg(unix)]
+        let cleanup;
+        let pending = {
             // Publication shares this gate: a setup either enters the session
             // snapshot or is cancelled before it can publish.
             let _configuration = self.configuration_mutation_guard()?;
@@ -5540,17 +5542,11 @@ impl Studio {
                 self.disconnect(&id);
             }
             #[cfg(unix)]
-            self.snowflake_grid.close_all_helpers();
-            (pending, {
-                #[cfg(unix)]
-                {
-                    self.snowflake_cleanup.snapshot()
-                }
-                #[cfg(not(unix))]
-                {
-                    ()
-                }
-            })
+            {
+                self.snowflake_grid.close_all_helpers();
+                cleanup = self.snowflake_cleanup.snapshot();
+            }
+            pending
         };
         // Setup owners need the configuration gate to unwind; never await them
         // while holding it. Leave the registry's shutdown barrier untouched.
@@ -5561,8 +5557,6 @@ impl Studio {
         self.snowflake_cleanup
             .wait_snapshot(&cleanup, Duration::from_secs(10))
             .await?;
-        #[cfg(not(unix))]
-        let _ = cleanup;
         Ok(())
     }
 

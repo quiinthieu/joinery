@@ -365,11 +365,18 @@ fn history_owner_restore_recovers_local_dead_maps_and_strips_backup_only_authori
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&owner_directory, fs::Permissions::from_mode(0o700)).unwrap();
     }
+    #[cfg(unix)]
     fs::copy(
         owner_path(&source_owner),
         owner_directory.join(&source_owner.lease.name),
     )
     .unwrap();
+    #[cfg(not(unix))]
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(owner_directory.join(&source_owner.lease.name))
+        .unwrap();
     target
         .restore_metadata_backup(&snapshot.id, &snapshot.digest)
         .unwrap();

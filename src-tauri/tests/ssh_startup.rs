@@ -46,7 +46,11 @@ impl StalledKeyExchange {
             // Keep the peer alive without completing key exchange. A closed
             // sender alone cannot stop russh's session while KEX is active.
             let mut remainder = Vec::new();
-            stream.read_to_end(&mut remainder).await.unwrap();
+            match stream.read_to_end(&mut remainder).await {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Err(error) => panic!("SSH peer failed before EOF: {error}"),
+            }
             closed_tx.send(()).unwrap();
         });
         Self {
