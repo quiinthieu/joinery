@@ -8,6 +8,103 @@ See [acceptance](replacement-acceptance.md) for required gates and migration.
 
 ## Environment and commands
 
+### Reviewed Snowflake relation grid, pending preview, and rollback hardening (14 November 2026, local foundation)
+
+Base `0240a50` (Studio grid run owner `60eebcf`), feature branch
+`feat/datagrip-replacement`, commits `f74ac0d`, `408c275`, and `c033d00`.
+
+1. **Protected rollback & session-guard hardening (`f74ac0d`)**:
+   - Independent review of `60eebcf` reproduced two protected-rollback defects
+     and a session-guard/usage-accounting gap:
+     - Concurrent `flush_batch_outcomes` could settle a predecessor cell while
+       an in-flight `admit_protected_grid_rollback` held a `VolatileBatchRollbackToken`,
+       tripping `BatchMemberMissingOrChanged` on volatile promotion; fixed via
+       `flush_lock: Mutex<()>`, `VolatileBatchRollbackToken::clear_settled_predecessor`,
+       and clean volatile fallback when the predecessor already settled.
+     - `Persistence::authorize_rejected_batch_rollback` and
+       `Persistence::make_undispatched_batch_rollback_token` rejected valid
+       non-adjacent ordinals (`m.ordinal != prior.ordinal + 1` instead of
+       `m.ordinal <= prior.ordinal`) when an intervening `NoDispatch` witness
+       incremented `member_count`, and delayed SQLite settlement left stale
+       `SuccessorRollbackRecovery::RejectedAdmission` cached in `ManualOwner`;
+       fixed in `persistence/batch_outcomes.rs` and `execution/snowflake_grid.rs`,
+       plus dropping the `owner.state` guard before `admit_protected_grid_rollback`
+       / `admit_batch_finish`.
+     - Added `require_ordinary_session` guards across `completion_catalog`,
+       `completion_schema`, `inspection_schema`, `define_relation`,
+       `inspect_relation_constraints`, `inspect_relation_constraint_mappings`,
+       `inspect_relation_check_constraints`, `refresh_snowflake_ddl_metadata`,
+       and `transaction_controls.rs`, and included active Snowflake grid runs
+       and open manual owners in `Studio::resource_usage`.
+2. **Owner-scoped pending relation preview & continuation prep (`408c275`)**:
+   - Extended closed `mutationRead` (`snowflake-helper/src/mutation-read.mjs`,
+     `.cache/snowflake-runtime/macos-arm64/helper/mutation-read.mjs` +
+     `manifest.json`, and `drivers/snowflake_mutation_read.rs`) with `"preview"`
+     (`SELECT "col1", ... FROM "db"."schema"."name" LIMIT 501`, `maxRows: 501`,
+     `maxBytes: 2,097,152`, `1..=1,000` unique identifier columns,
+     `schema !== "INFORMATION_SCHEMA"`).
+   - Added 12-read freshness-bracketed `SnowflakeExternal::grid_fresh_preview`,
+     `GridManualTransaction::preview_relation`,
+     `GridManualTransaction::prepare_continuation_edits`,
+     `Studio::preview_snowflake_grid_transaction_relation`, and
+     `Studio::prepare_snowflake_grid_continuation_edits`, removed the test-only
+     `test_prepare_continuation_edits` backdoor, and scoped snapshot revocation
+     to exact `HelperGeneration` (`SnapshotStore::revoke_helper_session`).
+3. **Public Tauri IPC, desktop ACL enrollment, and `RelationBrowser` UI (`c033d00`)**:
+   - Exposed `prepare_snowflake_grid_plan`, `execute_snowflake_grid_plan`,
+     `preview_snowflake_grid_transaction_relation`, and
+     `finish_snowflake_grid_transaction` across `commands.rs`, `lib.rs`,
+     `build.rs`, `capabilities/main.json`, `export-contracts.rs`,
+     `src/ipc/command-map.ts`, and `src/state/studio.ts`, backed by
+     `Action::SnowflakeGrid` and `PreparedPlan { reviewed_snowflake_grid: true }`.
+   - Extended `RelationBrowser.tsx` and `snowflake-grid-staging.ts` with inline
+     cell editing (`NULL` toggle + `Revert`), whole-row delete staging, new-row
+     insert staging, RFC-4180 CSV row staging (file upload or pasted text with
+     mixed unknown-postimage batch warnings), `<ReviewDialog>` approval,
+     `"Resume session metadata"`, and a **Pending Snowflake grid transaction**
+     banner (`Reload pending preview`, `Commit transaction`, and protected
+     `Rollback transaction` even when `recordingError` is present).
+
+Reproduce serially with pinned Rust and `JOINERY_TEST_NODE` pointing to the
+isolated Node `24.22.2` binary:
+
+```sh
+node --expose-gc --test snowflake-helper/test/mutation-read.test.mjs
+pnpm test:snowflake:runtime
+pnpm test:snowflake:startup
+pnpm test:native:resources
+pnpm test:snowflake:qualification
+pnpm test:snowflake:helper
+pnpm test:snowflake:process
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness execution::snowflake_grid_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness batch_outcome -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness drivers::snowflake_external::session_tests::grid_ -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness drivers::snowflake_external::session_tests::edit_snapshots_tests -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness drivers::snowflake_mutation_read -- --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --lib --no-default-features --features test-harness snowflake_edit_snapshot::tests -- --test-threads=1
+pnpm validate
+```
+
+Serialized host verification on `c033d00` passes all `11` Studio grid cases,
+`54` batch recording/storage cases (`1` child-only process fixture ignored),
+`16` native grid adapter/freshness cases, `6` driver edit-snapshot cases, `10`
+pure edit-snapshot cases, `5` native `mutationRead` parser cases, `12` closed
+helper `mutationRead` cases, `58` runtime prep/verification cases, guarded
+staged startup (`manifestSha256`
+`a7f6fe1088c9617349dba6603851d2d0e516a915d022cfbbdaedcb2db72ef427`, `0` auth
+and `0` SQL requests), `7` smoke-resource cases, `136` offline qualification
+cases, `439` helper cases, `pnpm test:snowflake:process` (`302` unit, `36`
+connection, `43` process, `32` external), and full `pnpm validate` (`1,044`
+frontend tests across `73` files including `141` `RelationBrowser` cases and
+Tauri command-enrollment ACL checks, `829` standard Rust tests with `146`
+fixture ignores, `cargo fmt --check`, `cargo check`, and strict
+`cargo clippy --all-targets --all-features -- -D warnings` with zero warnings).
+`177 GiB` disk space remains free, `src-tauri/target/debug` is preserved, and
+the schema-7 normal `Joinery.app` (`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`)
+is untouched. Broader lossless codecs, pagination beyond 500 rows, live
+`SANDBOX.BILLIE_TESTING` qualification, million-row hands-on acceptance, and a
+rebuilt schema-8 `Joinery.app` remain open.
+
 ### Studio Snowflake grid run owner (13 November 2026, local foundation)
 
 Base `f5c82b1` (native dispatch source `435faa1`), feature branch

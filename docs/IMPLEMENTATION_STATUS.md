@@ -1,5 +1,40 @@
 # Implementation and release status
 
+## Reviewed Snowflake relation grid and pending preview (14 November 2026, local foundation)
+
+Commits `f74ac0d`, `408c275`, and `c033d00` harden protected grid rollback and
+ordinary session guards, add the closed 12-read owner-scoped pending relation
+preview (`mutationRead` `"preview"`, `501`-row / `2 MiB` ceiling, exact
+`HelperGeneration` snapshot revocation, and removal of test-only continuation
+hooks), and wire public Tauri IPC commands (`prepare_snowflake_grid_plan`,
+`execute_snowflake_grid_plan`, `preview_snowflake_grid_transaction_relation`,
+`finish_snowflake_grid_transaction`), desktop ACL capabilities, and
+`RelationBrowser` inline cell editing, whole-row delete, new-row insert,
+RFC-4180 CSV row staging, `<ReviewDialog>` plan approval, `"Resume session
+metadata"`, and manual `Pending` -> `Reload pending preview` -> continuation ->
+`Commit` / `Rollback` controls on explicitly writable `externalBrowser`
+`reviewedDml` profiles.
+
+All `11` end-to-end real-helper/real-SQLite Studio grid cases, `54` batch
+recording/storage cases (`1` child-only fixture ignored), `16` native grid
+adapter/freshness cases, `16` edit-snapshot cases (`6` driver + `10` pure), `17`
+`mutationRead` cases (`12` helper + `5` native), `58` runtime cases, guarded
+staged startup (`0` auth / `0` SQL requests), `136` offline qualification cases,
+`439` helper cases, `pnpm test:snowflake:process` (`302` unit, `36` connection,
+`43` process, `32` external), and full `pnpm validate` (`1,044` frontend tests
+across `73` files and `829` standard Rust tests with `146` fixture ignores,
+desktop check, and strict Clippy with zero warnings) pass; see the
+[source-scoped ledger](replacement-verification.md#reviewed-snowflake-relation-grid-pending-preview-and-rollback-hardening-14-november-2026-local-foundation)
+and [contract](snowflake-owned-edit-integration.md#reviewed-ipc-relationbrowser-staging-and-manual-transaction-ui).
+`177 GiB` disk space remains free, `src-tauri/target/debug` is preserved, and
+the prior schema-7 normal `Joinery.app`
+(`0600dc7978fa9bcddbe67a3cae910abf560b23e163d04b0b6e35be3ee26b99ac`) is
+untouched. Broader lossless codecs (`FLOAT`, `BINARY`, temporal, and
+`VARIANT`/`ARRAY`/`OBJECT`), pagination beyond the 500-row unordered sample,
+fresh-plan `SANDBOX.BILLIE_TESTING` qualification, million-row hands-on
+acceptance, and rebuilding/qualifying a schema-8 `Joinery.app` remain required.
+Full DataGrip replacement remains incomplete.
+
 ## Studio Snowflake grid run owner (13 November 2026, local foundation)
 
 `execution/snowflake_grid.rs` (`60eebcf`) now connects the lane-bearing native

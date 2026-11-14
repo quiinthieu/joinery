@@ -81,22 +81,32 @@ local original recording fails; authentic nonadmission and queued refusal take
 separate recovery paths. A refused rollback retires its helper even if the proof
 recorder panics. See the [native dispatch contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback).
 The `TaskTracker`-owned Studio run owner (`execution/snowflake_grid.rs`,
-`60eebcf`) now connects initial pin, retained compact originals, the native
-manual owner, standby safety-slot rollback credit, ordered predecessor
-settlement and post-reap release, including exact helper retirement on initial
-pinned `NoDispatch` and ordinary-route browse-state protection while `Pending`.
-Nine real-helper/real-SQLite Studio regressions and full `pnpm validate` pass;
-see the [Studio owner ledger](replacement-verification.md#studio-snowflake-grid-run-owner-13-november-2026-local-foundation).
-No internal Studio/adapter test enables a user editing capability.
-The generic grid's committed-success return cannot represent pending work, and
-its primary-key deduplication cannot represent distinct keyless originals.
-Next, add a reviewed owner-scoped data-preview/refresh route during pending
-manual ownership so continuation snapshots do not rely on test-only hooks;
-ordinary metadata reads remain excluded. Then integrate application UI
-staging/review/submit, truthful pending commit/rollback controls, CSV batching
-and broader lossless codecs, and qualify the whole workflow against Snowflake
-(`SANDBOX.BILLIE_TESTING` under a fresh approved plan) and the normal packaged
-app. Broader codecs remain required, not optional follow-up work.
+`60eebcf`, hardened in `f74ac0d`) connects initial pin, retained compact
+originals, the native manual owner, standby safety-slot rollback credit,
+serialized `flush_lock` predecessor settlement, non-adjacent ordinal tolerance
+across `NoDispatch` witnesses, and post-reap release, including exact helper
+retirement on initial pinned `NoDispatch` and ordinary-route browse-state
+protection while `Pending`.
+Owner-scoped pending relation preview (`408c275`) extends closed `mutationRead`
+with `"preview"` (`501` rows / `2 MiB`) inside a 12-read freshness bracket and
+replaces test-only continuation hooks with production
+`preview_snowflake_grid_transaction_relation` and exact `HelperGeneration`
+snapshot revocation.
+Public Tauri IPC, desktop ACL capabilities, and reviewed `RelationBrowser` UI
+controls (`c033d00`) now wire inline cell edits, whole-row deletes, new-row
+inserts, RFC-4180 CSV row staging, `<ReviewDialog>` approval, `"Resume session
+metadata"`, and manual `Pending` -> `Reload pending preview` -> continuation ->
+`Commit` / `Rollback` controls (`1,044` frontend and `829` standard Rust cases,
+`11` Studio grid cases, `439` helper cases, and `pnpm test:snowflake:process`
+pass; see the
+[reviewed grid ledger](replacement-verification.md#reviewed-snowflake-relation-grid-pending-preview-and-rollback-hardening-14-november-2026-local-foundation)).
+Next, extend lossless Snowflake edit codecs beyond `TEXT` / `VARCHAR`, `BOOLEAN`
+and exact `NUMBER(p, s)` (`<= 128` columns) to cover `FLOAT`, `BINARY`,
+temporal and semi-structured types plus ordered pagination beyond 500 rows,
+qualify the workflow against Snowflake (`SANDBOX.BILLIE_TESTING` under a fresh
+approved plan), and rebuild/qualify the schema-8 normal `Joinery.app` alongside
+million-row and hands-on owner acceptance. Broader codecs remain required, not
+optional follow-up work.
 
 ## Durable original outcomes (13 November 2026, local verification)
 

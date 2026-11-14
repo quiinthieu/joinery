@@ -1,29 +1,37 @@
 # Snowflake owned edit integration
 
-This internal integration supports the required grid/CSV workflow described in
-[the editing contract](snowflake-grid-editing-design.md). It adds no application
-editing command or capability. Full DataGrip replacement, broader codecs, native
-staging/review and real Snowflake acceptance remain required.
+This integration underpins the reviewed Snowflake relation grid and CSV staging
+workflow described in [the editing contract](snowflake-grid-editing-design.md).
+Public Tauri IPC commands and `RelationBrowser` inline editing, CSV row staging,
+`<ReviewDialog>` plan approval, and manual `Pending` -> `Reload pending preview`
+-> continuation -> `Commit` / `Rollback` controls are now wired (`c033d00`) on
+explicitly writable `externalBrowser` `reviewedDml` profiles. Broader lossless
+codecs, pagination beyond the 500-row unordered sample, fresh-plan live
+`SANDBOX.BILLIE_TESTING` qualification, million-row hands-on acceptance, and a
+rebuilt schema-8 `Joinery.app` remain required before full DataGrip replacement.
 
-## Pending-owner metadata transport
+## Pending-owner metadata and data-preview transport
 
-`mutationRead` accepts exactly `owner`, `expected`, `kind`, `target` and `credits`.
+`mutationRead` accepts `owner`, `expected`, `kind`, `target`, optional
+identifier `columns` (for `"preview"` only), and `credits`.
 The expected context has explicit user, role, database, schema, warehouse and
 session fields. A canonical private owner is required; a caller cannot supply
 SQL, bindings, result limits or transaction commands. Targeted descriptors accept
-only exact database/schema/name components and base/temporary table types.
+only exact database/schema/name components and base/temporary table types (with
+`schema !== "INFORMATION_SCHEMA"` enforced for `"preview"`).
 
 The helper constructs one fixed statement for each kind:
 
-| Kind                     | Fixed operation                          | Maximum rows | Aggregate bytes |
-| ------------------------ | ---------------------------------------- | -----------: | --------------: |
-| `context`                | Full context observation                 |            1 |          65,536 |
-| `quotedIdentifierPolicy` | Session quoted-name parameter            |            1 |          65,536 |
-| `currentTransaction`     | Current transaction ID                   |            1 |          65,536 |
-| `exactRelation`          | Exact information-schema relation lookup |            3 |       2,097,152 |
-| `columns`                | Ordered complete column projection       |        1,001 |       1,048,576 |
-| `describe`               | DESCRIBE TABLE columns                   |        1,001 |       1,048,576 |
-| `zeroRowResolution`      | Fully qualified SELECT with LIMIT 0      |            0 |       1,048,576 |
+| Kind                     | Fixed operation                                              | Maximum rows | Aggregate bytes |
+| ------------------------ | ------------------------------------------------------------ | -----------: | --------------: |
+| `context`                | Full context observation                                     |            1 |          65,536 |
+| `quotedIdentifierPolicy` | Session quoted-name parameter                                |            1 |          65,536 |
+| `currentTransaction`     | Current transaction ID                                       |            1 |          65,536 |
+| `exactRelation`          | Exact information-schema relation lookup                     |            3 |       2,097,152 |
+| `columns`                | Ordered complete column projection                           |        1,001 |       1,048,576 |
+| `describe`               | DESCRIBE TABLE columns                                       |        1,001 |       1,048,576 |
+| `zeroRowResolution`      | Fully qualified SELECT with LIMIT 0                          |            0 |       1,048,576 |
+| `preview`                | Quoted 1..=1,000 column SELECT on exact table with LIMIT 501 |          501 |       2,097,152 |
 
 The row ceilings include overflow sentinels where applicable. Serialized column
 metadata and emitted batches count toward the byte ceiling. Existing frame,
@@ -48,8 +56,14 @@ Commit brackets the full owner context with six observations. A bracket holds
 the same lane through final admission. Abandonment or protocol loss retires the
 helper; coherent drift refuses new work. No automatic retry repairs drift.
 Partial, discarded, interrupted, ambiguous or changed observations cannot
-authorize mutation. A complete owner-scoped data-preview route remains required
-before manual continuation can obtain new prepared snapshots.
+authorize mutation. Owner-scoped pending relation preview (`grid_fresh_preview`,
+`408c275`) brackets the bounded `"preview"` read inside twelve fixed
+observations on the same lane (initial context/policy/transaction, exact
+relation, columns/DESCRIBE/zero-row resolution, `"preview"` rows, exact
+relation again, and final context/policy/transaction) before minting a fresh
+one-use continuation `editSnapshotId`, and `SnapshotStore::revoke_helper_session`
+scopes revocation to the exact `HelperGeneration`. Test-only continuation hooks
+have been removed.
 
 Snowflake documents SELECT and transaction behavior in its
 [transaction reference](https://docs.snowflake.com/en/sql-reference/transactions),
@@ -168,26 +182,55 @@ independently of the initiating IPC caller or tab:
    zero-step `Admission` rejection retains its compact original and prior
    transaction authority for protected rollback.
 5. `reconcile_snowflake_grid_owners` notifies `GridManualTransaction` only for
-   the exact settled blocked operation ID, drains/retires owners across profile
-   save, disconnect and shutdown, blocks metadata restore while any run or manual
-   owner remains, and blocks ordinary Studio SQL, context/schema switches and
-   relation browsing before they can invalidate `BrowseState` on a live `Pending`
-   owner.
+   the exact settled blocked operation ID, clears stale `RejectedAdmission`
+   recovery once its cell settles, drains/retires owners across profile save,
+   disconnect and shutdown, counts active grid runs and open manual owners in
+   `resource_usage`, blocks metadata restore while any run or manual owner
+   remains, and blocks ordinary Studio SQL, transaction controls, context/schema
+   switches and relation browsing before they can invalidate `BrowseState` on a
+   live `Pending` owner (`f74ac0d`). Protected rollback admission and global
+   `flush_batch_outcomes` serialize under `flush_lock` while accepting non-adjacent
+   manual member ordinals (`m.ordinal <= prior.ordinal`) across intervening
+   `NoDispatch` witnesses.
+
+## Reviewed IPC, RelationBrowser staging, and manual transaction UI
+
+Public Tauri IPC commands (`prepare_snowflake_grid_plan`,
+`execute_snowflake_grid_plan`, `preview_snowflake_grid_transaction_relation`,
+`finish_snowflake_grid_transaction`) and desktop ACL capabilities (`c033d00`)
+expose reviewed Snowflake grid mutations through `Studio` and `SafetyGovernor`:
+
+1. `prepare_snowflake_grid_plan` consumes one linear `editSnapshotId` (from
+   idle `preview_relation` or owner-scoped
+   `preview_snowflake_grid_transaction_relation`), compiles the closed
+   `DELETE`/`UPDATE`/`INSERT` batch without dispatching SQL, and stores
+   `Action::SnowflakeGrid` behind `PreparedPlan { reviewed_snowflake_grid: true }`
+   for `<ReviewDialog>` confirmation, passphrase, and one-use approval token
+   validation.
+2. `RelationBrowser` enables inline cell updates (`NULL` toggle, `Revert`),
+   whole-original row deletion, new-row insertion (`DEFAULT` / `NULL` / text),
+   RFC-4180 CSV row staging (file upload or pasted text with case-sensitive
+   header matching and mixed-batch unknown-postimage warnings), `"Resume session
+   metadata"` recovery, and a **Pending Snowflake grid transaction** banner
+   exposing `Reload pending preview`, `Commit transaction`, and protected
+   `Rollback transaction` (which remains enabled even when `recordingError`
+   blocks continuation and commit).
 
 ## Required next integration and acceptance
 
-Implement owner-scoped relation data preview/refresh so manual continuation can
-prepare new snapshots without test-only hooks. Then expose application
-staging/review/submit, truthful pending commit/rollback UI states, CSV batching
-and broader lossless codecs beyond the current narrow scalar/text/integer
-subset. None of the internal driver/Studio APIs alone enables public user
-editing.
+Extend lossless Snowflake edit codecs beyond the current narrow subset (`TEXT` /
+`VARCHAR`, `BOOLEAN`, and exact `NUMBER(p, s)` on `<= 128`-column base/temporary
+tables) to cover `FLOAT`, `BINARY`, `DATE` / `TIME` / `TIMESTAMP_NTZ` /
+`TIMESTAMP_LTZ` / `TIMESTAMP_TZ`, and `VARIANT` / `ARRAY` / `OBJECT`, plus
+wider-table projection and ordered pagination beyond the 500-row unordered
+preview sample.
 
 Run real disposable-table acceptance only under a fresh reviewed account plan;
 earlier approvals are consumed or expired. The owner identified
-`SANDBOX.BILLIE_TESTING` as the disposable location. Finish normal packaged-app,
-restart, interruption, million-row and hands-on acceptance. Do not enable generic
-committed-success editing as a substitute for pending manual work.
+`SANDBOX.BILLIE_TESTING` as the disposable location. Rebuild and verify the
+schema-8 `Joinery.app` bundle (preserving the schema-7 `d6cfb2a` bundle until
+authorized), then finish restart, interruption, million-row and hands-on owner
+acceptance.
 
 Source-scoped results belong in the [verification ledger](replacement-verification.md).
 The normal packaged app and private project hub remain unchanged until an
