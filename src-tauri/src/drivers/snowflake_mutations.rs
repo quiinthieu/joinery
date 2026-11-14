@@ -1254,7 +1254,6 @@ fn bind(sql: &mut String, bindings: &mut Vec<Binding>, column: &MutationColumn, 
     match value {
         CellValue::Default => {
             sql.push_str("DEFAULT");
-            return;
         }
         CellValue::Null => {
             sql.push_str("CAST(? AS ");
@@ -1264,7 +1263,6 @@ fn bind(sql: &mut String, bindings: &mut Vec<Binding>, column: &MutationColumn, 
                 kind: binding_kind(column.data_type),
                 value: None,
             });
-            return;
         }
         CellValue::Text(text) => {
             match column.data_type {

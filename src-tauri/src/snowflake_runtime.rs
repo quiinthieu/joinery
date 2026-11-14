@@ -8,7 +8,6 @@
 //! They do not authenticate every dependency file. Dependency provenance and
 //! packaged code signing remain separate build/release checks. These checks
 //! also do not make a caller-writable development tree immutable.
-#![cfg(unix)]
 
 use crate::{drivers::snowflake_process::Launch, snowflake_cleanup::CleanupPermit};
 use serde::{Deserialize, de::DeserializeOwned};

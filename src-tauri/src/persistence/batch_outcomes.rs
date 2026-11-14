@@ -2865,7 +2865,7 @@ pub(super) fn merge_for_restore(current: &Connection, candidate: &Connection) ->
         while let Some(r) = member_rows.next().map_err(db_error)? {
             let op: String = r.get(0).map_err(db_error)?;
             if let Some((_, bytes, _, _, _)) = read_archive(candidate, &op)?
-                && !read_row(candidate, &op)?.is_some_and(|r| r.phase != "settled")
+                && read_row(candidate, &op)?.is_none_or(|r| r.phase == "settled")
             {
                 pending += u32::from(outcome(&decode(&bytes)?.1) == "pending");
             }

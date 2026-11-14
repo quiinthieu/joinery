@@ -1083,10 +1083,10 @@ impl TransportPolicy for BlockingPublicationPolicy {
                     .contains_key(&(terminal.operation_id.into(), terminal.ticket))
             );
             assert!(
-                !state
+                state
                     .pending
                     .get(terminal.operation_id)
-                    .is_some_and(|p| p.ticket == terminal.ticket)
+                    .is_none_or(|p| p.ticket != terminal.ticket)
             );
         }
         self.local_calls.fetch_add(1, Ordering::SeqCst);

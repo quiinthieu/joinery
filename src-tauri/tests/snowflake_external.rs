@@ -1364,6 +1364,9 @@ fn preview_request(
         revision: request.revision.clone(),
         target_id: request.target_id.clone(),
         inspection_revision: inspection.revision.clone(),
+        offset: 0,
+        sort: None,
+        filters: vec![],
     }
 }
 
@@ -1561,7 +1564,10 @@ async fn sdk_relation_drift_prevents_inspection_and_preview_publication() {
                 .preview_relation(&PreviewRelationRequest {
                     revision: request.revision.clone(),
                     target_id: request.target_id.clone(),
-                    inspection_revision: "never-published".into()
+                    inspection_revision: "never-published".into(),
+                    offset: 0,
+                    sort: None,
+                    filters: vec![],
                 })
                 .await
                 .is_err()

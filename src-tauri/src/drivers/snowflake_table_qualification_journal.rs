@@ -305,7 +305,7 @@ fn encode_record(
     previous: &str,
     limit: usize,
 ) -> AppResult<(Vec<u8>, String)> {
-    if !event.as_object().is_some_and(|object| !object.is_empty()) {
+    if event.as_object().is_none_or(|object| object.is_empty()) {
         return Err(invalid());
     }
     let mut output = BoundedBytes {

@@ -335,22 +335,82 @@ impl AttemptOwner {
 
     fn validate_workspace(&self) -> AppResult<()> {
         self.storage.validate()?;
+        let uid = unsafe { libc::geteuid() };
+        let mut saw_sqlite = false;
+        let mut saw_owners = false;
         for entry in fs::read_dir(self.storage.workspace()).map_err(|_| failed())? {
             let entry = entry.map_err(|_| failed())?;
-            if !["joinery.sqlite", "joinery.sqlite-wal", "joinery.sqlite-shm"]
-                .iter()
-                .any(|name| entry.file_name() == *name)
-            {
+            let Some(name) = entry.file_name().into_string().ok() else {
                 return Err(failed());
-            }
+            };
             let metadata = fs::symlink_metadata(entry.path()).map_err(|_| failed())?;
-            if !metadata.file_type().is_file()
-                || metadata.uid() != unsafe { libc::geteuid() }
-                || metadata.nlink() != 1
-                || metadata.permissions().mode() & 0o7777 != 0o600
-            {
-                return Err(failed());
+            match name.as_str() {
+                "joinery.sqlite" | "joinery.sqlite-wal" | "joinery.sqlite-shm" => {
+                    if name == "joinery.sqlite" {
+                        saw_sqlite = true;
+                    }
+                    if !metadata.file_type().is_file()
+                        || metadata.uid() != uid
+                        || metadata.nlink() != 1
+                        || metadata.permissions().mode() & 0o7777 != 0o600
+                    {
+                        return Err(failed());
+                    }
+                }
+                "history-admission.lock" | "history-owner-registration.lock" => {
+                    if !metadata.file_type().is_file()
+                        || metadata.len() != 0
+                        || metadata.uid() != uid
+                        || metadata.nlink() != 1
+                        || metadata.permissions().mode() & 0o7777 != 0o600
+                    {
+                        return Err(failed());
+                    }
+                }
+                "history-owners" => {
+                    saw_owners = true;
+                    if !metadata.file_type().is_dir()
+                        || metadata.uid() != uid
+                        || metadata.permissions().mode() & 0o7777 != 0o700
+                    {
+                        return Err(failed());
+                    }
+                    let mut owner_count = 0usize;
+                    for owner_entry in fs::read_dir(entry.path()).map_err(|_| failed())? {
+                        let owner_entry = owner_entry.map_err(|_| failed())?;
+                        let Some(owner_name) = owner_entry.file_name().into_string().ok() else {
+                            return Err(failed());
+                        };
+                        let Some(nonce) = owner_name.strip_suffix(".lock") else {
+                            return Err(failed());
+                        };
+                        let Ok(parsed) = uuid::Uuid::parse_str(nonce) else {
+                            return Err(failed());
+                        };
+                        if parsed.get_version_num() != 4 || parsed.to_string() != nonce {
+                            return Err(failed());
+                        }
+                        let owner_meta =
+                            fs::symlink_metadata(owner_entry.path()).map_err(|_| failed())?;
+                        if !owner_meta.file_type().is_file()
+                            || owner_meta.len() != 0
+                            || owner_meta.uid() != uid
+                            || owner_meta.nlink() != 1
+                            || owner_meta.permissions().mode() & 0o7777 != 0o600
+                        {
+                            return Err(failed());
+                        }
+                        owner_count += 1;
+                    }
+                    if owner_count != 1 {
+                        return Err(failed());
+                    }
+                }
+                _ => return Err(failed()),
             }
+        }
+        if !saw_sqlite || !saw_owners {
+            return Err(failed());
         }
         Ok(())
     }

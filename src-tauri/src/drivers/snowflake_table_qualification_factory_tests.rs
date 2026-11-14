@@ -286,7 +286,19 @@ fn assert_private_profile(path: &Path) {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .unwrap();
-    let mut statement = connection.prepare("SELECT json FROM profiles").unwrap();
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 8);
+    let legacy_profiles: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name='profiles'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(legacy_profiles, 0);
+    let mut statement = connection.prepare("SELECT json FROM profiles_v8").unwrap();
     let profiles = statement
         .query_map([], |row| row.get::<_, String>(0))
         .unwrap()
