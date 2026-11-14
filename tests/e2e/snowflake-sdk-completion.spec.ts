@@ -245,8 +245,10 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText('DB."PUBLIC".ORDERS');
 
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
+  await editor.press("Home");
+  for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
+  await editor.press("Control+Space");
   await expect(oldSchemaEntered).resolves.toBeUndefined();
-  await page.keyboard.press("Control+Space");
   const catalogCallsBeforeRefresh = completionCatalogCalls;
   snapshotFingerprint = "synthetic-fingerprint-b";
   await page.getByRole("button", { name: "Refresh completion context" }).click();
@@ -285,9 +287,9 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
 
   // A late invalidation from revision A must not clear the replacement B catalog or cache.
   await editor.fill("SELECT * FROM DB.PUBLIC.");
-  await page.keyboard.press("End");
+  await editor.press("End");
   await page.keyboard.type("OR");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Control+Space");
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText('DB."PUBLIC".ORDERS');
 
   // A manual refresh can replace a schema cache without changing backend revision.
@@ -296,7 +298,9 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
   await page.getByRole("button", { name: "Refresh completion context" }).click();
   await expect.poll(() => completionCatalogCalls).toBeGreaterThan(catalogCallsBeforeHeldB);
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Home");
+  for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
+  await editor.press("Control+Space");
   await expect(sameRevisionSchemaEntered).resolves.toBeUndefined();
 
   const catalogCallsBeforeSameB = completionCatalogCalls;
@@ -305,7 +309,7 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
   await editor.press("Home");
   for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Control+Space");
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("o.NEW_COLUMN");
   releaseSameRevisionSchema();
   await expect(sameRevisionErrorServed).resolves.toBeUndefined();
@@ -320,7 +324,9 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
   await expect(page.locator(".completion-context")).toContainText("ANALYST");
   failNextSchema = true;
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Home");
+  for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
+  await editor.press("Control+Space");
   await expect
     .poll(() => schemaCalls.filter((item) => item.revision === "synthetic-revision-c").length)
     .toBe(1);
@@ -328,14 +334,14 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
     "Completion unavailable: Synthetic SDK session context changed",
   );
   await editor.fill("SELECT * FROM DB.PUBLIC.");
-  await page.keyboard.press("End");
+  await editor.press("End");
   await page.keyboard.type("OR");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Control+Space");
   await expect(page.locator(".cm-tooltip-autocomplete")).toHaveCount(0);
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
   await editor.press("Home");
   for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Control+Space");
   await expect(page.locator(".cm-tooltip-autocomplete")).toHaveCount(0);
 
   const catalogCallsBeforeRecovery = completionCatalogCalls;
@@ -345,7 +351,7 @@ test("synthetic Snowflake SDK completion invalidates stale metadata on fingerpri
   await editor.fill("SELECT o. FROM DB.PUBLIC.ORDERS o");
   await editor.press("Home");
   for (let index = 0; index < 9; index++) await editor.press("ArrowRight");
-  await page.keyboard.press("Control+Space");
+  await editor.press("Control+Space");
   await expect(page.locator(".cm-tooltip-autocomplete")).toContainText("o.RECOVERED_COLUMN");
 
   failNextRefresh = true;

@@ -34,7 +34,7 @@ test("Snowflake SQL editor supports plan snapshot comparison, role/warehouse/dat
   let currentSchema = "BILLIE_TESTING";
   let contextRevision = 1;
   const switchCalls: unknown[] = [];
-  let completionSchemaCalls = 0;
+  let inspectionSchemaCalls = 0;
 
   const planRaw1 =
     '{"GlobalStats":{"partitionsTotal":4,"partitionsAssigned":2,"bytesAssigned":8192},"Operations":[[{"id":0,"operation":"Result"},{"id":1,"operation":"TableScan","parentOperators":[0],"objects":["SANDBOX.BILLIE_TESTING.ORDERS"],"partitionsAssigned":2,"bytesAssigned":8192}]]}';
@@ -157,8 +157,9 @@ test("Snowflake SQL editor supports plan snapshot comparison, role/warehouse/dat
           unqualifiedTables: [{ schema: currentSchema, name: "ORDERS" }],
         };
         break;
-      case "completion_schema": {
-        completionSchemaCalls += 1;
+      case "completion_schema":
+      case "inspection_schema": {
+        if (command === "inspection_schema") inspectionSchemaCalls += 1;
         const schema: TableSchema = {
           table: args.table,
           columns: [
@@ -194,10 +195,6 @@ test("Snowflake SQL editor supports plan snapshot comparison, role/warehouse/dat
         result = schema;
         break;
       }
-      case "inspection_schema":
-        throw new Error(
-          "Snowflake column inspection should use completion_schema, not inspection_schema",
-        );
       case "prepare_explain": {
         const plan: PreparedPlan = {
           id: `sf-explain-plan-${runs}`,
@@ -325,7 +322,7 @@ test("Snowflake SQL editor supports plan snapshot comparison, role/warehouse/dat
   await expect(page.getByRole("region", { name: "Plan comparison", exact: true })).toBeVisible();
   await expect(planRegion.locator(".plan-tree")).toHaveCount(2);
 
-  // 2. Live Snowflake SQL column inspection via completion_schema
+  // 2. Live Snowflake SQL column inspection via inspection_schema
   await editor.fill('SELECT O.ORDR_TYPO FROM "SANDBOX"."BILLIE_TESTING"."ORDERS" O');
   await page.getByRole("button", { name: "Inspect SQL columns", exact: true }).click();
   const inspectDialog = page.getByRole("dialog", { name: "SQL column inspection" });
@@ -333,7 +330,7 @@ test("Snowflake SQL editor supports plan snapshot comparison, role/warehouse/dat
   await inspectDialog.getByLabel("Replace with catalog column").selectOption("ORDER_ID");
   await inspectDialog.getByRole("button", { name: "Apply column correction" }).click();
   await expect(editor).toHaveText('SELECT O."ORDER_ID" FROM "SANDBOX"."BILLIE_TESTING"."ORDERS" O');
-  expect(completionSchemaCalls).toBeGreaterThanOrEqual(1);
+  expect(inspectionSchemaCalls).toBeGreaterThanOrEqual(1);
 
   // 3. Guarded ROLE / WAREHOUSE / DATABASE / SCHEMA context switching
   await page.getByRole("button", { name: "Load Snowflake session contexts", exact: true }).click();

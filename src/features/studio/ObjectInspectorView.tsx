@@ -28,7 +28,7 @@ import type {
   TableStorageStats,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
-import { useStudio, type StudioTab } from "../../state/studio";
+import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
 import { IndexConstraintDialog, type IndexConstraintDialogMode } from "./IndexConstraintDialog";
 import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
@@ -295,8 +295,11 @@ export function ObjectInspectorView({
     let active = true;
     setLoading(true);
     setError(null);
-    void client
-      .call<ObjectDetails>("object_details", { sessionId, object: target })
+    void Promise.resolve()
+      .then(() => {
+        revokeSchemaSelectionBeforeWork(sessionId);
+        return client.call<ObjectDetails>("object_details", { sessionId, object: target });
+      })
       .then((result) => {
         if (active) setDetails(result);
       })

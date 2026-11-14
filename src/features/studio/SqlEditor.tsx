@@ -789,14 +789,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       for (const table of plan.tables) {
         if (!current() || renameContext() !== context) return;
         revokeSchemaSelectionBeforeWork(sessionId);
-        const schema = await client.call<TableSchema>(
-          latest.current.engine === "snowflake" ? "completion_schema" : "inspection_schema",
-          {
-            sessionId,
-            revision: snapshot.revision,
-            table,
-          },
-        );
+        const schema = await client.call<TableSchema>("inspection_schema", {
+          sessionId,
+          revision: snapshot.revision,
+          table,
+        });
         if (!current() || renameContext() !== context) return;
         columns += schema.columns.length;
         bytes += new TextEncoder().encode(JSON.stringify(schema)).length;

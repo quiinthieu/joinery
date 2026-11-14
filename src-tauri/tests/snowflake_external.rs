@@ -1011,10 +1011,16 @@ async fn sdk_completion_uses_one_existing_connection_and_resolved_zero_row_colum
     assert_eq!(columns.columns[0].database_type, "FIXED");
     assert!(!columns.editable && columns.columns.iter().all(|c| !c.editable));
     assert!(columns.primary_key.is_empty());
+    let inspected = h.driver.inspection_schema(&orders).await.unwrap();
     assert_eq!(
-        h.driver.inspection_schema(&orders).await.unwrap_err().code,
-        ErrorCode::Unsupported
+        inspected
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        ["ID", "NOTES"]
     );
+    assert!(!inspected.editable && inspected.columns.iter().all(|c| !c.editable));
     assert_eq!(
         h.driver.catalog().await.unwrap_err().code,
         ErrorCode::Unsupported

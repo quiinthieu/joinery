@@ -1309,6 +1309,17 @@ mod tests {
         assert_eq!(sink.rows[0][0].as_deref(), Some("42"));
         assert_eq!(sink.rows[0][1].as_deref(), Some("2024-02-29"));
         assert_eq!(sink.rows[0][2], None);
+        assert_eq!(
+            driver
+                .inspection_schema(&TableRef {
+                    schema: "PUBLIC".into(),
+                    name: "ORDERS".into(),
+                })
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
         server.await.unwrap();
 
         // Verify rewritten compilation error maps back to original UTF-16 token

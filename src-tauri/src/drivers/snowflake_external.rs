@@ -3896,6 +3896,10 @@ impl Driver for SnowflakeExternal {
         .await
     }
 
+    async fn inspection_schema(&self, table: &TableRef) -> AppResult<TableSchema> {
+        self.completion_schema(table).await
+    }
+
     async fn execute(
         &self,
         sql: &str,

@@ -10,6 +10,7 @@ test("authoritative console seal fences delayed direct and nested commands perma
     "session_contexts",
     "completion_catalog",
     "completion_schema",
+    "inspection_schema",
     "object_details",
     "table_schema",
     "processes",
