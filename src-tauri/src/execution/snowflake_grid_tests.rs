@@ -1908,12 +1908,47 @@ async fn grid_studio_reviewed_plan_authorizes_executes_continues_and_finishes() 
         "unapproved grid plan must never dispatch SQL"
     );
 
-    // 2. Re-preview for a fresh linear snapshot, then prepare + authorize + execute initial Manual batch.
+    // 2. Re-preview for a fresh linear snapshot, cancel a prepared plan to verify
+    //    linear snapshot restoration without re-previewing, then prepare + authorize + execute.
     let rel_preview = studio
         .preview_relation(&info.id, &preview_req)
         .await
         .unwrap();
-    let snapshot_id = rel_preview.edit_snapshot_id.clone().unwrap();
+    let snapshot_before_cancel = rel_preview.edit_snapshot_id.clone().unwrap();
+    let cancelled_initial = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: None,
+            preview: preview_req.clone(),
+            snapshot_id: snapshot_before_cancel.clone(),
+            mutations: vec![SnowflakeGridMutation::Delete { row_index: 0 }],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: false,
+        })
+        .await
+        .unwrap();
+    let snapshot_id = studio
+        .cancel_snowflake_grid_plan(&cancelled_initial.plan.id)
+        .await
+        .unwrap()
+        .expect("cancelling an active initial grid plan restores a fresh snapshot id");
+    assert_ne!(snapshot_id, snapshot_before_cancel);
+    assert_eq!(
+        studio
+            .cancel_snowflake_grid_plan(&cancelled_initial.plan.id)
+            .await
+            .unwrap(),
+        None,
+        "repeating cancel on an already-consumed plan is a clean no-op"
+    );
+    assert_eq!(
+        studio
+            .execute_snowflake_grid_plan(&cancelled_initial.plan.id, None)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::ApprovalExpired
+    );
     let initial_preview = studio
         .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
             session_id: info.id.clone(),
@@ -1974,12 +2009,31 @@ async fn grid_studio_reviewed_plan_authorizes_executes_continues_and_finishes() 
         cont_rel_preview.rows[0][1].as_deref(),
         Some("public-ipc-step-1")
     );
+    let cont_snap_initial = cont_rel_preview.edit_snapshot_id.unwrap();
+    let cancelled_cont = studio
+        .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
+            session_id: info.id.clone(),
+            transaction_id: Some(tx_id.clone()),
+            preview: preview_req.clone(),
+            snapshot_id: cont_snap_initial.clone(),
+            mutations: vec![SnowflakeGridMutation::Delete { row_index: 1 }],
+            mode: SnowflakeGridMode::Manual,
+            rollback_prior: true,
+        })
+        .await
+        .unwrap();
+    let cont_snap_restored = studio
+        .cancel_snowflake_grid_plan(&cancelled_cont.plan.id)
+        .await
+        .unwrap()
+        .expect("cancelling an active continuation grid plan restores a fresh snapshot id");
+    assert_ne!(cont_snap_restored, cont_snap_initial);
     let cont_plan = studio
         .prepare_snowflake_grid_plan(&PrepareSnowflakeGridEditsRequest {
             session_id: info.id.clone(),
             transaction_id: Some(tx_id.clone()),
             preview: preview_req.clone(),
-            snapshot_id: cont_rel_preview.edit_snapshot_id.unwrap(),
+            snapshot_id: cont_snap_restored,
             mutations: vec![SnowflakeGridMutation::Delete { row_index: 2 }],
             mode: SnowflakeGridMode::Manual,
             rollback_prior: true,

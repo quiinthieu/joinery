@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable, PassThrough } from "node:stream";
-import { Helper, connectionOptions } from "../src/helper.mjs";
+import { createRequire } from "node:module";
+import { CANONICAL_QUERY_PARAMETERS, Helper, connectionOptions } from "../src/helper.mjs";
 import { Decoder, encode, FRAME_BYTES } from "../src/framing.mjs";
 const generation = "b512e129-c689-48bd-b5c2-848438b1231a";
 const tick = () => new Promise((resolve) => setImmediate(resolve));
@@ -1307,4 +1308,164 @@ test("console timeout connect policy is closed, bounded and preserves ordinary S
     assert.equal(s.terminal(id)?.error.code, "invalidInput");
     assert.equal(s.options(), undefined);
   }
+});
+
+test("real snowflake-sdk Column extraction preserves SQL null, boolean lowercase, temporal FF9, hex binary and structured JSON", async () => {
+  const require = createRequire(import.meta.url);
+  const sdk = require("snowflake-sdk");
+  const Column = require("snowflake-sdk/dist/lib/connection/result/column");
+  sdk.configure({ logLevel: "OFF", additionalLogToConsole: false });
+  const opts = connectionOptions(profile, "/owned/nonexistent");
+  assert.equal(opts.representNullAsStringNull, false);
+  sdk.createConnection(opts);
+
+  const statementParameters = {
+    ...CANONICAL_QUERY_PARAMETERS,
+    TIMEZONE: "UTC",
+  };
+  const metas = [
+    { name: "b", type: "boolean", nullable: true },
+    { name: "f", type: "real", nullable: true },
+    { name: "bin", type: "binary", nullable: true, byteLength: 16 },
+    { name: "d", type: "date", nullable: true },
+    { name: "t", type: "time", scale: 9, nullable: true },
+    { name: "ntz", type: "timestamp_ntz", scale: 9, nullable: true },
+    { name: "ltz", type: "timestamp_ltz", scale: 9, nullable: true },
+    { name: "tz", type: "timestamp_tz", scale: 9, nullable: true },
+    { name: "v", type: "variant", nullable: true },
+    { name: "arr", type: "array", nullable: true },
+    { name: "obj", type: "object", nullable: true },
+    { name: "txt", type: "text", nullable: true },
+  ];
+  const cols = metas.map(
+    (columnMetadata, index) =>
+      new Column({
+        columnMetadata,
+        index,
+        statementParameters,
+        resultVersion: "1",
+        onPrecisionLoss: () => {},
+        onNonJsonCompliantVariant: () => {},
+      }),
+  );
+  const extract = (values) => {
+    const row = {
+      values: [...values],
+      _arrayProcessedColumns: new Array(values.length).fill(false),
+    };
+    return cols.map((col) => col._getRowValueAsString(row));
+  };
+
+  assert.deepEqual(extract(new Array(metas.length).fill(null)), new Array(metas.length).fill(null));
+  const populated = extract([
+    "1",
+    "NaN",
+    "DEADBEEF",
+    "20771",
+    "45296.123456789",
+    "1794656096.123456789",
+    "1794656096.123456789",
+    "1794656096.123456789 1860",
+    "null",
+    '[1,"x"]',
+    '{"k":true}',
+    "NULL",
+  ]);
+  assert.equal(populated[0], "TRUE");
+  assert.equal(populated[1], "NaN");
+  assert.equal(populated[2], "DEADBEEF");
+  assert.equal(populated[3], "2026-11-14");
+  assert.equal(populated[4], "12:34:56.123456789");
+  assert.equal(populated[5], "2026-11-14 11:34:56.123456789");
+  assert.equal(populated[6], "2026-11-14 11:34:56.123456789 +00:00");
+  assert.equal(populated[7], "2026-11-14 18:34:56.123456789 +07:00");
+  assert.equal(populated[8], "null");
+  assert.equal(populated[9], '[1,"x"]');
+  assert.equal(populated[10], '{"k":true}');
+  assert.equal(populated[11], "NULL");
+
+  const events = [];
+  const execCalls = [];
+  const helper = new Helper(
+    {
+      configure() {},
+      createConnection: () => ({
+        connectAsync(cb) {
+          setImmediate(() => cb(null, this));
+          return Promise.resolve(this);
+        },
+        destroy(cb) {
+          cb();
+        },
+        execute(execOpts) {
+          execCalls.push(execOpts);
+          const stmt = {
+            getRequestId: () => "11111111-1111-4111-8111-000000000001",
+            getQueryId: () => "22222222-2222-4222-8222-000000000001",
+            getColumns: () => [
+              { getName: () => "flag", getType: () => "boolean" },
+              { getName: () => "text_flag", getType: () => "text" },
+            ],
+            streamRows: () =>
+              Readable.from(
+                [
+                  ["TRUE", "TRUE"],
+                  ["FALSE", "FALSE"],
+                  [null, null],
+                ],
+                { objectMode: true },
+              ),
+            cancel(cb) {
+              cb();
+            },
+          };
+          setImmediate(() => execOpts.complete(null, stmt));
+          return stmt;
+        },
+      }),
+    },
+    (event) => {
+      events.push(event);
+      return Promise.resolve();
+    },
+    () => {},
+    { clientConfigFile: "/owned/nonexistent" },
+  );
+  helper.receive({ v: 1, generation, id: "1", op: "connect", payload: profile });
+  await tick();
+  helper.receive({
+    v: 1,
+    generation,
+    id: "2",
+    op: "query",
+    payload: {
+      sql: "SELECT 1",
+      binds: [],
+      classification: "read",
+      credits: 4,
+      maxRows: 100,
+      maxBytes: 65536,
+    },
+  });
+  for (let i = 0; i < 4; i++) await tick();
+  assert.equal(events.find((e) => e.id === "2" && e.type === "terminal")?.ok, true);
+  assert.deepEqual(execCalls[0].parameters, CANONICAL_QUERY_PARAMETERS);
+  assert.deepEqual(execCalls[0].fetchAsString, [
+    "Number",
+    "Date",
+    "Boolean",
+    "Buffer",
+    "JSON",
+    "Object",
+    "Array",
+    "Map",
+  ]);
+  assert.deepEqual(
+    events.filter((e) => e.id === "2" && e.type === "rows").flatMap((e) => e.rows),
+    [
+      ["true", "TRUE"],
+      ["false", "FALSE"],
+      [null, null],
+    ],
+  );
 });

@@ -603,6 +603,10 @@ export interface JoineryCommandMap {
     args: { planId: string; approval?: string | null };
     result: SnowflakeGridResult;
   };
+  cancel_snowflake_grid_plan: {
+    args: { planId: string };
+    result: string | null;
+  };
   preview_snowflake_grid_transaction_relation: {
     args: { transactionId: string; request: PreviewRelationRequest };
     result: RelationPreview;

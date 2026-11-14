@@ -5525,6 +5525,13 @@ impl Studio {
         ))
     }
 
+    pub async fn cancel_snowflake_grid_plan(&self, _plan_id: &str) -> AppResult<Option<String>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake generated edits are unavailable on this platform",
+        ))
+    }
+
     pub async fn preview_snowflake_grid_transaction_relation(
         &self,
         _transaction_id: &str,

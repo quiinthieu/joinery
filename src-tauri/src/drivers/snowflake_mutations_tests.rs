@@ -464,6 +464,10 @@ fn schema_identifiers_types_and_structural_bounds_are_validated() {
             max_bytes: MAX_CELL_BYTES + 1,
         },
         ScalarType::Decimal {
+            precision: 0,
+            scale: 0,
+        },
+        ScalarType::Decimal {
             precision: 39,
             scale: 0,
         },
@@ -473,22 +477,36 @@ fn schema_identifiers_types_and_structural_bounds_are_validated() {
         },
         ScalarType::Decimal {
             precision: 38,
-            scale: 38,
+            scale: 39,
         },
+        ScalarType::Binary { max_bytes: 0 },
+        ScalarType::Binary {
+            max_bytes: MAX_CELL_BYTES / 2 + 1,
+        },
+        ScalarType::Time { scale: 10 },
+        ScalarType::TimestampNtz { scale: 10 },
+        ScalarType::TimestampLtz { scale: 10 },
+        ScalarType::TimestampTz { scale: 10 },
     ] {
         assert!(MutationColumn::new("x", ty, true, WriteMode::Writable, false).is_err());
     }
+    assert!(
+        MutationColumn::new(
+            "x",
+            ScalarType::Decimal {
+                precision: 38,
+                scale: 38,
+            },
+            true,
+            WriteMode::Writable,
+            false
+        )
+        .is_ok()
+    );
     for ty in [
-        UnsupportedType::Float,
-        UnsupportedType::Binary,
-        UnsupportedType::Date,
-        UnsupportedType::Time,
-        UnsupportedType::Timestamp,
-        UnsupportedType::Variant,
-        UnsupportedType::Array,
-        UnsupportedType::Object,
         UnsupportedType::Geography,
         UnsupportedType::Geometry,
+        UnsupportedType::Vector,
         UnsupportedType::Unknown,
     ] {
         assert_eq!(
@@ -606,5 +624,195 @@ fn unicode_quote_heavy_wide_schema_and_500_rows_fit_accounted_sql_capacity() {
         .collect();
     let batch = compile(&target, &rows).unwrap();
     assert_eq!(batch.units().len(), MAX_ROWS);
+    parse_batch(&batch);
+}
+
+#[test]
+fn scale_38_decimal_float_binary_temporal_and_json_codecs_roundtrip_sqlparser() {
+    let target = MutationTarget::new(
+        "db",
+        "schema",
+        "all_types",
+        vec![
+            MutationColumn::new(
+                "id",
+                ScalarType::Decimal {
+                    precision: 38,
+                    scale: 0,
+                },
+                false,
+                WriteMode::Writable,
+                true,
+            )
+            .unwrap(),
+            column(
+                "frac38",
+                ScalarType::Decimal {
+                    precision: 38,
+                    scale: 38,
+                },
+                false,
+            ),
+            column("flt", ScalarType::Float, true),
+            column("bin", ScalarType::Binary { max_bytes: 8 }, true),
+            column("dt", ScalarType::Date, true),
+            column("tm", ScalarType::Time { scale: 3 }, true),
+            column("ntz", ScalarType::TimestampNtz { scale: 0 }, true),
+            column("ltz", ScalarType::TimestampLtz { scale: 6 }, true),
+            column("tz", ScalarType::TimestampTz { scale: 9 }, true),
+            column("v", ScalarType::Variant, true),
+            column("arr", ScalarType::Array, true),
+            column("obj", ScalarType::Object, true),
+        ],
+    )
+    .unwrap();
+
+    let exact_38 = "-0.12345678901234567890123456789012345678";
+    let orig = OriginalRow::new(
+        &target,
+        vec![
+            text("1"),
+            text(exact_38),
+            text("NaN"),
+            text("deadbeef"),
+            text("2024-02-29"),
+            text("23:59:59.123000000"),
+            text("2026-11-14 12:34:56.000000000"),
+            text("2026-11-14 11:34:56.123456000 +00:00"),
+            text("2026-11-14 18:34:56.123456789 +07:00"),
+            text("null"),
+            text("[9007199254740993, \"x\"]"),
+            text("{\"b\":1,\"a\":2.0}"),
+        ],
+    )
+    .unwrap();
+
+    // Semi-structured INSERT omits DEFAULT columns and emits INSERT ... SELECT.
+    let ins_select = compile(
+        &target,
+        &[Mutation::Insert {
+            values: vec![
+                (0, CellValue::Default),
+                (1, text("0.00000000000000000000000000000000000001")),
+                (2, text("-inf")),
+                (3, text("")),
+                (4, text("2026-11-14")),
+                (5, text("00:00:00")),
+                (6, text("2026-11-14T00:00:00")),
+                (7, text("2026-11-14T00:00:00.5-05:00")),
+                (8, text("2026-11-14 00:00:00.000000001 +00:00")),
+                (9, CellValue::Null),
+                (10, text("[]")),
+                (11, text("{}")),
+            ],
+        }],
+    )
+    .unwrap();
+    let select_sql = ins_select.units()[0].sql();
+    assert!(select_sql.starts_with("INSERT INTO \"db\".\"schema\".\"all_types\" (\"frac38\""));
+    assert!(select_sql.contains(") SELECT "));
+    assert!(!select_sql.contains("VALUES"));
+    assert!(!select_sql.contains("\"id\""));
+    parse_batch(&ins_select);
+
+    // Update changing TIMESTAMP_TZ offset on the same UTC instant succeeds on one row,
+    // while canonical JSON SQL NULL vs JSON "null" stay distinct.
+    let upd = compile(
+        &target,
+        &[Mutation::Update {
+            original: orig.clone(),
+            changes: vec![
+                (8, text("2026-11-14 11:34:56.123456789 +00:00")),
+                (9, CellValue::Null),
+            ],
+        }],
+    )
+    .unwrap();
+    parse_batch(&upd);
+
+    // Equivalent canonical representations across two units are caught as overlap conflicts.
+    let equivalent = OriginalRow::new(
+        &target,
+        vec![
+            text("01"),
+            text(exact_38),
+            text("NaN"),
+            text("DEADBEEF"),
+            text("2024-02-29"),
+            text("23:59:59.123"),
+            text("2026-11-14T12:34:56"),
+            text("2026-11-14 18:34:56.123456 +07:00"),
+            text("2026-11-14 11:34:56.123456789 +00:00"),
+            text(" null "),
+            text("[ 9007199254740993 , \"x\" ]"),
+            text("{\"a\": 2, \"b\": 1.00}"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        compile(
+            &target,
+            &[
+                Mutation::Delete {
+                    original: orig.clone()
+                },
+                Mutation::Delete {
+                    original: equivalent
+                },
+            ],
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict
+    );
+
+    // Precision/range/type violations fail closed before SQL emission.
+    for (col_idx, bad_val) in [
+        (1, "1.0"),
+        (1, "0.123456789012345678901234567890123456789"),
+        (2, "1e999"),
+        (2, "+1.0"),
+        (2, "0x1p2"),
+        (3, "ABC"),
+        (3, "GG"),
+        (3, "001122334455667788"),
+        (4, "2026-02-29"),
+        (4, "2026-13-01"),
+        (5, "12:34:56.1234"),
+        (5, "24:00:00"),
+        (6, "2026-11-14 12:34:56.1"),
+        (6, "2026-11-14 12:34:56 +00:00"),
+        (7, "2026-11-14 12:34:56"),
+        (7, "2026-11-14 12:34:56.1234567 +00:00"),
+        (9, "undefined"),
+        (10, "{\"not\":\"array\"}"),
+        (11, "[1,2]"),
+        (11, "{\"dup\":1,\"dup\":2}"),
+        (9, &format!("{}{}", "[".repeat(70), "]".repeat(70))),
+    ] {
+        let mut bad_row = orig.values().to_vec();
+        bad_row[col_idx] = text(bad_val);
+        assert!(
+            OriginalRow::new(&target, bad_row).is_err(),
+            "accepted invalid value for col {col_idx}: {bad_val}"
+        );
+    }
+}
+
+#[test]
+fn thousand_column_full_width_update_compiles_with_2000_binds() {
+    let target = MutationTarget::new(
+        "db",
+        "schema",
+        "wide_1000",
+        (0..MAX_COLUMNS)
+            .map(|i| column(&format!("c{i}"), ScalarType::Boolean, false))
+            .collect(),
+    )
+    .unwrap();
+    let original = OriginalRow::new(&target, vec![text("false"); MAX_COLUMNS]).unwrap();
+    let changes: Vec<_> = (0..MAX_COLUMNS).map(|i| (i, text("true"))).collect();
+    let batch = compile(&target, &[Mutation::Update { original, changes }]).unwrap();
+    assert_eq!(batch.units()[0].bindings().len(), 2 * MAX_COLUMNS);
     parse_batch(&batch);
 }

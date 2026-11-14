@@ -6,6 +6,7 @@ import {
   MUTATION_CONTEXT_SQL,
   MUTATION_SETTINGS_SQL,
   MUTATION_LIMITS,
+  validateMutationRequest,
 } from "../src/mutation-batch.mjs";
 import { SQL_CONTRACT } from "../src/sql-contract.mjs";
 
@@ -750,4 +751,41 @@ test("uppercase SDK batch identity preserves ACK but cannot become canonical suc
   assert(!result.frames.some((e) => e.type === "batchCount"));
   assert(!sqls(state).some((s) => s.startsWith("DELETE")));
   assert.equal(state.retired(), 1);
+});
+
+test("wide-table UPDATE unit accepts up to 2000 scalar binds and rejects 2001", async () => {
+  const state = await pinned();
+  assert.equal(
+    validateMutationRequest(
+      {
+        op: "mutationBatch",
+        payload: payload([
+          {
+            kind: "update",
+            sql: 'UPDATE "DB"."PUBLIC"."WIDE" SET "C0" = CAST(? AS VARCHAR)',
+            binds: new Array(2000).fill("v"),
+          },
+        ]),
+      },
+      state.helper,
+    ),
+    true,
+  );
+  assert.equal(
+    validateMutationRequest(
+      {
+        op: "mutationBatch",
+        payload: payload([
+          {
+            kind: "update",
+            sql: 'UPDATE "DB"."PUBLIC"."WIDE" SET "C0" = CAST(? AS VARCHAR)',
+            binds: new Array(2001).fill("v"),
+          },
+        ]),
+      },
+      state.helper,
+    ),
+    false,
+  );
+  state.helper.stop();
 });

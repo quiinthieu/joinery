@@ -183,7 +183,7 @@ impl SnowflakeExternal {
         Ok(())
     }
 
-    fn current_grid_binding_locked(
+    pub(super) fn current_grid_binding_locked(
         &self,
         binding: &NativeEditBinding,
         browsing: &BrowseState,
@@ -381,6 +381,34 @@ impl GridManualTransaction {
             &binding,
             mutations,
         )
+    }
+
+    pub(crate) async fn cancel_continuation_edits(
+        &self,
+        edits: PreparedSnowflakeEdits,
+    ) -> AppResult<String> {
+        let _lane = tokio::time::timeout(
+            Duration::from_millis(1500),
+            self.driver.lane.clone().lock_owned(),
+        )
+        .await
+        .map_err(|_| conflict())?;
+        self.check(false)?;
+        let state = self.driver.browsing.lock();
+        if self.driver.is_closed() {
+            return Err(closed_error());
+        }
+        let current = self
+            .driver
+            .current_grid_binding_locked(edits.binding(), &state)?;
+        if current.context() != &self.private.context
+            || !current
+                .helper_generation()
+                .same_helper(&self.private.helper)
+        {
+            return Err(conflict());
+        }
+        self.driver.edit_snapshots.cancel_prepared(edits, current)
     }
 
     pub(crate) async fn prepare_grid_operation(

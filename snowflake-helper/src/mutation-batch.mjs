@@ -90,7 +90,7 @@ export function validateMutationRequest(r, helper) {
         ["insert", "update", "delete"].includes(u.kind) &&
         text(u.sql, 262144) &&
         Array.isArray(u.binds) &&
-        u.binds.length <= 1000 &&
+        u.binds.length <= 2000 &&
         u.binds.every(scalar) &&
         !helper.isFileTransfer(u.sql),
     );
@@ -229,7 +229,7 @@ export async function executeMutationStep(h, a, sql, binds) {
           sqlText: sql,
           binds,
           rowMode: "array",
-          fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
+          fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON", "Object", "Array", "Map"],
           streamResult: true,
           parameters: { MULTI_STATEMENT_COUNT: 1 },
           complete,

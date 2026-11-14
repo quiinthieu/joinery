@@ -154,6 +154,29 @@ impl SnowflakeExternal {
         self.edit_snapshots
             .prepare(&self.session_id, snapshot_id, &binding, mutations)
     }
+
+    pub(crate) async fn cancel_relation_edits(
+        &self,
+        edits: PreparedSnowflakeEdits,
+    ) -> AppResult<String> {
+        let _lane = tokio::time::timeout(Duration::from_millis(1500), self.lane.lock())
+            .await
+            .map_err(|_| AppError::new(ErrorCode::Conflict, "The Snowflake session is busy"))?;
+        self.grid.require_ordinary()?;
+        self.require_unrestricted()?;
+        if !self.edit_profile_enabled() {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Snowflake generated edits require an explicitly enabled writable external-browser profile",
+            ));
+        }
+        let state = self.browsing.lock();
+        if self.is_closed() {
+            return Err(closed_error());
+        }
+        let current = self.current_grid_binding_locked(edits.binding(), &state)?;
+        self.edit_snapshots.cancel_prepared(edits, current)
+    }
 }
 
 fn inspection_slot<'a>(

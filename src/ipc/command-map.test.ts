@@ -130,6 +130,11 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     });
     expectTypeOf(executeGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
 
+    const cancelGridPromise = typedClient.call("cancel_snowflake_grid_plan", {
+      planId: "plan-1",
+    });
+    expectTypeOf(cancelGridPromise).toEqualTypeOf<Promise<string | null>>();
+
     const pendingPreviewPromise = typedClient.call("preview_snowflake_grid_transaction_relation", {
       transactionId: "tx-1",
       request: {
@@ -158,10 +163,11 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       releasePreviewPromise,
       prepareGridPromise,
       executeGridPromise,
+      cancelGridPromise,
       pendingPreviewPromise,
       finishGridPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(13);
+    expect(callMock).toHaveBeenCalledTimes(14);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {

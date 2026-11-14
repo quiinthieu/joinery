@@ -14,9 +14,80 @@ export interface StagedInsertRow {
   cells: Record<number, SnowflakeGridCellInput>;
 }
 
+export type SnowflakeEditTypeFamily =
+  | "fixed"
+  | "real"
+  | "text"
+  | "boolean"
+  | "date"
+  | "time"
+  | "timestamp_ntz"
+  | "timestamp_ltz"
+  | "timestamp_tz"
+  | "binary"
+  | "variant"
+  | "object"
+  | "array";
+
+export function snowflakeEditTypeFamily(dataType: string): SnowflakeEditTypeFamily | null {
+  const base = dataType.trim().toUpperCase().split(/[<( ]/, 1)[0];
+  switch (base) {
+    case "NUMBER":
+    case "DECIMAL":
+    case "NUMERIC":
+    case "FIXED":
+    case "INT":
+    case "INTEGER":
+    case "BIGINT":
+    case "SMALLINT":
+    case "TINYINT":
+    case "BYTEINT":
+      return "fixed";
+    case "FLOAT":
+    case "FLOAT4":
+    case "FLOAT8":
+    case "DOUBLE":
+    case "REAL":
+      return "real";
+    case "VARCHAR":
+    case "CHAR":
+    case "CHARACTER":
+    case "STRING":
+    case "TEXT":
+      return "text";
+    case "BOOLEAN":
+      return "boolean";
+    case "DATE":
+      return "date";
+    case "TIME":
+      return "time";
+    case "TIMESTAMP_NTZ":
+    case "DATETIME":
+      return "timestamp_ntz";
+    case "TIMESTAMP_LTZ":
+      return "timestamp_ltz";
+    case "TIMESTAMP_TZ":
+      return "timestamp_tz";
+    case "BINARY":
+    case "VARBINARY":
+      return "binary";
+    case "VARIANT":
+      return "variant";
+    case "OBJECT":
+      return "object";
+    case "ARRAY":
+      return "array";
+    default:
+      return null;
+  }
+}
+
 export function isWritableSnowflakeColumn(column: ColumnInspection): boolean {
   return (
-    column.kind === "column" && column.expression === null && column.identity.isIdentity === false
+    column.kind === "column" &&
+    column.expression === null &&
+    column.identity.isIdentity === false &&
+    snowflakeEditTypeFamily(column.dataType) !== null
   );
 }
 
@@ -28,10 +99,30 @@ export function defaultInsertCellForColumn(column: ColumnInspection): SnowflakeG
   if (canColumnDefaultOnInsert(column)) {
     return { kind: "default" };
   }
-  if (column.resultKind === "boolean") {
-    return { kind: "text", value: "false" };
+  switch (snowflakeEditTypeFamily(column.dataType)) {
+    case "fixed":
+    case "real":
+      return { kind: "text", value: "0" };
+    case "boolean":
+      return { kind: "text", value: "false" };
+    case "date":
+      return { kind: "text", value: "1970-01-01" };
+    case "time":
+      return { kind: "text", value: "00:00:00" };
+    case "timestamp_ntz":
+      return { kind: "text", value: "1970-01-01 00:00:00" };
+    case "timestamp_ltz":
+    case "timestamp_tz":
+      return { kind: "text", value: "1970-01-01 00:00:00 +00:00" };
+    case "variant":
+      return { kind: "text", value: "null" };
+    case "array":
+      return { kind: "text", value: "[]" };
+    case "object":
+      return { kind: "text", value: "{}" };
+    default:
+      return { kind: "text", value: "" };
   }
-  return { kind: "text", value: "" };
 }
 
 export function createBlankInsertRow(columns: readonly ColumnInspection[]): StagedInsertRow {
@@ -287,7 +378,15 @@ export function stageCsvInsertRows(args: {
           );
         }
         cells[targetIndex] = { kind: "null" };
-      } else if (rawValue === "" && column.resultKind !== "text") {
+      } else if (
+        rawValue === "" &&
+        column.resultKind !== "text" &&
+        !(
+          snowflakeEditTypeFamily(column.dataType) === "binary" &&
+          column.defaultExpression === null &&
+          !column.nullable
+        )
+      ) {
         if (column.defaultExpression !== null) {
           cells[targetIndex] = { kind: "default" };
         } else if (column.nullable) {

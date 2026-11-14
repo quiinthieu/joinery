@@ -67,6 +67,16 @@ fn family(value: &str) -> Option<u8> {
         "NUMBER" | "DECIMAL" | "NUMERIC" | "FIXED" | "INT" | "INTEGER" | "BIGINT" | "SMALLINT"
         | "TINYINT" | "BYTEINT" => Some(1),
         "BOOLEAN" => Some(2),
+        "FLOAT" | "FLOAT4" | "FLOAT8" | "DOUBLE" | "DOUBLE PRECISION" | "REAL" => Some(3),
+        "BINARY" | "VARBINARY" => Some(4),
+        "DATE" => Some(5),
+        "TIME" => Some(6),
+        "TIMESTAMP_NTZ" | "DATETIME" => Some(7),
+        "TIMESTAMP_LTZ" => Some(8),
+        "TIMESTAMP_TZ" => Some(9),
+        "VARIANT" => Some(10),
+        "ARRAY" => Some(11),
+        "OBJECT" => Some(12),
         _ => None,
     }
 }
@@ -81,6 +91,30 @@ fn parameters(full: &str, expected: u8) -> AppResult<Vec<&str>> {
         return Err(invalid());
     }
     Ok(values)
+}
+fn no_lengths_or_numerics(column: &ColumnInspection) -> bool {
+    column.character_maximum_length.is_none()
+        && column.character_octet_length.is_none()
+        && column.numeric_precision.is_none()
+        && column.numeric_precision_radix.is_none()
+        && column.numeric_scale.is_none()
+}
+fn temporal_scale(full: &str, expected: u8) -> AppResult<u8> {
+    if full.contains('(') {
+        let args = parameters(full, expected)?;
+        if args.len() != 1 {
+            return Err(invalid());
+        }
+        let scale = dimension(Some(args[0]))?;
+        if scale > 9 {
+            return Err(invalid());
+        }
+        Ok(scale as u8)
+    } else if family(full) == Some(expected) {
+        Ok(9)
+    } else {
+        Err(invalid())
+    }
 }
 fn codec(column: &ColumnInspection) -> AppResult<(ScalarType, Option<TextLimit>)> {
     let kind = family(&column.data_type).ok_or_else(unsupported)?;
@@ -144,9 +178,6 @@ fn codec(column: &ColumnInspection) -> AppResult<(ScalarType, Option<TextLimit>)
             {
                 return Err(invalid());
             }
-            if scale > 37 {
-                return Err(unsupported());
-            }
             let integer_alias = |value: &str| {
                 matches!(
                     value,
@@ -170,15 +201,108 @@ fn codec(column: &ColumnInspection) -> AppResult<(ScalarType, Option<TextLimit>)
         2 => {
             if column.full_type != "BOOLEAN"
                 || column.result_kind != ColumnKind::Boolean
+                || !no_lengths_or_numerics(column)
+            {
+                return Err(invalid());
+            }
+            Ok((ScalarType::Boolean, None))
+        }
+        3 => {
+            if family(&column.full_type) != Some(3)
+                || column.result_kind != ColumnKind::Decimal
                 || column.character_maximum_length.is_some()
                 || column.character_octet_length.is_some()
+                || column.numeric_scale.is_some()
+                || !matches!(
+                    (
+                        column.numeric_precision.as_deref(),
+                        column.numeric_precision_radix.as_deref()
+                    ),
+                    (None, None) | (Some("53"), Some("2"))
+                )
+            {
+                return Err(invalid());
+            }
+            Ok((ScalarType::Float, None))
+        }
+        4 => {
+            if column.result_kind != ColumnKind::Binary
                 || column.numeric_precision.is_some()
                 || column.numeric_precision_radix.is_some()
                 || column.numeric_scale.is_some()
             {
                 return Err(invalid());
             }
-            Ok((ScalarType::Boolean, None))
+            let bytes = dimension(column.character_octet_length.as_deref())?;
+            if let Some(max_chars) = column.character_maximum_length.as_deref()
+                && dimension(Some(max_chars))? != bytes
+            {
+                return Err(invalid());
+            }
+            let args = parameters(&column.full_type, kind)?;
+            if args.len() != 1 || dimension(Some(args[0]))? != bytes || bytes == 0 {
+                return Err(invalid());
+            }
+            Ok((
+                ScalarType::Binary {
+                    max_bytes: bytes.min(mutations::MAX_CELL_BYTES / 2),
+                },
+                None,
+            ))
+        }
+        5 => {
+            if column.full_type != "DATE"
+                || column.result_kind != ColumnKind::Temporal
+                || !no_lengths_or_numerics(column)
+            {
+                return Err(invalid());
+            }
+            Ok((ScalarType::Date, None))
+        }
+        6..=9 => {
+            if column.result_kind != ColumnKind::Temporal || !no_lengths_or_numerics(column) {
+                return Err(invalid());
+            }
+            let scale = temporal_scale(&column.full_type, kind)?;
+            let scalar = match kind {
+                6 => ScalarType::Time { scale },
+                7 => ScalarType::TimestampNtz { scale },
+                8 => ScalarType::TimestampLtz { scale },
+                9 => ScalarType::TimestampTz { scale },
+                _ => unreachable!(),
+            };
+            Ok((scalar, None))
+        }
+        10..=12 => {
+            if family(&column.full_type) != Some(kind)
+                || column.result_kind != ColumnKind::Json
+                || column.numeric_precision.is_some()
+                || column.numeric_precision_radix.is_some()
+                || column.numeric_scale.is_some()
+            {
+                return Err(invalid());
+            }
+            match (
+                column.character_maximum_length.as_deref(),
+                column.character_octet_length.as_deref(),
+            ) {
+                (None, None) => {}
+                (Some(chars), Some(octets)) => {
+                    let c = dimension(Some(chars))?;
+                    let o = dimension(Some(octets))?;
+                    if c == 0 || o < c {
+                        return Err(invalid());
+                    }
+                }
+                _ => return Err(invalid()),
+            }
+            let scalar = match kind {
+                10 => ScalarType::Variant,
+                11 => ScalarType::Array,
+                12 => ScalarType::Object,
+                _ => unreachable!(),
+            };
+            Ok((scalar, None))
         }
         _ => unreachable!(),
     }

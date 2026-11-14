@@ -513,6 +513,7 @@ async fn rpc(
             "refresh_snowflake_ddl_metadata" => json!(studio.refresh_snowflake_ddl_metadata(&arg::<String>(&args, "sessionId")?).await?),
             "prepare_snowflake_grid_plan" => json!(studio.prepare_snowflake_grid_plan(&arg(&args, "request")?).await?),
             "execute_snowflake_grid_plan" => json!(studio.execute_snowflake_grid_plan(&arg::<String>(&args, "planId")?, arg::<Option<String>>(&args, "approval")?.as_deref()).await?),
+            "cancel_snowflake_grid_plan" => json!(studio.cancel_snowflake_grid_plan(&arg::<String>(&args, "planId")?).await?),
             "preview_snowflake_grid_transaction_relation" => json!(studio.preview_snowflake_grid_transaction_relation(&arg::<String>(&args, "transactionId")?, &arg(&args, "request")?).await?),
             "finish_snowflake_grid_transaction" => json!(studio.execute_snowflake_grid_finish(&arg::<String>(&args, "transactionId")?, arg(&args, "action")?).await?),
             "inspect_relation" => json!(studio.inspect_relation(&arg::<String>(&args,"sessionId")?, &arg(&args,"request")?).await?),

@@ -1147,6 +1147,14 @@ pub async fn execute_snowflake_grid_plan(
 }
 
 #[tauri::command]
+pub async fn cancel_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+) -> AppResult<Option<String>> {
+    studio.cancel_snowflake_grid_plan(&plan_id).await
+}
+
+#[tauri::command]
 pub async fn preview_snowflake_grid_transaction_relation(
     studio: State<'_, Arc<Studio>>,
     transaction_id: String,

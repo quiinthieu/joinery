@@ -215,6 +215,7 @@ export function RelationBrowser({
   const retainedSelection = useRef({ catalog, mappings, selected, sessionId, ownerTabId });
   retainedSelection.current = { catalog, mappings, selected, sessionId, ownerTabId };
   const mounted = useRef(false);
+  const dispatchedGridPlanRef = useRef<string | null>(null);
   const pendingRefreshAfterResume = useRef(false);
   const renderedContext = useRef(contextKey);
   renderedContext.current = contextKey;
@@ -748,8 +749,29 @@ export function RelationBrowser({
         plan={gridReview.plan}
         preview={gridReview}
         profile={profile}
-        onClose={() => setGridReview(null)}
+        onClose={() => {
+          const planId = gridReview.plan.id;
+          setGridReview(null);
+          if (dispatchedGridPlanRef.current === planId) {
+            dispatchedGridPlanRef.current = null;
+            return;
+          }
+          const epoch = generation.current;
+          void client
+            .call("cancel_snowflake_grid_plan", { planId })
+            .then((restoredSnapshotId) => {
+              if (!mounted.current || generation.current !== epoch) return;
+              if (restoredSnapshotId) {
+                setPreview((current) =>
+                  current ? { ...current, editSnapshotId: restoredSnapshotId } : null,
+                );
+                setConsumedSnapshotId(null);
+              }
+            })
+            .catch(() => {});
+        }}
         onExecute={async (approval) => {
+          dispatchedGridPlanRef.current = gridReview.plan.id;
           const result = await useStudio
             .getState()
             .executeSnowflakeGridPlan(gridReview.plan, approval);

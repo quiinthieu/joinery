@@ -111,6 +111,7 @@
     "allow-execute-snowflake-dml",
     "allow-prepare-snowflake-grid-plan",
     "allow-execute-snowflake-grid-plan",
+    "allow-cancel-snowflake-grid-plan",
     "allow-preview-snowflake-grid-transaction-relation",
     "allow-finish-snowflake-grid-transaction",
     "allow-preflight-snowflake-ddl",

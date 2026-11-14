@@ -35,6 +35,7 @@ export function connectionOptions(profile, clientConfigFile) {
     authenticator: "EXTERNALBROWSER",
     rowMode: "array",
     fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
+    representNullAsStringNull: false,
     streamResult: true,
     clientStoreTemporaryCredential: false,
     clientRequestMFAToken: false,
@@ -75,6 +76,25 @@ const TRANSACTIONS = Object.freeze({
 });
 const DML_KINDS = new Set(["insert", "update", "delete"]);
 const DDL_KINDS = new Set(["createTable", "addColumn", "dropTable"]);
+const EXECUTE_FETCH_AS_STRING = Object.freeze([
+  "Number",
+  "Date",
+  "Boolean",
+  "Buffer",
+  "JSON",
+  "Object",
+  "Array",
+  "Map",
+]);
+export const CANONICAL_QUERY_PARAMETERS = Object.freeze({
+  DATE_OUTPUT_FORMAT: "YYYY-MM-DD",
+  TIME_OUTPUT_FORMAT: "HH24:MI:SS.FF9",
+  TIMESTAMP_NTZ_OUTPUT_FORMAT: "YYYY-MM-DD HH24:MI:SS.FF9",
+  TIMESTAMP_LTZ_OUTPUT_FORMAT: "YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM",
+  TIMESTAMP_TZ_OUTPUT_FORMAT: "YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM",
+  BINARY_OUTPUT_FORMAT: "HEX",
+  STRICT_JSON_OUTPUT: true,
+});
 const integer = (n, min, max) => Number.isInteger(n) && n >= min && n <= max;
 const sdkFailure = (failure, acknowledged = false) => {
   const state = failure?.sqlState;
@@ -955,11 +975,15 @@ export class Helper {
           sqlText: sql,
           binds,
           rowMode: "array",
-          fetchAsString: ["Number", "Date", "Boolean", "Buffer", "JSON"],
+          fetchAsString: EXECUTE_FETCH_AS_STRING,
           streamResult: true,
-          ...(["reviewedSql", "mutationRead"].includes(a.request.op)
+          ...(a.request.op === "reviewedSql"
             ? { parameters: { MULTI_STATEMENT_COUNT: 1 } }
-            : {}),
+            : a.request.op === "mutationRead"
+              ? { parameters: { MULTI_STATEMENT_COUNT: 1, ...CANONICAL_QUERY_PARAMETERS } }
+              : a.request.op === "query"
+                ? { parameters: CANONICAL_QUERY_PARAMETERS }
+                : {}),
           complete,
         });
         // Do not infer an ID from a native URL or completion callback. Register
@@ -1001,6 +1025,9 @@ export class Helper {
     if (a.mutationRead && readBytes > a.mutationRead.maxBytes) throw error("resultLimitReached");
     if (publish) this.send(a.request, "columns", { columns });
     const stream = (a.stream = statement.streamRows());
+    const booleanColumns = columns.some((c) => c.type.toLowerCase() === "boolean")
+      ? columns.map((c) => c.type.toLowerCase() === "boolean")
+      : null;
     let rowsSeen = 0,
       rowsRetained = 0,
       bytes = readBytes,
@@ -1053,7 +1080,12 @@ export class Helper {
           row.some((v) => v !== null && typeof v !== "string")
         )
           throw error("resultLimitReached");
-        const size = Buffer.byteLength(JSON.stringify(row)) + 1;
+        const normalizedRow = booleanColumns
+          ? row.map((v, i) =>
+              booleanColumns[i] ? (v === "TRUE" ? "true" : v === "FALSE" ? "false" : v) : v,
+            )
+          : row;
+        const size = Buffer.byteLength(JSON.stringify(normalizedRow)) + 1;
         if (!publish) {
           if (
             values.length >=
@@ -1067,7 +1099,7 @@ export class Helper {
           )
             throw error("resultLimitReached");
           bytes += size;
-          values.push(row);
+          values.push(normalizedRow);
           continue;
         }
         const p = a.mutationRead ?? a.request.payload;
@@ -1084,7 +1116,7 @@ export class Helper {
         }
         if (batch.length >= LIMITS.batchRows || batchBytes + size > LIMITS.batchBytes - 128)
           await flush();
-        batch.push(row);
+        batch.push(normalizedRow);
         batchBytes += size;
         if (batch.length >= LIMITS.batchRows) await flush();
         else if (!timer)

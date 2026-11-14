@@ -231,13 +231,15 @@ fn mismatched_hostile_dimensions_and_result_kinds_are_rejected() {
     let mut c = number();
     c.full_type = "NUMBER(38,38)".into();
     c.numeric_scale = Some("38".into());
-    assert_eq!(
-        InspectedMutationTarget::from_inspection(&relation(), &[c])
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::Unsupported
+    let scale38 = InspectedMutationTarget::from_inspection(&relation(), &[c]).unwrap();
+    assert!(
+        scale38
+            .original(&vec![Some(
+                "-0.12345678901234567890123456789012345678".into()
+            )])
+            .is_ok()
     );
+    assert!(scale38.original(&vec![Some("1.0".into())]).is_err());
 }
 
 #[test]
@@ -388,16 +390,7 @@ fn unsupported_relation_and_type_shapes_do_not_become_writable() {
     r.table_type = "TEMPORARY TABLE".into();
     r.traits.temporary = Some(true);
     assert!(InspectedMutationTarget::from_inspection(&r, &[text()]).is_ok());
-    for kind in [
-        "FLOAT",
-        "BINARY",
-        "DATE",
-        "TIMESTAMP_NTZ",
-        "VARIANT",
-        "GEOGRAPHY",
-        "VECTOR",
-        "FUTURE_TYPE",
-    ] {
+    for kind in ["GEOGRAPHY", "GEOMETRY", "VECTOR", "FUTURE_TYPE"] {
         let mut c = text();
         c.data_type = kind.into();
         c.full_type = kind.into();
@@ -407,6 +400,30 @@ fn unsupported_relation_and_type_shapes_do_not_become_writable() {
                 .unwrap()
                 .code,
             ErrorCode::Unsupported
+        );
+    }
+    for kind in [
+        "FLOAT",
+        "BINARY",
+        "DATE",
+        "TIME",
+        "TIMESTAMP_NTZ",
+        "TIMESTAMP_LTZ",
+        "TIMESTAMP_TZ",
+        "VARIANT",
+        "ARRAY",
+        "OBJECT",
+    ] {
+        // Supported families still reject mismatched ColumnKind::Text / char limits.
+        let mut c = text();
+        c.data_type = kind.into();
+        c.full_type = kind.into();
+        assert_eq!(
+            InspectedMutationTarget::from_inspection(&relation(), &[c])
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::InvalidInput
         );
     }
     let mut c = text();
@@ -495,4 +512,111 @@ fn inspection_and_row_budgets_reject_before_unbounded_cloning() {
             .code,
         ErrorCode::InvalidInput
     );
+}
+
+#[test]
+fn float_binary_temporal_json_and_1000_column_inspections_compile_and_guard_bounds() {
+    let base = |name: &str, ordinal: u32, data_type: &str, full_type: &str, kind: ColumnKind| {
+        let mut c = boolean();
+        c.name = name.into();
+        c.ordinal = ordinal;
+        c.data_type = data_type.into();
+        c.full_type = full_type.into();
+        c.result_kind = kind;
+        c
+    };
+    let mut flt_radix2 = base("flt2", 2, "FLOAT", "FLOAT", ColumnKind::Decimal);
+    flt_radix2.numeric_precision = Some("53".into());
+    flt_radix2.numeric_precision_radix = Some("2".into());
+    let mut bin4 = base("bin4", 3, "BINARY", "BINARY(4)", ColumnKind::Binary);
+    bin4.character_maximum_length = Some("4".into());
+    bin4.character_octet_length = Some("4".into());
+    let mut bin_max = base(
+        "bin_max",
+        4,
+        "VARBINARY",
+        "BINARY(8388608)",
+        ColumnKind::Binary,
+    );
+    bin_max.character_maximum_length = Some("8388608".into());
+    bin_max.character_octet_length = Some("8388608".into());
+    let mut var_sized = base("var_sized", 10, "VARIANT", "VARIANT", ColumnKind::Json);
+    var_sized.character_maximum_length = Some("16777216".into());
+    var_sized.character_octet_length = Some("16777216".into());
+
+    let cols = vec![
+        base("flt", 1, "FLOAT", "FLOAT", ColumnKind::Decimal),
+        flt_radix2,
+        bin4,
+        bin_max,
+        base("dt", 5, "DATE", "DATE", ColumnKind::Temporal),
+        base("tm", 6, "TIME", "TIME(3)", ColumnKind::Temporal),
+        base(
+            "ntz",
+            7,
+            "DATETIME",
+            "TIMESTAMP_NTZ(0)",
+            ColumnKind::Temporal,
+        ),
+        base(
+            "ltz",
+            8,
+            "TIMESTAMP_LTZ",
+            "TIMESTAMP_LTZ(6)",
+            ColumnKind::Temporal,
+        ),
+        base(
+            "tz",
+            9,
+            "TIMESTAMP_TZ",
+            "TIMESTAMP_TZ(9)",
+            ColumnKind::Temporal,
+        ),
+        var_sized,
+        base("arr", 11, "ARRAY", "ARRAY", ColumnKind::Json),
+        base("obj", 12, "OBJECT", "OBJECT", ColumnKind::Json),
+    ];
+    let inspected = InspectedMutationTarget::from_inspection(&relation(), &cols).unwrap();
+    let orig = inspected
+        .original(&vec![
+            Some("1.5".into()),
+            Some("NaN".into()),
+            Some("01020304".into()),
+            Some("".into()),
+            Some("2026-11-14".into()),
+            Some("12:00:00.123000000".into()),
+            Some("2026-11-14 12:00:00.000000000".into()),
+            Some("2026-11-14 12:00:00.123456000 +00:00".into()),
+            Some("2026-11-14 19:00:00.123456789 +07:00".into()),
+            Some("null".into()),
+            Some("[1,2]".into()),
+            Some("{\"k\":true}".into()),
+        ])
+        .unwrap();
+    let batch = inspected
+        .compile(&[Mutation::Update {
+            original: orig,
+            changes: vec![
+                (2, CellValue::Text("deadbeef".into())),
+                (9, CellValue::Null),
+            ],
+        }])
+        .unwrap();
+    assert_eq!(batch.units().len(), 1);
+
+    // 5 binary bytes ("0102030405") exceeds BINARY(4) even though text length is 10.
+    let mut bad_bin_row = vec![None; cols.len()];
+    bad_bin_row[2] = Some("0102030405".into());
+    assert!(inspected.original(&bad_bin_row).is_err());
+
+    // 1,000-column table inspection succeeds within metadata budget.
+    let wide_cols: Vec<_> = (0..mutations::MAX_COLUMNS)
+        .map(|i| {
+            let mut c = boolean();
+            c.name = format!("c{i}");
+            c.ordinal = i as u32 + 1;
+            c
+        })
+        .collect();
+    assert!(InspectedMutationTarget::from_inspection(&relation(), &wide_cols).is_ok());
 }

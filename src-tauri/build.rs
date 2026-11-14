@@ -167,6 +167,7 @@ fn build_desktop() {
             "execute_snowflake_dml",
             "prepare_snowflake_grid_plan",
             "execute_snowflake_grid_plan",
+            "cancel_snowflake_grid_plan",
             "preview_snowflake_grid_transaction_relation",
             "finish_snowflake_grid_transaction",
             "preflight_snowflake_ddl",

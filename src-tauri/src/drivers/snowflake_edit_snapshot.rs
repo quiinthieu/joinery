@@ -27,9 +27,9 @@ use std::{
 };
 
 const MAX_ENTRIES: usize = 64;
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+const MAX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PREVIEW_BYTES: usize = 2 * 1024 * 1024;
-const MAX_BINDING_BYTES: usize = 2 * 1024 * 1024;
+const MAX_BINDING_BYTES: usize = 8 * 1024 * 1024;
 const SNAPSHOT_TTL: Duration = Duration::from_secs(300);
 const PLAN_TTL: Duration = Duration::from_secs(60);
 
@@ -274,6 +274,7 @@ struct Authority {
     id: String,
     binding: NativeEditBinding,
     revoked: AtomicBool,
+    snapshot_expires: Instant,
     expires: Mutex<Instant>,
     budget: Mutex<BudgetLease>,
 }
@@ -359,11 +360,13 @@ impl SnapshotStore {
         }
         budget.resize(bytes)?;
         let id = uuid::Uuid::new_v4().to_string();
+        let snapshot_expires = Instant::now() + SNAPSHOT_TTL;
         let authority = Arc::new(Authority {
             id: id.clone(),
             binding,
             revoked: AtomicBool::new(false),
-            expires: Mutex::new(Instant::now() + SNAPSHOT_TTL),
+            snapshot_expires,
+            expires: Mutex::new(snapshot_expires),
             budget: Mutex::new(budget),
         });
         registry
@@ -436,14 +439,19 @@ impl SnapshotStore {
                     },
                 });
             }
+            let row_bytes = rows_charge(
+                &snapshot.rows,
+                snapshot.rows.capacity(),
+                authority.binding.columns.len(),
+            )?;
             let compiled = authority.binding.codec.compile(&native)?;
             let retained = authority
                 .binding
                 .charge
                 .checked_add(compiled.accounted_bytes())
+                .and_then(|n| n.checked_add(row_bytes))
                 .ok_or_else(limit)?;
             drop(native);
-            drop(snapshot.rows);
             authority.budget.lock().resize(retained)?;
             if !authority.valid(Instant::now()) {
                 return Err(stale());
@@ -451,12 +459,70 @@ impl SnapshotStore {
             Ok(PreparedSnowflakeEdits {
                 authority: authority.clone(),
                 compiled,
+                rows: Some(snapshot.rows),
+                dispatch_reserved: false,
             })
         })();
         if result.is_err() {
             authority.revoked.store(true, Ordering::Release);
         }
         result
+    }
+    pub(crate) fn cancel_prepared(
+        &self,
+        mut edits: PreparedSnowflakeEdits,
+        current: NativeEditBinding,
+    ) -> AppResult<String> {
+        if edits.dispatch_reserved {
+            edits.authority.revoked.store(true, Ordering::Release);
+            return Err(stale());
+        }
+        let Some(rows) = edits.rows.take() else {
+            edits.authority.revoked.store(true, Ordering::Release);
+            return Err(stale());
+        };
+        let row_bytes = rows_charge(&rows, rows.capacity(), current.columns.len())?;
+        let bytes = current.charge.checked_add(row_bytes).ok_or_else(limit)?;
+        let mut registry = self.registry.lock();
+        let now = Instant::now();
+        registry.prune(now);
+        let snapshot_expires = edits.authority.snapshot_expires;
+        let plan_id = edits.authority.id.clone();
+        let valid = edits.authority.valid(now)
+            && now < snapshot_expires
+            && edits.authority.binding.matches(&current)
+            && !registry.snapshots.values().any(|existing| {
+                existing.authority.binding.session_id == current.session_id
+                    && existing
+                        .authority
+                        .binding
+                        .helper
+                        .same_helper(&current.helper)
+                    && existing.authority.binding.target_id == current.target_id
+            });
+        edits.authority.revoked.store(true, Ordering::Release);
+        registry.authorities.remove(&plan_id);
+        drop(edits);
+        if !valid {
+            return Err(stale());
+        }
+        let budget = BudgetLease::claim(&self.usage, bytes)?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let authority = Arc::new(Authority {
+            id: id.clone(),
+            binding: current,
+            revoked: AtomicBool::new(false),
+            snapshot_expires,
+            expires: Mutex::new(snapshot_expires),
+            budget: Mutex::new(budget),
+        });
+        registry
+            .authorities
+            .insert(id.clone(), Arc::downgrade(&authority));
+        registry
+            .snapshots
+            .insert(id.clone(), Snapshot { authority, rows });
+        Ok(id)
     }
     #[cfg_attr(
         not(test),
@@ -511,6 +577,8 @@ impl SnapshotStore {
 pub(crate) struct PreparedSnowflakeEdits {
     authority: Arc<Authority>,
     compiled: CompiledBatch,
+    rows: Option<Vec<TextRow>>,
+    dispatch_reserved: bool,
 }
 #[cfg_attr(
     not(test),
@@ -544,7 +612,10 @@ impl PreparedSnowflakeEdits {
             .and_then(|n| n.checked_add(2 * super::snowflake_process::MAX_FRAME))
             .and_then(|n| n.checked_add(64 * 1024))
             .ok_or_else(limit)?;
-        self.authority.budget.lock().resize(bytes)
+        self.authority.budget.lock().resize(bytes)?;
+        self.rows = None;
+        self.dispatch_reserved = true;
+        Ok(())
     }
     pub(crate) fn validate_current(&self, current: &NativeEditBinding) -> AppResult<()> {
         if self.authority.valid(Instant::now()) && self.authority.binding.matches(current) {

@@ -2159,3 +2159,106 @@ it("disables continuation and commit when recordingError is set while preserving
   });
   expect(useStudio.getState().sessionSnowflakeGridTransactions.s).toBeUndefined();
 });
+
+it("restores a fresh edit snapshot when cancelling ReviewDialog without losing staged edits", async () => {
+  setupWritableSnowflakeGrid();
+  const initialPreview: RelationPreview = {
+    ...preview,
+    editSnapshotId: "snap-cancel-1",
+  };
+  let prepareCalls = 0;
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return inspection;
+    if (method === "preview_relation") return initialPreview;
+    if (method === "prepare_snowflake_grid_plan") {
+      prepareCalls += 1;
+      return {
+        plan: {
+          id: `cancel-plan-${prepareCalls}`,
+          sessionId: "s",
+          reviewedSnowflakeGrid: true,
+          statements: [{ sql: "UPDATE ...", kind: "write", missingWhere: false }],
+          warnings: [],
+          requiresApproval: true,
+          requiresPassphrase: false,
+          confirmationText: null,
+          expiresAt: 1_900_000_000_000,
+        },
+        rowCount: 1,
+        sql: ["UPDATE ..."],
+        bindings: [["777"]],
+      } satisfies ChangePreview;
+    }
+    if (method === "cancel_snowflake_grid_plan") return "snap-cancel-restored-2";
+    if (method === "authorize_plan") return "approval-after-cancel";
+    if (method === "execute_snowflake_grid_plan") {
+      return {
+        sessionId: "s",
+        operationId: "op-after-cancel",
+        outcome: "committed",
+        transactionId: null,
+        recordingError: null,
+        metadataRefreshRequired: true,
+        retired: false,
+      } satisfies SnowflakeGridResult;
+    }
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("1 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  fireEvent.change(screen.getByLabelText("Row 1 exact"), { target: { value: "777" } });
+  fireEvent.click(screen.getByRole("button", { name: "Review 1 change…" }));
+  await screen.findByText("Review pending changes");
+
+  // Cancel the ReviewDialog via the Cancel button.
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+  expect(client.call).toHaveBeenCalledWith("cancel_snowflake_grid_plan", {
+    planId: "cancel-plan-1",
+  });
+  // Staged value remains intact and the restored snapshot re-enables Review.
+  expect((screen.getByLabelText("Row 1 exact") as HTMLInputElement).value).toBe("777");
+  const reviewAgain = await screen.findByRole("button", { name: "Review 1 change…" });
+  await vi.waitFor(() => {
+    expect((reviewAgain as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  fireEvent.click(reviewAgain);
+  await screen.findByText("Review pending changes");
+  expect(client.call).toHaveBeenLastCalledWith("prepare_snowflake_grid_plan", {
+    request: {
+      sessionId: "s",
+      transactionId: null,
+      preview: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspection-1",
+      },
+      snapshotId: "snap-cancel-restored-2",
+      mutations: [
+        {
+          kind: "update",
+          rowIndex: 0,
+          changes: [{ columnIndex: 0, value: { kind: "text", value: "777" } }],
+        },
+      ],
+      mode: "automatic",
+      rollbackPrior: false,
+    },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Apply changes" }));
+  await screen.findByRole("button", { name: "Resume session metadata" });
+  // Applying changes must NOT invoke cancel_snowflake_grid_plan for cancel-plan-2.
+  expect(client.call).not.toHaveBeenCalledWith("cancel_snowflake_grid_plan", {
+    planId: "cancel-plan-2",
+  });
+});

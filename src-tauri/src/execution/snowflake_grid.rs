@@ -797,6 +797,101 @@ impl Studio {
         Ok(self.to_grid_result(session_id, exec))
     }
 
+    pub async fn cancel_snowflake_grid_plan(&self, plan_id: &str) -> AppResult<Option<String>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let (session_id, target, edits) = {
+            let _configuration = self.configuration_mutation_guard()?;
+            let mut plans = self.plans.lock();
+            let Some(stored) = plans.get(plan_id) else {
+                return Ok(None);
+            };
+            if !matches!(stored.action, Action::SnowflakeGrid { .. }) {
+                return Err(AppError::invalid(
+                    "This is not a reviewed Snowflake grid edit plan",
+                ));
+            }
+            let Some(stored) = plans.remove(plan_id) else {
+                return Ok(None);
+            };
+            if stored.deadline <= Instant::now() {
+                return Ok(None);
+            }
+            let Action::SnowflakeGrid {
+                target,
+                edits,
+                digest,
+                ..
+            } = stored.action
+            else {
+                unreachable!();
+            };
+            if stored.plan.binding_digest.as_deref() != Some(digest.as_str()) {
+                return Ok(None);
+            }
+            (stored.plan.session_id, target, edits)
+        };
+        let restored = match target {
+            SnowflakeGridPlanTarget::Initial { .. } => {
+                self.cancel_initial_snowflake_grid_edits(&session_id, edits)
+                    .await
+            }
+            SnowflakeGridPlanTarget::Continuation { transaction_id, .. } => {
+                self.cancel_continuation_snowflake_grid_edits(&transaction_id, edits)
+                    .await
+            }
+        };
+        Ok(restored.ok())
+    }
+
+    async fn cancel_initial_snowflake_grid_edits(
+        &self,
+        session_id: &str,
+        edits: PreparedSnowflakeEdits,
+    ) -> AppResult<String> {
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        let session = self.session(session_id)?;
+        let driver = external_driver(&session)?;
+        let _lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        self.snowflake_grid.require_ordinary_session(session_id)?;
+        {
+            let _configuration = self.configuration_mutation_guard()?;
+            writable_grid_profile(&self.persistence.profile(&session.profile.id)?)?;
+            if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+                return Err(disconnected());
+            }
+            if session.active_run.lock().is_some() {
+                return Err(busy());
+            }
+            session.metadata_gate.lock().check(None, false)?;
+        }
+        driver.cancel_relation_edits(edits).await
+    }
+
+    async fn cancel_continuation_snowflake_grid_edits(
+        &self,
+        transaction_id: &str,
+        edits: PreparedSnowflakeEdits,
+    ) -> AppResult<String> {
+        let owner = self
+            .snowflake_grid
+            .owners
+            .lock()
+            .get(transaction_id)
+            .cloned()
+            .ok_or_else(conflict)?;
+        let session = self.session(&owner.session_id)?;
+        let _session_lane = tokio::time::timeout(Duration::from_secs(5), session.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        let _owner_lane = tokio::time::timeout(Duration::from_secs(5), owner.lane.lock())
+            .await
+            .map_err(|_| busy())?;
+        self.validate_continuable_grid_owner(&owner, &session)?;
+        owner.native.cancel_continuation_edits(edits).await
+    }
+
     pub async fn execute_snowflake_grid_finish(
         self: &Arc<Self>,
         transaction_id: &str,

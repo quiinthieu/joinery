@@ -559,3 +559,92 @@ async fn native_snapshot_dispatch_budget_is_shared_atomic_and_retained_until_dro
     drop(plan);
     assert_eq!(store.usage(), (0, 0));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_prepared_mints_fresh_token_preserves_original_ttl_and_rejects_drift_or_reserved() {
+    let h = reaped_handle().await;
+    let mut obs = Observations::new();
+    let store = SnapshotStore::new();
+    let id = store.retain(obs.binding(&h), rows()).unwrap();
+    let orig_expires = store.registry.lock().snapshots[&id]
+        .authority
+        .snapshot_expires;
+    let plan = store
+        .prepare("observer-session", &id, &obs.binding(&h), &delete(0))
+        .unwrap();
+    let restored = store.cancel_prepared(plan, obs.binding(&h)).unwrap();
+    assert_ne!(restored, id, "consumed token must never be revived");
+    conflict(store.prepare("observer-session", &id, &obs.binding(&h), &delete(0)));
+    assert_eq!(
+        store.registry.lock().snapshots[&restored]
+            .authority
+            .snapshot_expires,
+        orig_expires
+    );
+    assert_eq!(store.usage().1, 1);
+
+    // Works at MAX_ENTRIES ceiling without overflowing entry count.
+    let base_target = obs.target.clone();
+    for _ in 1..MAX_ENTRIES {
+        obs.target = uuid::Uuid::new_v4().to_string();
+        store.retain(obs.binding(&h), rows()).unwrap();
+    }
+    obs.target = base_target;
+    assert_eq!(store.usage().1, MAX_ENTRIES);
+    let plan2 = store
+        .prepare("observer-session", &restored, &obs.binding(&h), &delete(1))
+        .unwrap();
+    let restored2 = store.cancel_prepared(plan2, obs.binding(&h)).unwrap();
+    assert_eq!(store.usage().1, MAX_ENTRIES);
+    store.clear();
+    assert_eq!(store.usage(), (0, 0));
+    conflict(store.prepare("observer-session", &restored2, &obs.binding(&h), &delete(1)));
+
+    // Dispatch-reserved plans and drifted bindings fail closed and release budget.
+    let id3 = store.retain(obs.binding(&h), rows()).unwrap();
+    let mut reserved_plan = store
+        .prepare("observer-session", &id3, &obs.binding(&h), &delete(0))
+        .unwrap();
+    reserved_plan.reserve_dispatch().unwrap();
+    conflict(store.cancel_prepared(reserved_plan, obs.binding(&h)));
+    assert_eq!(store.usage(), (0, 0));
+
+    let id4 = store.retain(obs.binding(&h), rows()).unwrap();
+    let drifted_plan = store
+        .prepare("observer-session", &id4, &obs.binding(&h), &delete(0))
+        .unwrap();
+    obs.context.role = Some("DRIFTED".into());
+    conflict(store.cancel_prepared(drifted_plan, obs.binding(&h)));
+    assert_eq!(store.usage(), (0, 0));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn thousand_column_binding_retains_and_prepares_within_snapshot_budget() {
+    let h = reaped_handle().await;
+    let mut obs = Observations::new();
+    obs.columns = (0..MAX_COLUMNS)
+        .map(|i| {
+            let mut c = boolean();
+            c.name = format!("c{i}");
+            c.ordinal = i as u32 + 1;
+            c
+        })
+        .collect();
+    let store = SnapshotStore::new();
+    let wide_row = vec![Some("true".into()); MAX_COLUMNS];
+    let id = store.retain(obs.binding(&h), vec![wide_row]).unwrap();
+    let plan = store
+        .prepare(
+            "observer-session",
+            &id,
+            &obs.binding(&h),
+            &[SnapshotMutation::Update {
+                row_index: 0,
+                changes: vec![(MAX_COLUMNS - 1, CellValue::Text("false".into()))],
+            }],
+        )
+        .unwrap();
+    assert_eq!(plan.compiled().units().len(), 1);
+    drop(plan);
+    assert_eq!(store.usage(), (0, 0));
+}

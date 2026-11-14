@@ -257,6 +257,7 @@ pub fn run() {
             commands::refresh_snowflake_ddl_metadata,
             commands::prepare_snowflake_grid_plan,
             commands::execute_snowflake_grid_plan,
+            commands::cancel_snowflake_grid_plan,
             commands::preview_snowflake_grid_transaction_relation,
             commands::finish_snowflake_grid_transaction,
             commands::set_transaction_mode,

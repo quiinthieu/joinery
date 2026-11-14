@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ColumnInspection } from "../../ipc/generated";
 import {
   buildSnowflakeGridMutations,
+  defaultInsertCellForColumn,
+  isWritableSnowflakeColumn,
   parseCsvRows,
   stageCsvInsertRows,
 } from "./snowflake-grid-staging";
@@ -146,5 +148,63 @@ describe("snowflake-grid-staging", () => {
       columns,
     });
     expect(mixedWithExplicit.mixedUnknownInsertWarning).toBeNull();
+  });
+
+  it("classifies expanded Snowflake edit codec types and synthesizes valid NOT NULL insert defaults", () => {
+    const cases: Array<{
+      dataType: string;
+      resultKind: ColumnInspection["resultKind"];
+      expectedDefault: string;
+    }> = [
+      { dataType: "NUMBER(38,38)", resultKind: "decimal", expectedDefault: "0" },
+      { dataType: "FLOAT", resultKind: "decimal", expectedDefault: "0" },
+      { dataType: "DOUBLE PRECISION", resultKind: "decimal", expectedDefault: "0" },
+      { dataType: "BINARY(16)", resultKind: "binary", expectedDefault: "" },
+      { dataType: "DATE", resultKind: "temporal", expectedDefault: "1970-01-01" },
+      { dataType: "TIME(9)", resultKind: "temporal", expectedDefault: "00:00:00" },
+      {
+        dataType: "TIMESTAMP_NTZ(9)",
+        resultKind: "temporal",
+        expectedDefault: "1970-01-01 00:00:00",
+      },
+      {
+        dataType: "TIMESTAMP_LTZ(9)",
+        resultKind: "temporal",
+        expectedDefault: "1970-01-01 00:00:00 +00:00",
+      },
+      {
+        dataType: "TIMESTAMP_TZ(9)",
+        resultKind: "temporal",
+        expectedDefault: "1970-01-01 00:00:00 +00:00",
+      },
+      { dataType: "VARIANT", resultKind: "json", expectedDefault: "null" },
+      { dataType: "ARRAY", resultKind: "json", expectedDefault: "[]" },
+      { dataType: "OBJECT", resultKind: "json", expectedDefault: "{}" },
+    ];
+    for (const c of cases) {
+      const col = makeColumn({
+        name: "C",
+        dataType: c.dataType,
+        fullType: c.dataType,
+        resultKind: c.resultKind,
+        nullable: false,
+        defaultExpression: null,
+      });
+      expect(isWritableSnowflakeColumn(col)).toBe(true);
+      expect(defaultInsertCellForColumn(col)).toEqual({
+        kind: "text",
+        value: c.expectedDefault,
+      });
+    }
+
+    for (const unsupported of ["GEOGRAPHY", "GEOMETRY", "VECTOR(FLOAT, 3)", "FUTURE_TYPE"]) {
+      const col = makeColumn({
+        name: "G",
+        dataType: unsupported,
+        fullType: unsupported,
+        nullable: true,
+      });
+      expect(isWritableSnowflakeColumn(col)).toBe(false);
+    }
   });
 });
