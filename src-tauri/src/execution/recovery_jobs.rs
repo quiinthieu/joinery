@@ -574,7 +574,7 @@ impl Studio {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::secrets::MemorySecrets;
@@ -910,5 +910,87 @@ mod tests {
             settled(&restarted, &fresh_id).await.state,
             RecoveryOperationState::Succeeded
         );
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod non_unix_tests {
+    use super::*;
+    use crate::secrets::MemorySecrets;
+
+    fn create_request() -> RecoveryRequest {
+        RecoveryRequest {
+            kind: RecoveryOperationKind::Create,
+            backup_id: None,
+            digest: None,
+            confirmation: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_unix_recovery_reports_unsupported_and_preserves_fencing_and_activity_gates() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+        assert_eq!(
+            studio.recovery_backups().unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+
+        let unknown_id = new_id();
+        let fenced = studio.reconcile_metadata_recovery(&unknown_id).unwrap();
+        assert_eq!(fenced.state, RecoveryOperationState::Failed);
+        assert_eq!(fenced.error.unwrap().code, ErrorCode::OutcomeUnknown);
+        assert_eq!(
+            studio
+                .start_metadata_recovery(
+                    unknown_id,
+                    create_request(),
+                    Zeroizing::new("separate recovery test key".into()),
+                    Zeroizing::new("separate recovery test key".into()),
+                    None,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        let activity = studio.begin_recovery_activity().unwrap();
+        let blocked_id = new_id();
+        assert_eq!(
+            studio
+                .start_metadata_recovery(
+                    blocked_id,
+                    create_request(),
+                    Zeroizing::new("separate recovery test key".into()),
+                    Zeroizing::new("separate recovery test key".into()),
+                    None,
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        drop(activity);
+
+        let unsupported_id = new_id();
+        let admitted = studio
+            .start_metadata_recovery(
+                unsupported_id.clone(),
+                create_request(),
+                Zeroizing::new("separate recovery test key".into()),
+                Zeroizing::new("separate recovery test key".into()),
+                None,
+            )
+            .unwrap();
+        assert_eq!(admitted.state, RecoveryOperationState::Running);
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            studio.wait_metadata_recovery_idle(),
+        )
+        .await
+        .unwrap();
+        let settled = studio.metadata_recovery_operation(&unsupported_id).unwrap();
+        assert_eq!(settled.state, RecoveryOperationState::Failed);
+        assert_eq!(settled.error.unwrap().code, ErrorCode::Unsupported);
+        assert!(!studio.recovery_active.load(Ordering::Acquire));
     }
 }

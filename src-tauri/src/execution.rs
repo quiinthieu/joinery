@@ -171,6 +171,7 @@ enum Action {
         database: String,
         mode: SafeMode,
     },
+    #[cfg(unix)]
     SnowflakeConsole {
         request: SnowflakeConsoleRequest,
         compiled: safety::snowflake_script::CompiledScript,
@@ -1602,6 +1603,7 @@ impl Studio {
                 .map_err(|_| AppError::internal("Could not fingerprint query plan"))?,
         );
         match &action {
+            #[cfg(unix)]
             Action::SnowflakeConsole {
                 request,
                 compiled,
@@ -1777,14 +1779,16 @@ impl Studio {
                 | Action::TransactionControl { .. }
                 | Action::SnowflakeDml { .. }
                 | Action::SnowflakeDdl { .. }
-                | Action::SnowflakeConsole { .. }
         ) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
             ));
         }
         #[cfg(unix)]
-        if matches!(stored.action, Action::SnowflakeGrid { .. }) {
+        if matches!(
+            stored.action,
+            Action::SnowflakeGrid { .. } | Action::SnowflakeConsole { .. }
+        ) {
             return Err(AppError::invalid(
                 "Use the dedicated typed command to execute this prepared action",
             ));
@@ -2201,12 +2205,12 @@ impl Studio {
                     });
                 }
             }
+            #[cfg(unix)]
+            Action::SnowflakeGrid { .. } | Action::SnowflakeConsole { .. } => {}
             Action::Browse { .. }
             | Action::TransactionControl { .. }
             | Action::SnowflakeDml { .. }
-            | Action::SnowflakeDdl { .. }
-            | Action::SnowflakeGrid { .. }
-            | Action::SnowflakeConsole { .. } => {}
+            | Action::SnowflakeDdl { .. } => {}
         }
         if let Some(summary) = &mut execution_summary {
             // Preserve the actual stop cause, including failures/cancellation

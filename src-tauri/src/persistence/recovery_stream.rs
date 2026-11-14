@@ -14,7 +14,7 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -104,6 +104,7 @@ struct Area {
 #[cfg(unix)]
 impl Area {
     fn root(path: &Path) -> AppResult<Self> {
+        use std::fs::OpenOptions;
         use std::os::unix::fs::OpenOptionsExt;
         let directory = OpenOptions::new()
             .read(true)
@@ -282,11 +283,12 @@ impl Area {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 thread_local! {
     static FAIL_PUBLICATION_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(unix)]
 fn sync_publication(directory: &File) -> AppResult<()> {
     #[cfg(test)]
     if FAIL_PUBLICATION_SYNC.with(|fault| fault.replace(false)) {
@@ -297,6 +299,7 @@ fn sync_publication(directory: &File) -> AppResult<()> {
     directory.sync_all().map_err(io_error)
 }
 
+#[cfg(unix)]
 fn component(value: &str) -> AppResult<std::ffi::CString> {
     if value.is_empty() || value.contains('/') || value == "." || value == ".." {
         return Err(invalid());
@@ -305,6 +308,8 @@ fn component(value: &str) -> AppResult<std::ffi::CString> {
 }
 
 fn validate_file_links(file: &File, links: u64) -> AppResult<()> {
+    #[cfg(not(unix))]
+    let _ = links;
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() {
         return Err(invalid());
@@ -480,6 +485,8 @@ impl Drop for Stage {
 }
 
 fn cleanup_stages(parent: &Area, backups: &Area) -> AppResult<()> {
+    #[cfg(not(unix))]
+    let _ = backups;
     // The process-wide recovery lock is held by every caller of Stage::new.
     // Only a closed marker and the fixed private file inventory confer cleanup
     // authority; unfamiliar directories/files are left untouched.

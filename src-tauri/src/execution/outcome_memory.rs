@@ -83,7 +83,7 @@ impl OutcomeMemory {
 
 impl SafetySlot {
     #[cfg_attr(
-        not(all(test, feature = "test-harness")),
+        not(all(test, unix, feature = "test-harness")),
         allow(
             dead_code,
             reason = "Studio grid run owner precedes public UI staging and IPC wiring"

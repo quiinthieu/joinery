@@ -1,5 +1,13 @@
 //! Retained console execution owners. Remote SQL is admitted only by the private
 //! adapter; this module owns review, local durability, results and task lifetime.
+#![cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "Reviewed console execution is Unix-only; non-Unix platforms expose local receipt browsing over the shared journal state"
+    )
+)]
+
 use super::*;
 #[cfg(unix)]
 use crate::drivers::{

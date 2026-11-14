@@ -1221,10 +1221,14 @@ pub(crate) struct VolatileBatchRollbackToken {
     data: ReservationData,
     // Sharing the prerequisite shares only the existing bounded payload Arc.
     // Successful prerequisite settlement drops it even if token clones survive.
+    #[cfg(unix)]
     predecessor: Option<Arc<parking_lot::Mutex<Option<PendingOriginal>>>>,
+    #[cfg(unix)]
     no_dispatch: Option<BatchReservation>,
+    #[cfg(unix)]
     remote_transaction: Option<String>,
 }
+#[cfg(unix)]
 impl VolatileBatchRollbackToken {
     pub(crate) fn clear_settled_predecessor(&self, settled_operation_id: &str) {
         if let Some(prerequisite) = &self.predecessor {
@@ -1238,6 +1242,7 @@ impl VolatileBatchRollbackToken {
         }
     }
 }
+#[cfg(unix)]
 #[derive(Clone, Debug)]
 struct PendingOriginal {
     reservation: BatchReservation,
@@ -1310,6 +1315,7 @@ fn validate_pending_authority(
     }
     Ok(())
 }
+#[cfg(unix)]
 fn pending_token(
     owner: &Arc<HistoryOwner>,
     descriptor: &BatchDescriptor,
@@ -1348,6 +1354,7 @@ fn pending_token(
 // Native no-queue proof was checked at token creation. Preserve its immutable
 // membership as a distinct unreleased-schema8 terminal witness; only its exact
 // next protected rollback can follow this gap.
+#[cfg(unix)]
 fn mark_no_dispatch(
     c: &Connection,
     owner: &Arc<HistoryOwner>,
@@ -1669,8 +1676,11 @@ impl Persistence {
             plan,
             group: group.clone(),
             data,
+            #[cfg(unix)]
             predecessor: None,
+            #[cfg(unix)]
             no_dispatch: None,
+            #[cfg(unix)]
             remote_transaction: None,
         })
     }
@@ -2037,6 +2047,7 @@ impl Persistence {
         // The exact credit descriptor blocks other admissions throughout these
         // independently atomic, retryable phases. Never hold admission while
         // calling the ordinary capture/settle APIs that acquire it themselves.
+        #[cfg(unix)]
         if let Some(prerequisite) = &token.predecessor {
             let prior = prerequisite.lock().clone();
             if let Some(prior) = prior {
@@ -2051,12 +2062,14 @@ impl Persistence {
         let tx = c
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
+        #[cfg(unix)]
         if let Some(remote) = &token.remote_transaction {
             let stored = read_group(&tx, token.group.id())?.ok_or_else(conflict)?;
             if stored.remote.as_ref() != Some(remote) {
                 return Err(conflict());
             }
         }
+        #[cfg(unix)]
         if let Some(successor) = &token.no_dispatch {
             mark_no_dispatch(&tx, owner, &token.group, successor)?;
         }
