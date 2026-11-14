@@ -36,6 +36,7 @@ export function verifySnowflakeRuntime({
   repoRoot = repository,
   platform = process.platform,
   arch = process.arch,
+  nodeBinarySha256 = NODE_BINARY_SHA256,
   runChild = spawnSync,
   verifyTransport = verifyTransportSources,
 } = {}) {
@@ -50,13 +51,12 @@ export function verifySnowflakeRuntime({
     manifest.runtime?.version !== NODE_VERSION ||
     manifest.runtime.platform !== "darwin" ||
     manifest.runtime.arch !== "arm64" ||
-    manifest.runtime.sha256 !== NODE_BINARY_SHA256
+    manifest.runtime.sha256 !== nodeBinarySha256
   )
     throw new Error("The runtime manifest did not match the pinned Node release");
   const executable = path.join(runtime, "bin/node");
   const sha256 = createHash("sha256").update(readFileSync(executable)).digest("hex");
-  if (sha256 !== NODE_BINARY_SHA256)
-    throw new Error("The Node hash did not match the pinned binary");
+  if (sha256 !== nodeBinarySha256) throw new Error("The Node hash did not match the pinned binary");
   const expectedFiles = [
     "disposable-setup-ledger.mjs",
     "sql-contract.json",

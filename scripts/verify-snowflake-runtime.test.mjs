@@ -1,34 +1,25 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { NODE_BINARY_SHA256, NODE_VERSION } from "./prepare-snowflake-runtime.mjs";
 import { selectRuntime, verifySnowflakeRuntime } from "./verify-snowflake-runtime.mjs";
 
-const repository = fileURLToPath(new URL("../", import.meta.url));
-const pinnedNode = path.join(repository, ".cache/toolchains/node-v24.22.2-darwin-arm64/bin/node");
 const script = fileURLToPath(new URL("./verify-snowflake-runtime.mjs", import.meta.url));
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function fixture(t) {
-  const parent = path.join(repository, ".cache/verification/snowflake-startup");
-  mkdirSync(parent, { recursive: true });
-  const repoRoot = mkdtempSync(path.join(parent, "fixture-"));
+  const repoRoot = mkdtempSync(path.join(tmpdir(), "joinery-verify-snowflake-runtime-"));
   t.after(() => rmSync(repoRoot, { recursive: true, force: true }));
   const bundle = path.join(repoRoot, "Joinery with spaces.app");
   const stage = selectRuntime([], repoRoot).runtime;
   const bundled = selectRuntime(["--bundle", bundle], repoRoot).runtime;
+  const nodeBytes = Buffer.from("synthetic pinned node binary\n", "utf8");
+  const nodeSha256 = digest(nodeBytes);
   const sources = {};
   mkdirSync(path.join(repoRoot, "snowflake-helper/src"), { recursive: true });
   for (const name of [
@@ -53,7 +44,7 @@ function fixture(t) {
       version: NODE_VERSION,
       platform: "darwin",
       arch: "arm64",
-      sha256: NODE_BINARY_SHA256,
+      sha256: nodeSha256,
     },
     helper: {
       sdkVersion: "3.4.1",
@@ -65,8 +56,7 @@ function fixture(t) {
   for (const runtime of [stage, bundled]) {
     mkdirSync(path.join(runtime, "bin"), { recursive: true });
     mkdirSync(path.join(runtime, "helper/node_modules/snowflake-sdk"), { recursive: true });
-    // Read the real pinned binary for hash validation; never execute this fixture tree.
-    symlinkSync(pinnedNode, path.join(runtime, "bin/node"));
+    writeFileSync(path.join(runtime, "bin/node"), nodeBytes, { mode: 0o755 });
     for (const [name, bytes] of Object.entries(sources))
       writeFileSync(path.join(runtime, "helper", name), bytes);
     writeFileSync(
@@ -75,7 +65,7 @@ function fixture(t) {
     );
     writeFileSync(path.join(runtime, "manifest.json"), `${JSON.stringify(manifest)}\n`);
   }
-  return { repoRoot, bundle, stage, bundled, manifest };
+  return { repoRoot, bundle, stage, bundled, manifest, nodeSha256 };
 }
 
 function helloFrame(overrides = {}) {
@@ -108,6 +98,7 @@ function verify(
     repoRoot: f.repoRoot,
     platform: "darwin",
     arch: "arm64",
+    nodeBinarySha256: f.nodeSha256,
     runChild,
     verifyTransport,
   });
@@ -116,7 +107,7 @@ function verify(
 test("default selection stays fixed to the repository stage", () => {
   assert.deepEqual(selectRuntime([], "/fixture/repository"), {
     kind: "stage",
-    runtime: "/fixture/repository/.cache/snowflake-runtime/macos-arm64",
+    runtime: path.join("/fixture/repository", ".cache/snowflake-runtime/macos-arm64"),
   });
 });
 
@@ -183,11 +174,45 @@ for (const kind of ["stage", "bundle"]) {
       `${kind === "stage" ? "staged" : "bundle"}-helper-startup-with-node-network-guard`,
     );
     assert.equal(result.manifestSha256, digest(readFileSync(path.join(runtime, "manifest.json"))));
-    assert.equal(result.nodeSha256, NODE_BINARY_SHA256);
+    assert.equal(result.nodeSha256, f.nodeSha256);
     assert.equal(result.authenticationRequests, 0);
     assert.equal(result.sqlRequests, 0);
   });
 }
+
+test("default verification enforces the immutable NODE_BINARY_SHA256 pin without seam override", (t) => {
+  const f = fixture(t);
+  assert.throws(
+    () =>
+      verifySnowflakeRuntime({
+        args: [],
+        repoRoot: f.repoRoot,
+        platform: "darwin",
+        arch: "arm64",
+        runChild: () => {
+          assert.fail("unverified Node pin must not spawn");
+        },
+        verifyTransport: () => {},
+      }),
+    /pinned Node release/,
+  );
+  f.manifest.runtime.sha256 = NODE_BINARY_SHA256;
+  writeFileSync(path.join(f.stage, "manifest.json"), JSON.stringify(f.manifest));
+  assert.throws(
+    () =>
+      verifySnowflakeRuntime({
+        args: [],
+        repoRoot: f.repoRoot,
+        platform: "darwin",
+        arch: "arm64",
+        runChild: () => {
+          assert.fail("unverified Node binary must not spawn");
+        },
+        verifyTransport: () => {},
+      }),
+    /pinned binary/,
+  );
+});
 
 test("missing explicit bundle resources never fall back to a valid stage", (t) => {
   const f = fixture(t);
@@ -318,7 +343,8 @@ test("transport verification failure prevents any startup child", (t) => {
 
 test("CLI rejects unknown arguments without attempting runtime startup", () => {
   assert.throws(
-    () => execFileSync(pinnedNode, [script, "--unknown"], { encoding: "utf8", stdio: "pipe" }),
+    () =>
+      execFileSync(process.execPath, [script, "--unknown"], { encoding: "utf8", stdio: "pipe" }),
     (error) => {
       assert.equal(error.status, 1);
       assert.equal(error.stdout, "");
