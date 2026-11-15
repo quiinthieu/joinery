@@ -8,8 +8,13 @@ grids across lossless scalar/temporal/binary/JSON types up to `1,000` columns,
 `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
 browsing, multi-batch RFC-4180 CSV imports up to `100,000` rows, guarded `ROLE`/
 `WAREHOUSE`/`DATABASE`/`SCHEMA` context switching, observed `EXPLAIN USING JSON`
-plan snapshot diffing, `ObjectExplorer` / `ObjectInspector`, 8 reviewed DDL
-actions, and Snowflake SQL completion/diagnostics.
+plan snapshot diffing, `ObjectExplorer` / `ObjectInspector`, bounded Snowflake
+`SchemaDiagram` ER graphs, Snowflake `SchemaDiffView` live/snapshot comparison
+and dialect-accurate migration DDL generation (`CREATE`/`ALTER`/`DROP` across
+tables, views, sequences, and routines with `Open in SQL editor` handoff), rich
+cell value inspection (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON
+formatter, raw-hex `BINARY` Hex/ASCII dump, and `GEOGRAPHY`/`GEOMETRY` 2D SVG
+plot), 8 reviewed DDL actions, and Snowflake SQL completion/diagnostics.
 
 Zero live Snowflake queries have been executed for this increment. Before
 executing any billable or live-account acceptance steps, review and explicitly

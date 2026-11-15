@@ -17,8 +17,10 @@ implementation, verification, merge, and release milestones. The detailed
 engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
 The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
-includes PostgreSQL, MySQL/MariaDB, standalone Redis and the read-only
-Snowflake SQL/catalog pilot. See the Site for the exact published version
+includes PostgreSQL, MySQL/MariaDB, standalone Redis, the read-only Snowflake
+local-application OAuth route, and the locally verified schema-8 Snowflake
+`externalbrowser` SDK workflow (`snowflake-sdk` `3.4.1` with bundled Node
+`24.22.2`). See GitHub Releases and the Site for the exact published version
 and verification state.
 Shipped features, remaining work, and connection-test results are tracked on the
 Site. Keep connection secrets in the ignored local `.env`; `.env.example`
@@ -83,7 +85,16 @@ metadata stays paused until explicit coherent refresh. Schema-8 local SDK
 workflows now also cover lossless `RelationBrowser` grid editing up to `1,000`
 columns, `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
 browsing, frame-bounded multi-batch CSV imports up to `100,000` rows,
-`ObjectExplorer` / `ObjectInspector`, 8 reviewed DDL actions (`CREATE TABLE`,
+`ObjectExplorer` / `ObjectInspector`, bounded Snowflake `SchemaDiagram` ER views
+(PK and composite outbound FK layout with `ObjectInspector` navigation),
+Snowflake `SchemaDiff` live/snapshot comparison and dialect-accurate migration
+DDL generation (`CREATE`/`ALTER`/`DROP` across tables with `CLUSTER BY` and
+`IDENTITY`, views, sequences, and `$$`-delimited overloaded routines, plus
+explicit dynamic/external/hybrid/event table disclosures and `Open in SQL editor`
+handoff), rich cell value inspection across `ValueDialog` and Snowflake
+`RelationBrowser` (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON
+formatter + staged cell apply, raw hex `BINARY` Hex/ASCII dump, and
+`GEOGRAPHY`/`GEOMETRY` GeoJSON/EWKT/WKT 2D SVG plots), 8 reviewed DDL actions (`CREATE TABLE`,
 `ADD COLUMN`, `ALTER COLUMN` nullability, `RENAME COLUMN`, `DROP COLUMN`,
 `DROP TABLE`, `CREATE VIEW`, `DROP VIEW`), guarded `ROLE` / `WAREHOUSE` /
 `DATABASE` / `SCHEMA` switching, live `inspection_schema` column diagnostics, and
@@ -257,56 +268,47 @@ before retrying. Read-only ACL grants remain the authorization boundary. TLS
 uses the original hostname, including through SSH; custom ACL usernames are
 authenticated explicitly and never fall back to the default user.
 
-## Current stage (2 November 2026)
+## Current stage (15 November 2026)
 
-The last verified published preview is `v0.1.0-preview.15`. R1–R4 are merged on
-`main` (through PR #30, `a0ba1a6`) but unreleased. The local
-`feat/estimated-query-plans` branch now integrates six R5 editor
-slices—FK JOIN suggestions, structured backend Unicode diagnostics, typed
-query parameters, inline error/statement navigation, SQL definitions/usages/
-quick documentation, and selection formatting/settings/snippets—with R6
-[estimated/actual plans and bounded snapshot comparison](docs/query-plans.md).
-These changes are verified locally, unmerged, unreleased and not installed.
+Through PR #72 (`33250cf`) and GitHub pre-release `v0.1.0-preview.17`, R1–R10
+PostgreSQL, MySQL/MariaDB, Redis, query analysis, data movement, schema design,
+encrypted metadata recovery, durable outcome journals, and the schema-8
+Snowflake `externalbrowser` SDK workflow foundation are merged on `main`,
+published as a macOS ARM64 preview, and verified in local synthetic/disposable
+suites. This increment adds bounded Snowflake `SchemaDiagram` ER views,
+Snowflake `SchemaDiff` snapshot comparison and dialect-accurate migration DDL
+generation, and rich `VARIANT`/`OBJECT`/`ARRAY` `:path` tree, raw-hex `BINARY`,
+and `GEOGRAPHY`/`GEOMETRY` 2D SVG cell value inspectors across `ValueDialog` and
+Snowflake `RelationBrowser` for the `v0.1.0-preview.18` preview cut.
+
 Formatting preferences persist globally and per SQL dialect; custom snippets
-can be scoped per SQL engine. [Live templates](docs/sql-live-templates.md) now
+can be scoped per SQL engine. [Live templates](docs/sql-live-templates.md)
 support observed database/schema identifiers and literal selected SQL, with an
 Insert template chooser, tab stops and single-step undo. Named CTE/derived-table
-outputs now have local
-definition jumps, usages and source documentation when a unique direct column
-source is proven. Wildcards, expressions and unsupported shapes remain withheld.
-The prior combined candidate passed 66 ignored SQL/Redis/SSH fixtures and a
-normal ad-hoc macOS bundle build. Remaining semantic
-editor gaps and release/platform/external qualification are next.
-Symbol navigation remains partial: ambiguous names and routine overloads are
-not guessed. Object/column jumps now open read-only Structure/DDL inspectors
-bound to the originating console session and observed context, including isolated
-consoles. Context changes, source closure and reconnect require navigating again;
-inspector dependency, owner, index and trigger links preserve that origin.
-**Append DDL to source console** explicitly appends to the still-bound console,
-preserving its SQL and session without executing anything. Stale, closed or
-rebound sources are rejected; running consoles cannot receive DDL.
+outputs have local definition jumps, usages and source documentation when a
+unique direct column source is proven. Wildcards, expressions and unsupported
+shapes remain withheld. Symbol navigation remains partial: ambiguous names and
+routine overloads are not guessed. Object/column jumps open read-only
+Structure/DDL inspectors bound to the originating console session and observed
+context, including isolated consoles. **Append DDL to source console**
+explicitly appends to the still-bound console without executing anything.
 
 **Rename alias / CTE** (Shift-F6) previews declaration, relation and qualified-reference
 edits in supported SELECT statements. Explicit Apply preserves comments, other
 statements and nested shadowing; one undo restores the original SQL. Collisions,
 capture, stale documents/contexts and unsupported shapes are rejected. This is
-local text refactoring; database-object renaming remains unavailable. JOIN
-conditions now follow their actual operands: earlier ON clauses retain correlated
-outer references, comma groups stay separate, and nested JOIN association is
-preserved. Later local aliases keep their own references. See
-[ordered JOIN evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026).
-Nonrecursive CTE rename follows ordered WITH entries and implicit qualifiers
-while preserving explicit aliases and physical tables. PostgreSQL nested WITH
-shadowing is covered; nested WITH under an outer CTE scope is withheld in the
-shared MySQL/MariaDB dialect after fixture probes exposed different visibility.
-Recursive and other unsupported forms stay withheld. See
-[CTE rename evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
+local text refactoring; database-object renaming remains unavailable. See
+[ordered JOIN evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-ordered-join-alias-visibility-2-november-2026)
+and [CTE rename evidence](docs/IMPLEMENTATION_STATUS.md#r5-follow-up-bounded-cte-rename-2-november-2026).
 
-Recorded R5 commit `bb77b0f` remains readable; its former worktree/branch are
-absent and its former uncommitted documentation was not recovered. Full
-DataGrip replacement still needs the remaining
-query analysis, design, productivity and release/qualification gates in the
-[roadmap](docs/implementation-roadmap.md).
+External replacement gates remain explicitly separated from local verification,
+merge, publication, and `/Applications/Joinery.app` installation: live Snowflake
+account execution (`SANDBOX.BILLIE_TESTING` SSO, DML/DDL, multi-statement
+transactions, and 1,000,000-row streaming/export) awaits explicit owner approval
+of [`docs/snowflake-sandbox-qualification-plan.md`](docs/snowflake-sandbox-qualification-plan.md);
+Apple Developer ID signing/notarization, Windows/Linux packaging, and external
+non-fixture PostgreSQL/MySQL/MariaDB/Redis vendor qualification remain open in
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
 
 ## Current implementation
 
@@ -314,10 +316,11 @@ query analysis, design, productivity and release/qualification gates in the
 - SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
 - Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans for the current statement or selection, with bounded tree/raw views and normal Rust Safe Mode authorization; PostgreSQL and capability-checked MySQL/MariaDB Analyze require explicit review even on Silent profiles. Explicit plan snapshots compare compatible executions without rerunning SQL, within ten-capture / 2 MiB shared payload bounds. Execution timing separates queue wait, backend active/total, first nonempty row batch and client elapsed; missing metrics remain unavailable. Plan context is observed on the execution lane. MySQL actual plans use TREE without changing JSON settings; Snowflake logical plans preserve step-local shared operators and pruning estimates; raw JSON stays exact. Snowflake `EXPLAIN USING JSON` plan snapshots compare compatible observed SDK executions locally; live account qualification remains gated on the sandbox plan.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware and FK JOIN completion, typed query parameters with explicit NULL and reviewed values, structured backend Unicode diagnostics, worker-based selection/document formatting, persisted formatting preferences and dialect-scoped snippets with keyboard placeholders, cancellation, process inspection, and template-only metadata history. Parameter values remain transient in memory; inline Unicode diagnostics, error jumps, statement navigation, SQL definitions/usages and quick metadata documentation are integrated locally. Formatting preserves named/positional binds, comments and quoted text in covered dialect cases; template expansion never executes SQL.
-- Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, atomic multi-cell TSV paste, draft row inserts (`<default>` / `<required>`), row deletes with `FOR UPDATE` full-row conflict checks, generated SQL/bindings review, and atomic conflict-checked commits across pages in one transaction. Binary columns open in a 16-byte-per-row Hex/ASCII viewer, PostgreSQL arrays open in an indexed element viewer distinguishing SQL `NULL` from `"NULL"`, and JSON/JSONB values format losslessly without rounding 64-bit integers or reordering numeric keys.
+- Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, atomic multi-cell TSV paste, draft row inserts (`<default>` / `<required>`), row deletes with `FOR UPDATE` full-row conflict checks, generated SQL/bindings review, and atomic conflict-checked commits across pages in one transaction. Binary columns (including raw even-length hex `BINARY`/`VARBINARY`) open in a 16-byte-per-row Hex/ASCII viewer, PostgreSQL arrays open in an indexed element viewer distinguishing SQL `NULL` from `"NULL"`, JSON/JSONB and Snowflake `VARIANT`/`OBJECT`/`ARRAY` values format losslessly without rounding 64-bit integers or reordering numeric keys and expose a bounded JSON tree (`<= 2,000` nodes) with one-click Snowflake `:path` / `['key']` copy buttons, and `GEOGRAPHY`/`GEOMETRY` GeoJSON and `WKT`/`EWKT` values render a normalized 2D SVG plot in `ValueDialog` and Snowflake `RelationBrowser`.
 - PostgreSQL and MySQL/MariaDB table tabs sort on the server (click a header; Shift+click adds a key), filter with typed bound predicates, and accept optional raw `WHERE` and `ORDER BY` clauses classified through Rust Safe Mode (non-read or unparseable clauses are blocked in `ReadOnly` and require one-use review approval in writable modes). Paging keeps a primary-key tie-breaker and a fixed NULL order (ascending last, descending first); sort and filter lock while edits are pending. Column hide (non-PK), order and widths persist locally per connection/schema/table and purge when a connection is deleted. Select a foreign-key cell and press ⇧⌘B to open referenced rows, or press ⇧⌘G on a primary/target key to open referencing rows in a new filtered tab; composite keys pair columns by constraint order and NULL keys reference nothing. PostgreSQL text search is case-insensitive; MySQL follows the column collation.
 - Data movement workflows preserve exact numeric text, explicit SQL `NULL` vs `""`, and Rust capability boundaries: Copy-as formats selections as `CSV`, `TSV`, `JSON`, `NDJSON`, `SQL INSERT`, or `Markdown` (up to 5,000 rows / 2 MiB) across visible/reordered columns; streaming exports write `CSV`, `TSV`, `JSON`, or `NDJSON` through native save-dialog capability grants to `<dest>.partial` (`0600`) without retaining streamed pages in `ResultStore`, atomically renaming on completion or appending an explicit `INCOMPLETE` trailer on cancellation/error; CSV/TSV imports validate regular files upfront (up to 16 MiB / 5,000 rows), support column remapping, and route 500-row insert batches through `ReviewDialog` and one atomic transaction; and key-aware data comparison diffs bounded live tables or retained result snapshots (including cross-engine) while separating duplicate-key and `NULL`-key anomalies.
 - Categorized database explorer and cross-connection Search Everywhere: schemas group `Tables` (including PostgreSQL partitioned tables), `Views`, `Materialized views`, `Functions`, `Procedures` (disambiguating PostgreSQL overloads by identity arguments), `Sequences` (including MariaDB sequences), `Triggers`, and `Indexes` with WAI-ARIA keyboard tree navigation (`ArrowRight`/`ArrowLeft`/`ArrowDown`/`ArrowUp`/`Home`/`End`/`Enter`) and object-kind filter chips (`All`/`Tables`/`Views`/`Routines`/`Other`). Table/view tabs include a `DDL` sub-view alongside `Constraints`, `Indexes` (key expressions, partial `WHERE` predicates, prefix lengths), and `Triggers` in `Structure`; routines, sequences, triggers, and indexes open dedicated inspector tabs with bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL editor`, explicit `Unavailable` privilege fallback) and bounded 200-edge `Uses` / `Used by` dependency navigation. Press ⌘K (`All`) or ⇧⌘O (`Objects`) to jump across commands, open tabs, all connected sessions' objects (without auto-connecting offline profiles), saved queries, and recent query history.
+- Schema diagrams and schema diff / migration DDL across PostgreSQL, MySQL/MariaDB, and Snowflake SDK sessions: `SchemaDiagram` renders PK and composite outbound FK ER graphs with zoom/pan/filter controls, SVG export, and click-through navigation (`TableView` on PostgreSQL/MySQL, `ObjectInspectorView` on Snowflake); `SchemaDiffView` compares live schemas or captured snapshots across tables, views, materialized views, sequences, functions/procedures, indexes, and triggers, discloses unsupported engine-specific objects explicitly, generates dialect-accurate full-schema and migration DDL, and opens generated SQL in the editor (with direct reviewed migration execution enabled on PostgreSQL and MySQL/MariaDB).
 - Multi-console session pool, transaction controls, capability-gated `.sql` files, and local query/bookmark library: PostgreSQL and MySQL/MariaDB consoles can attach to named secondary sessions (up to four total sessions per connection) or share the primary session, switch active schema (`search_path`) or database (`USE`) per session with immediate live completion refresh (Snowflake OAuth verifies request-scoped schema switches statelessly, while Snowflake externalBrowser SDK sessions switch `ROLE`, `WAREHOUSE`, `DATABASE`, and `SCHEMA` on the live connection), and toggle `Auto-commit` vs `Manual commit` with wire-observed transaction state (`In transaction` / `Failed transaction`) and explicit `Commit` / `Rollback` controls while keeping table-grid edits isolated. Query tabs open (`⌘O`), save (`⌘S`), and save-as (`⇧⌘S`) regular UTF-8 `.sql` files up to 4 MiB via reusable capability tokens (`GrantKind::SqlFile`, atomic sibling temp-file rename, dirty indicator and unsaved-close guard, zero raw paths over IPC, excluded from workspace drafts). Reusable SQL can be stored in the local Saved Queries library (max 256 entries, privacy-safe detached default when `storeQueryText` is off), objects and saved queries can be bookmarked (`⌘D`), and visited items are navigable via Recent locations (`⇧⌘E`).
 - Rust-enforced Safe Mode, production password gates, one-use expiring approvals, a hash-only audit viewer, and uncertain commit outcomes.
 - Dark/light/high-contrast themes, keyboard commands, inspector, and bounded in-memory result storage.
