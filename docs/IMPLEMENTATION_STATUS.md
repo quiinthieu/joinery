@@ -1,5 +1,78 @@
 # Implementation and release status
 
+## Snowflake schema diagrams, schema diff/migration DDL, and rich cell inspectors (15 November 2026)
+
+Following PR #72 (`33250cf`, `main` `Validate` run `43684009179`, published and
+installed on macOS ARM64 as GitHub pre-release `v0.1.0-preview.17`), branch
+`feat/snowflake-diagrams-diff-inspectors` completes the remaining local
+Snowflake DataGrip-replacement design and inspection surfaces for the
+`v0.1.0-preview.18` preview cut:
+
+- **Snowflake Schema Diagrams (`schema_diagram`)**:
+  Extended `drivers/snowflake_metadata.rs`, `drivers/snowflake_explorer.rs`,
+  `drivers/snowflake_external.rs`, `execution.rs` (`relation_lane` /
+  `publish_relation`), `DiagramView.tsx` (`revokeSchemaSelectionBeforeWork` +
+  `onOpenRelation`), and `App.tsx` (Command Palette + `ObjectInspectorView`
+  click-through on Snowflake while preserving `TableView` on PostgreSQL/MySQL)
+  with bounded user-schema ER diagrams rendering PK columns and composite
+  outbound FK edges (`SHOW TABLES`/`SHOW VIEWS`, `INFORMATION_SCHEMA.COLUMNS`,
+  `SHOW PRIMARY KEYS`/`SHOW UNIQUE KEYS`/`SHOW IMPORTED KEYS`).
+- **Snowflake Schema Diff & Migration DDL (`schema_snapshot`, `ddl.rs`)**:
+  Implemented `SnowflakeExternal::schema_snapshot` across tables (`CLUSTER BY`,
+  `IDENTITY`, column types/nullability/defaults/comments, PK/UQ/FK/CHECK
+  constraints), views (`GET_DDL`), sequences, and overloaded functions/procedures,
+  plus explicit unsupported-object disclosures (`DYNAMIC TABLE`,
+  `EXTERNAL TABLE`, `HYBRID TABLE`, `EVENT TABLE`). Extended `ddl.rs` with
+  `EngineKind::Snowflake` full-schema and migration DDL (`CREATE`/`ALTER`/`DROP`
+  tables with `SET DATA TYPE`, `SET|DROP NOT NULL`, `DROP DEFAULT`, `.NEXTVAL`,
+  `CLUSTER BY` / `DROP CLUSTERING KEY`, `UNSET COMMENT`; `CREATE`/`ALTER`
+  sequences; view `GET_DDL` pass-through; `$$`-delimited routines), and updated
+  `SchemaDiffView.tsx` with `Open in SQL editor` handoff while gating direct
+  `Apply migration` on `capabilities.ddlEditing`.
+- **Rich Cell Value Inspectors (`value-format.ts`, `ValueDialog.tsx`, `RelationBrowser.tsx`)**:
+  Added lossless bounded JSON tree inspection (`<= 2,000` nodes, exact >53-bit
+  integer text preserved) with one-click Snowflake `:path` / `['key']` copy
+  buttons (`COL:customer.orders[0].id`), lossless JSON formatting, and staged
+  cell apply in `SnowflakeCellInspectorModal`; raw even-length hex `BINARY`/
+  `VARBINARY` decoding in the 16-byte-per-row Hex/ASCII dump viewer; and
+  `GEOGRAPHY`/`GEOMETRY` GeoJSON (`Point`, `LineString`, `Polygon`, `Multi*`,
+  `GeometryCollection`, `Feature`, `FeatureCollection`) + `WKT`/`EWKT`
+  (`SRID=...;...`) 2D SVG plot previews across `ValueDialog` and Snowflake
+  `RelationBrowser`.
+
+Serialized local verification passes:
+
+- `pnpm validate` components: `pnpm format:check`, `pnpm check` (`1,062` Vitest
+  tests across `73` files, `0` failed, `tsc -b` clean), `pnpm build`,
+  `pnpm test:rust` (`845` standard Rust tests passed, `0` failed, `146` fixture
+  ignores), and `pnpm check:rust` (`cargo fmt --check`, `cargo check`, and
+  strict `cargo clippy --all-targets --all-features -- -D warnings` with zero
+  warnings).
+- Snowflake & runtime suites: `443` helper tests (`pnpm test:snowflake:helper`),
+  `426` Rust process tests (`pnpm test:snowflake:process`: `315` unit with `1`
+  ignored, `36` connection, `43` process, `32` external), `59` runtime tests
+  (`pnpm test:snowflake:runtime`), `136` offline qualification tests
+  (`pnpm test:snowflake:qualification`), `7` native resource tests
+  (`pnpm test:native:resources`), guarded staged startup (`0` auth / `0` SQL),
+  and `6` Git identity policy tests (`pnpm test:git`).
+- Browser E2E: `27/27` Snowflake Playwright E2E workflows across all `12`
+  `tests/e2e/snowflake*.spec.ts` files, including `3/3` in
+  `tests/e2e/snowflake-datagrip-workflows.spec.ts`.
+- Hidden native macOS WebView smoke & encrypted recovery:
+  `pnpm desktop:snowflake:smoke:build` (`entryCount: 15111`, `symlinkCount: 5`,
+  `sdkVersion: "3.4.1"`, `authenticationRequests: 0`, `sqlRequests: 0`),
+  `pnpm test:native` (`3/3` runs x `10` cleanup cycles, `nativeElapsedMs`
+  `3582` / `3555` / `3538`, peak main-process RSS `103.20 MiB`), and
+  `pnpm test:native:encrypted-recovery` (`passed: true`, `errors: []`, `11/11`
+  runner unit tests).
+
+External replacement gates remain explicitly open: zero live Snowflake account
+queries have been executed for this increment pending owner approval of
+[`docs/snowflake-sandbox-qualification-plan.md`](snowflake-sandbox-qualification-plan.md);
+Apple Developer ID signing/notarization, Windows/Linux packaging, updater
+qualification, and external non-fixture PostgreSQL/MySQL/MariaDB/Redis vendor
+qualification remain open.
+
 ## Complete local Snowflake DataGrip-replacement workflow surface (14 November 2026, local schema-8 verification)
 
 Commits `682b1ed..e416059` complete the local schema-8 Snowflake DataGrip

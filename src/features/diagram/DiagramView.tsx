@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { KeyRound, Link2, Minus, Network, Plus, RefreshCw, Search } from "lucide-react";
 import type { SchemaDiagram, TableRef } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
-import { useStudio, type StudioTab } from "../../state/studio";
+import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import {
   HEADER_HEIGHT,
   ROW_HEIGHT,
@@ -40,9 +40,11 @@ export function neighborNode(
 export function DiagramView({
   tab,
   onOpenTable,
+  onOpenRelation,
 }: {
   tab: StudioTab;
   onOpenTable(table: TableRef): void;
+  onOpenRelation?(table: TableRef, kind: string): void;
 }) {
   const session = useStudio((s) => (tab.connectionId ? s.sessions[tab.connectionId] : null));
   const schema = tab.diagramSchema ?? "";
@@ -60,6 +62,7 @@ export function DiagramView({
     const id = ++request.current;
     setLoading(true);
     try {
+      revokeSchemaSelectionBeforeWork(session.id);
       const next = await client.call<SchemaDiagram>("schema_diagram", {
         sessionId: session.id,
         schema,
@@ -231,12 +234,18 @@ export function DiagramView({
                   onFocus={() => setFocused(node.key)}
                   onClick={() => {
                     setFocused(node.key);
-                    if (!node.external) onOpenTable(node.table);
+                    if (!node.external) {
+                      if (onOpenRelation) onOpenRelation(node.table, node.kind);
+                      else onOpenTable(node.table);
+                    }
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      if (!node.external) onOpenTable(node.table);
+                      if (!node.external) {
+                        if (onOpenRelation) onOpenRelation(node.table, node.kind);
+                        else onOpenTable(node.table);
+                      }
                       return;
                     }
                     if (

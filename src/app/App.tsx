@@ -42,6 +42,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { Sidebar } from "../features/connections/Sidebar";
+import { tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { ConnectionDialog, ConnectDialog } from "../features/connections/ConnectionDialog";
 import {
   cancelPendingConnections,
@@ -1568,6 +1569,17 @@ export function App() {
                     .openTable(current.connectionId, table)
                     .catch((error) => state.notify(messageOf(error)));
                 }}
+                onOpenRelation={(table, kind) => {
+                  if (!current.connectionId) return;
+                  void state
+                    .openObject(current.connectionId, {
+                      schema: table.schema,
+                      name: table.name,
+                      kind: tableInfoKindToObjectKind(kind),
+                      identity: null,
+                    })
+                    .catch((error) => state.notify(messageOf(error)));
+                }}
               />
             ) : current.kind === "schemaDiff" ? (
               <SchemaDiffView
@@ -2379,30 +2391,53 @@ export function App() {
             },
             ...(() => {
               const connectionId = current?.connectionId ?? state.selectedConnectionId;
-              if (!connectionId || !state.sessions[connectionId]) return [];
-              const schemas = [
-                ...new Set((state.catalog[connectionId] ?? []).map((t) => t.table.schema)),
-              ];
-              const preferred = current?.table?.schema ?? current?.diagramSchema;
+              const sess = connectionId ? state.sessions[connectionId] : undefined;
+              if (!connectionId || !sess) return [];
+              const canDiagram =
+                sess.capabilities.schemaDiagram ??
+                (sess.engine === "postgres" || sess.engine === "mysql");
+              const canDiff =
+                sess.capabilities.schemaDiff ??
+                (sess.engine === "postgres" || sess.engine === "mysql");
+              if (!canDiagram && !canDiff) return [];
+              const connProfile = state.bootstrap?.profiles.find((p) => p.id === connectionId);
+              const schemaSet = new Set<string>([
+                ...(state.catalog[connectionId] ?? []).map((t) => t.table.schema),
+                ...(state.objects[connectionId] ?? []).map((o) => o.object.schema),
+              ]);
+              if (schemaSet.size === 0 && sess.engine === "snowflake") {
+                schemaSet.add(connProfile?.snowflake?.schema || "PUBLIC");
+              }
+              const schemas = [...schemaSet];
+              const preferred =
+                current?.table?.schema ?? current?.object?.schema ?? current?.diagramSchema;
               const ordered =
                 preferred && schemas.includes(preferred)
                   ? [preferred, ...schemas.filter((s) => s !== preferred)]
                   : schemas;
               return ordered.slice(0, 20).flatMap((schema) => [
-                {
-                  label: `Open schema diagram: ${schema}`,
-                  shortcut: "",
-                  contextBadge: "Schema",
-                  icon: Network,
-                  action: () => state.openDiagram(connectionId, schema),
-                },
-                {
-                  label: `Compare schema: ${schema}`,
-                  shortcut: "",
-                  contextBadge: "Schema",
-                  icon: ArrowLeftRight,
-                  action: () => state.openSchemaDiff(connectionId, schema),
-                },
+                ...(canDiagram
+                  ? [
+                      {
+                        label: `Open schema diagram: ${schema}`,
+                        shortcut: "",
+                        contextBadge: "Schema",
+                        icon: Network,
+                        action: () => state.openDiagram(connectionId, schema),
+                      },
+                    ]
+                  : []),
+                ...(canDiff
+                  ? [
+                      {
+                        label: `Compare schema: ${schema}`,
+                        shortcut: "",
+                        contextBadge: "Schema",
+                        icon: ArrowLeftRight,
+                        action: () => state.openSchemaDiff(connectionId, schema),
+                      },
+                    ]
+                  : []),
               ]);
             })(),
             {

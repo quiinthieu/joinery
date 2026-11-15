@@ -180,6 +180,7 @@ pub struct SnowflakeExternal {
     profile: ConnectionProfile,
     session_id: String,
     identity: Value,
+    server_version: Mutex<String>,
     lane: Arc<AsyncMutex<()>>,
     grid: grid::State,
     // Permanent once claimed; releasing a run never reenables ordinary probes.
@@ -368,6 +369,7 @@ impl SnowflakeExternal {
             profile: profile.clone(),
             session_id: session_id.into(),
             identity,
+            server_version: Mutex::new(String::new()),
             lane: Arc::new(AsyncMutex::new(())),
             grid: grid::State::default(),
             console_mode: Mutex::new(None),
@@ -406,6 +408,7 @@ impl SnowflakeExternal {
             .value
             .filter(|v| !v.is_empty())
             .ok_or_else(protocol_error)?;
+        *driver.server_version.lock() = server_version.clone();
         let info = SessionInfo {
             console_mode: false,
             id: session_id.into(),
@@ -425,8 +428,8 @@ impl SnowflakeExternal {
                 table_filtering: false,
                 processes: false,
                 object_explorer: !config.reviewed_console,
-                schema_diagram: false,
-                schema_diff: false,
+                schema_diagram: !config.reviewed_console,
+                schema_diff: !config.reviewed_console,
                 ddl_editing: false,
                 snowflake_reviewed_ddl: config.reviewed_ddl
                     && profile.safe_mode != SafeMode::ReadOnly,
@@ -4282,6 +4285,205 @@ impl Driver for SnowflakeExternal {
         })
         .await
     }
+    async fn schema_diagram(&self, schema: &str) -> AppResult<SchemaDiagram> {
+        use super::snowflake_explorer as explorer;
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        explorer::validate_user_schema(schema)?;
+        let schema_name = schema.to_owned();
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            if context.database.is_none() {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "Select an active Snowflake database before opening a schema diagram",
+                ));
+            }
+            let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+            let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+            if !schemas.iter().any(|s| s == &schema_name) {
+                return Err(AppError::new(
+                    ErrorCode::NotFound,
+                    "The schema is missing or unavailable in the current Snowflake database",
+                ));
+            }
+            let relations = self
+                .read_spec(&metadata::explorer_schema_relations_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let columns = self
+                .read_spec(&metadata::explorer_schema_columns_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let mappings = metadata::explorer_schema_mapping_reads(&context, &schema_name)?;
+            let primary_keys = self.read_spec(&mappings[0]).await?;
+            let foreign_keys = self.read_spec(&mappings[2]).await?;
+            let diagram = explorer::parse_schema_diagram(
+                &context,
+                &schema_name,
+                &relations,
+                &columns,
+                &primary_keys,
+                &foreign_keys,
+            )?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(diagram)
+        })
+        .await
+    }
+    async fn schema_snapshot(&self, schema: &str) -> AppResult<SchemaSnapshot> {
+        use super::snowflake_explorer as explorer;
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        explorer::validate_user_schema(schema)?;
+        let schema_name = schema.to_owned();
+        let server_version = self.server_version.lock().clone();
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let Some(database) = context.database.clone() else {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "Select an active Snowflake database before capturing a schema snapshot",
+                ));
+            };
+            let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+            let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+            if !schemas.iter().any(|s| s == &schema_name) {
+                return Err(AppError::new(
+                    ErrorCode::NotFound,
+                    "The schema is missing or unavailable in the current Snowflake database",
+                ));
+            }
+            let relations = self
+                .read_spec(&metadata::explorer_schema_relations_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let columns = self
+                .read_spec(&metadata::explorer_schema_columns_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let constraints = self
+                .read_spec(&metadata::explorer_schema_constraints_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let checks = self
+                .read_spec(&metadata::explorer_schema_checks_read(
+                    &context,
+                    &schema_name,
+                )?)
+                .await?;
+            let mappings = metadata::explorer_schema_mapping_reads(&context, &schema_name)?;
+            let primary_keys = self.read_spec(&mappings[0]).await?;
+            let unique_keys = self.read_spec(&mappings[1]).await?;
+            let foreign_keys = self.read_spec(&mappings[2]).await?;
+            let sequences = self
+                .read_spec(&metadata::explorer_sequences_read(&context, &schema_name)?)
+                .await?;
+            let functions = self
+                .read_spec(&metadata::explorer_functions_read(&context, &schema_name)?)
+                .await?;
+            let procedures = self
+                .read_spec(&metadata::explorer_procedures_read(&context, &schema_name)?)
+                .await?;
+
+            let mut plan = explorer::parse_schema_snapshot_base(
+                &context,
+                &server_version,
+                &schema_name,
+                &relations,
+                &columns,
+                &constraints,
+                &checks,
+                &primary_keys,
+                &unique_keys,
+                &foreign_keys,
+                &sequences,
+                &functions,
+                &procedures,
+            )?;
+
+            let mut ddl_budget = explorer::SCHEMA_SNAPSHOT_DDL_LIMIT;
+            for target in &plan.view_targets {
+                if ddl_budget == 0 {
+                    plan.snapshot.truncated = true;
+                    break;
+                }
+                ddl_budget -= 1;
+                let ddl_read = metadata::definition_read(target)?;
+                let view_ddl = match self.read_spec(&ddl_read).await {
+                    Ok(res) => Some(explorer::strip_active_database_qualifier(
+                        &database,
+                        &explorer::parse_ddl(&res)?,
+                    )),
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database | ErrorCode::PermissionDenied
+                        ) && !self.is_closed() =>
+                    {
+                        plan.snapshot.restricted = true;
+                        None
+                    }
+                    Err(err) => return Err(err),
+                };
+                if let Some(slot) = plan.snapshot.tables.iter_mut().find(|t| {
+                    t.name == target.table.name
+                        && matches!(
+                            t.kind,
+                            DatabaseObjectKind::View | DatabaseObjectKind::MaterializedView
+                        )
+                }) {
+                    slot.view_definition = view_ddl;
+                }
+            }
+
+            for routine in &mut plan.snapshot.routines {
+                if ddl_budget == 0 {
+                    plan.snapshot.truncated = true;
+                    break;
+                }
+                ddl_budget -= 1;
+                let ddl_read = metadata::explorer_routine_ddl_read(
+                    &database,
+                    &schema_name,
+                    &routine.name,
+                    routine.kind == DatabaseObjectKind::Procedure,
+                    &routine.identity_arguments,
+                )?;
+                routine.definition = match self.read_spec(&ddl_read).await {
+                    Ok(res) => Some(explorer::strip_active_database_qualifier(
+                        &database,
+                        &explorer::parse_ddl(&res)?,
+                    )),
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database | ErrorCode::PermissionDenied
+                        ) && !self.is_closed() =>
+                    {
+                        plan.snapshot.restricted = true;
+                        None
+                    }
+                    Err(err) => return Err(err),
+                };
+            }
+
+            plan.snapshot.canonicalize();
+            self.recheck_metadata_context(&context).await?;
+            Ok(plan.snapshot)
+        })
+        .await
+    }
     async fn schema(&self, _: &TableRef) -> AppResult<TableSchema> {
         Err(unsupported())
     }
@@ -4800,13 +5002,18 @@ const sdk = { createConnection() {
       const explorerSequences = sql.includes('.INFORMATION_SCHEMA.SEQUENCES ');
       const explorerFunctions = sql.includes('.INFORMATION_SCHEMA.FUNCTIONS ');
       const explorerProcedures = sql.includes('.INFORMATION_SCHEMA.PROCEDURES ');
-      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ') && !sql.includes('ROW_COUNT::VARCHAR');
+      const explorerSchemaRelations = sql.includes('.INFORMATION_SCHEMA.TABLES ') && sql.includes('CLUSTERING_KEY');
+      const explorerSchemaColumns = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS SC ');
+      const explorerSchemaConstraints = sql.includes('.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS STC ');
+      const explorerSchemaChecks = sql.includes('.INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS SCC ');
+      const schemaMappingKind = sql.startsWith('SHOW PRIMARY KEYS IN SCHEMA ') ? 'Primary' : sql.startsWith('SHOW UNIQUE KEYS IN SCHEMA ') ? 'Unique' : sql.startsWith('SHOW IMPORTED KEYS IN SCHEMA ') ? 'Foreign' : null;
+      const relations = sql.includes('.INFORMATION_SCHEMA.TABLES ') && !sql.includes('ROW_COUNT::VARCHAR') && !explorerSchemaRelations;
       const columnMetadata = sql.includes('.INFORMATION_SCHEMA.COLUMNS AS C ');
       const describe = sql.startsWith('DESCRIBE TABLE ') || sql.startsWith('DESCRIBE VIEW ') || sql.startsWith('DESCRIBE MATERIALIZED VIEW ');
       const zeroRows = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
       const definition = sql.startsWith('SELECT GET_DDL(');
       const constraints = sql.includes('.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS TC ');
-      const checks = sql.includes('.INFORMATION_SCHEMA.CHECK_CONSTRAINTS ');
+      const checks = sql.includes('.INFORMATION_SCHEMA.CHECK_CONSTRAINTS ') && !explorerSchemaChecks;
       const mappingKind = sql.startsWith('SHOW PRIMARY KEYS IN TABLE ') ? 'Primary' : sql.startsWith('SHOW UNIQUE KEYS IN TABLE ') ? 'Unique' : sql.startsWith('SHOW IMPORTED KEYS IN TABLE ') ? 'Foreign' : null;
       const showRoles = sql === 'SHOW ROLES';
       const showWarehouses = sql === 'SHOW WAREHOUSES';
@@ -4922,8 +5129,70 @@ const sdk = { createConnection() {
         names = value('definitionColumns',['DDL']);
         const defaultDdl = sql.includes('ACTIVE_ORDERS')
           ? 'create or replace view "DB"."PUBLIC"."ACTIVE_ORDERS" as select ID, NOTES from "DB"."PUBLIC"."ORDERS";'
-          : 'create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);';
+          : sql.includes('CALC_TAX(NUMBER, FLOAT)')
+            ? 'CREATE OR REPLACE FUNCTION "DB"."PUBLIC"."CALC_TAX"(AMOUNT NUMBER, RATE FLOAT)\nRETURNS FLOAT\nLANGUAGE SQL\nAS \'AMOUNT * RATE\';'
+            : sql.includes('CALC_TAX(NUMBER)')
+              ? 'CREATE OR REPLACE FUNCTION "DB"."PUBLIC"."CALC_TAX"(AMOUNT NUMBER)\nRETURNS NUMBER(18, 2)\nLANGUAGE SQL\nAS \'AMOUNT * 0.1\';'
+              : sql.includes('SYNC_ORDERS')
+                ? 'CREATE OR REPLACE PROCEDURE "DB"."PUBLIC"."SYNC_ORDERS"(BATCH_ID VARCHAR)\nRETURNS VARCHAR\nLANGUAGE SQL\nAS $$ BEGIN RETURN BATCH_ID; END; $$;'
+                : 'create or replace table "DB"."PUBLIC"."ORDERS" (ID NUMBER);';
         rows = value('definitionRows',[[value('definition',defaultDdl)]]);
+      } else if (explorerSchemaRelations) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE','CLUSTERING_KEY','COMMENT'];
+        const schema = predicate('TABLE_SCHEMA') ?? 'PUBLIC';
+        rows = value('schemaRelationRows', schema === 'PUBLIC' ? [
+          ['DB','PUBLIC','ACTIVE_ORDERS','VIEW','NO','NO','NO','NO','NO','NO',null,'Active view'],
+          ['DB','PUBLIC','ORDERS','BASE TABLE','NO','NO','NO','NO','NO','NO','LINEAR(ID)','Order ledger'],
+        ] : [
+          ['DB',schema,'PARENTS','BASE TABLE','NO','NO','NO','NO','NO','NO',null,null],
+        ]);
+      } else if (explorerSchemaColumns) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','COLUMN_NAME','ORDINAL_POSITION','COLUMN_DEFAULT','IS_NULLABLE','DATA_TYPE','CHARACTER_MAXIMUM_LENGTH','NUMERIC_PRECISION','NUMERIC_SCALE','IS_IDENTITY','IDENTITY_START','IDENTITY_INCREMENT','EXPRESSION','KIND'];
+        const schema = predicate('TABLE_SCHEMA') ?? 'PUBLIC';
+        rows = value('schemaColumnRows', schema === 'PUBLIC' ? [
+          ['DB','PUBLIC','ACTIVE_ORDERS','ID','1',null,'YES','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+          ['DB','PUBLIC','ACTIVE_ORDERS','NOTES','2',null,'YES','TEXT','100',null,null,'NO',null,null,null,'COLUMN'],
+          ['DB','PUBLIC','ORDERS','ID','1','42','NO','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+          ['DB','PUBLIC','ORDERS','PARENT_A','2',null,'NO','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+          ['DB','PUBLIC','ORDERS','PARENT_B','3',null,'NO','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+          ['DB','PUBLIC','ORDERS','NOTES','4',null,'YES','TEXT','100',null,null,'NO',null,null,null,'COLUMN'],
+        ] : [
+          ['DB',schema,'PARENTS','A','1',null,'NO','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+          ['DB',schema,'PARENTS','B','2',null,'NO','NUMBER',null,'38','0','NO',null,null,null,'COLUMN'],
+        ]);
+      } else if (explorerSchemaConstraints) {
+        names = ['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','CONSTRAINT_NAME','CONSTRAINT_TYPE','ENFORCED','RELY','UNIQUE_CONSTRAINT_CATALOG','UNIQUE_CONSTRAINT_SCHEMA','UPDATE_RULE','DELETE_RULE'];
+        const schema = options.binds ? options.binds[1] : 'PUBLIC';
+        rows = value('schemaConstraintRows', schema === 'PUBLIC' ? [
+          ['DB','PUBLIC','ORDERS','ORDERS_PARENT_FK','FOREIGN KEY','NO','YES','DB','OTHER','NO ACTION','NO ACTION'],
+          ['DB','PUBLIC','ORDERS','ORDERS_PK','PRIMARY KEY','NO','YES',null,null,null,null],
+          ['DB','PUBLIC','ORDERS','ORDERS_UQ','UNIQUE','NO','NO',null,null,null,null],
+        ] : [
+          ['DB',schema,'PARENTS','PARENT_PK','PRIMARY KEY','NO','YES',null,null,null,null],
+        ]);
+      } else if (explorerSchemaChecks) {
+        names = ['CONSTRAINT_CATALOG','CONSTRAINT_SCHEMA','CONSTRAINT_TABLE','CONSTRAINT_NAME','CHECK_CLAUSE'];
+        const schema = options.binds ? options.binds[1] : 'PUBLIC';
+        rows = value('schemaCheckRows', schema === 'PUBLIC' ? [
+          ['DB','PUBLIC','ORDERS','POSITIVE_ID','ID > 0'],
+        ] : []);
+      } else if (schemaMappingKind) {
+        const schema = sql.includes('"DB"."OTHER"') ? 'OTHER' : 'PUBLIC';
+        names = schemaMappingKind === 'Foreign'
+          ? ['FK_DATABASE_NAME','FK_SCHEMA_NAME','FK_TABLE_NAME','FK_COLUMN_NAME','KEY_SEQUENCE','FK_NAME','PK_DATABASE_NAME','PK_SCHEMA_NAME','PK_TABLE_NAME','PK_COLUMN_NAME','PK_NAME']
+          : ['DATABASE_NAME','SCHEMA_NAME','TABLE_NAME','COLUMN_NAME','KEY_SEQUENCE','CONSTRAINT_NAME'];
+        rows = value('schemaMapping' + schemaMappingKind + 'Rows', schema === 'PUBLIC' ? (schemaMappingKind === 'Foreign' ? [
+          ['DB','PUBLIC','ORDERS','PARENT_A','1','ORDERS_PARENT_FK','DB','OTHER','PARENTS','A','PARENT_PK'],
+          ['DB','PUBLIC','ORDERS','PARENT_B','2','ORDERS_PARENT_FK','DB','OTHER','PARENTS','B','PARENT_PK'],
+        ] : schemaMappingKind === 'Primary' ? [
+          ['DB','PUBLIC','ORDERS','ID','1','ORDERS_PK'],
+        ] : [
+          ['DB','PUBLIC','ORDERS','PARENT_A','1','ORDERS_UQ'],
+          ['DB','PUBLIC','ORDERS','PARENT_B','2','ORDERS_UQ'],
+        ]) : (schemaMappingKind === 'Primary' ? [
+          ['DB',schema,'PARENTS','A','1','PARENT_PK'],
+          ['DB',schema,'PARENTS','B','2','PARENT_PK'],
+        ] : []));
       } else if (schemas) {
         names = ['CATALOG_NAME','SCHEMA_NAME'];
         rows = value('schemas',navigation ? ['PUBLIC',navigationSchema] : ['OTHER','PUBLIC']).map(name => [currentDatabase ?? 'DB',name]);
@@ -5052,7 +5321,7 @@ const sdk = { createConnection() {
         },
         cancel(callback) { cancelled = true; callback(null); },
       };
-      const denied = checks && settings.rejectChecks || mappingKind && settings.rejectMappings || constraints && settings.rejectConstraints || definition && settings.rejectDefinition || ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
+      const denied = checks && settings.rejectChecks || mappingKind && settings.rejectMappings || constraints && settings.rejectConstraints || definition && settings.rejectDefinition || definition && Array.isArray(settings.failGetDdlFor) && settings.failGetDdlFor.some(token => sql.includes(token)) || ddl && settings.rejectDdl || ddlSeen && settings.failDdlObserver === parameter && parameter !== undefined || dml && settings.rejectDml || dmlSeen && settings.failDmlObserver === parameter && parameter !== undefined || boundary && settings.rejectBoundary || boundarySeen && settings.failBoundaryObserver === parameter && parameter !== undefined || unsupportedContext || settings.failParameter === parameter && parameter !== undefined || switched && settings.failFinalParameter === parameter && parameter !== undefined || settings.failSchemas && schemas || settings.failUse && use || settings.failReadback && readback;
       setImmediate(() => {
         if (ddl && settings.holdDdl) { writeFileSync(file('held-ddl'), ''); return; }
         if (dml && settings.holdDml) { writeFileSync(file('held-dml'), ''); return; }
@@ -5333,6 +5602,24 @@ process.stdin.on('end', retire);
                 last_ddl: None,
             })
             .unwrap();
+            let sample_ctx = metadata::LiveContext {
+                principal: "SERVER_USER".into(),
+                role: Some("ROLE".into()),
+                database: Some("DB".into()),
+                schema: Some("PUBLIC".into()),
+                warehouse: Some("WH".into()),
+                session_id: "SESSION".into(),
+                search_path: Vec::new(),
+                secondary_roles: metadata::SecondaryRoles {
+                    roles: String::new(),
+                    value: "ALL".into(),
+                },
+                quoted_identifiers_ignore_case: false,
+            };
+            let schema_mapping_reads: Vec<_> = ["PUBLIC", "OTHER"]
+                .into_iter()
+                .flat_map(|s| metadata::explorer_schema_mapping_reads(&sample_ctx, s).unwrap())
+                .collect();
             // Switch tests separately assert their one exact quoted USE.
             assert!(self.queries().iter().all(|sql| {
                 sql.starts_with("SELECT ")
@@ -5346,6 +5633,7 @@ process.stdin.on('end', retire);
                     ]
                     .contains(&sql.as_str())
                     || mapping_reads.iter().any(|read| sql == read.sql())
+                    || schema_mapping_reads.iter().any(|read| sql == read.sql())
                     || [
                         "USE SCHEMA \"",
                         "USE ROLE \"",
@@ -8038,6 +8326,100 @@ process.stdin.on('end', retire);
             drop_view_res.statement_outcome,
             SnowflakeDdlOutcome::Succeeded
         );
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn schema_diagram_and_schema_snapshot_round_trip_through_synthetic_sdk() {
+        let h = Harness::open().await;
+        let diagram = h.driver.schema_diagram("PUBLIC").await.unwrap();
+        assert_eq!(diagram.schema, "PUBLIC");
+        assert!(!diagram.truncated);
+        assert!(!diagram.restricted);
+        assert_eq!(diagram.tables.len(), 2);
+        let orders = diagram
+            .tables
+            .iter()
+            .find(|n| n.table.name == "ORDERS")
+            .unwrap();
+        assert_eq!(orders.kind, "BASE TABLE");
+        assert!(
+            orders
+                .columns
+                .iter()
+                .any(|c| c.name == "ID" && c.primary_key && c.database_type == "NUMBER(38, 0)")
+        );
+        assert_eq!(diagram.foreign_keys.len(), 1);
+        assert_eq!(diagram.foreign_keys[0].name, "ORDERS_PARENT_FK");
+        assert_eq!(diagram.foreign_keys[0].target.schema, "OTHER");
+        assert_eq!(diagram.foreign_keys[0].target.name, "PARENTS");
+        assert_eq!(
+            diagram.foreign_keys[0].columns,
+            vec!["PARENT_A", "PARENT_B"]
+        );
+        assert_eq!(diagram.foreign_keys[0].target_columns, vec!["A", "B"]);
+
+        let missing = h.driver.schema_diagram("MISSING").await.unwrap_err();
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        let reserved = h
+            .driver
+            .schema_diagram("INFORMATION_SCHEMA")
+            .await
+            .unwrap_err();
+        assert_eq!(reserved.code, ErrorCode::Unsupported);
+
+        let public_snap = h.driver.schema_snapshot("PUBLIC").await.unwrap();
+        assert_eq!(public_snap.engine, EngineKind::Snowflake);
+        assert_eq!(public_snap.server_version, "synthetic-version");
+        assert_eq!(public_snap.schema, "PUBLIC");
+        assert!(!public_snap.truncated);
+        assert!(!public_snap.restricted);
+        assert_eq!(public_snap.tables.len(), 2);
+        assert_eq!(public_snap.sequences.len(), 1);
+        assert_eq!(public_snap.routines.len(), 3);
+        let orders_snap = public_snap
+            .tables
+            .iter()
+            .find(|t| t.name == "ORDERS")
+            .unwrap();
+        assert_eq!(orders_snap.partition_key.as_deref(), Some("ID"));
+        let active_view = public_snap
+            .tables
+            .iter()
+            .find(|t| t.name == "ACTIVE_ORDERS")
+            .unwrap();
+        assert_eq!(
+            active_view.view_definition.as_deref(),
+            Some(
+                "create or replace view \"PUBLIC\".\"ACTIVE_ORDERS\" as select ID, NOTES from \"PUBLIC\".\"ORDERS\";"
+            )
+        );
+
+        let other_snap = h.driver.schema_snapshot("OTHER").await.unwrap();
+        let diff =
+            crate::schema_diff::compare_schema_snapshots(other_snap.clone(), public_snap.clone());
+        assert!(!diff.entries.is_empty());
+        let migration =
+            crate::ddl::generate_migration_ddl(&other_snap, &public_snap, Some("OTHER")).unwrap();
+        assert!(
+            migration
+                .statements
+                .iter()
+                .any(|s| s.sql.contains("CREATE TABLE \"OTHER\".\"ORDERS\""))
+        );
+
+        h.settings(json!({
+            "failGetDdlFor": ["ACTIVE_ORDERS"]
+        }));
+        let restricted_snap = h.driver.schema_snapshot("PUBLIC").await.unwrap();
+        assert!(restricted_snap.restricted);
+        let restricted_view = restricted_snap
+            .tables
+            .iter()
+            .find(|t| t.name == "ACTIVE_ORDERS")
+            .unwrap();
+        assert!(restricted_view.view_definition.is_none());
+
         h.finish().await;
     }
 }

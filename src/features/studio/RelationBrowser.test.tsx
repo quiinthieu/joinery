@@ -2560,3 +2560,125 @@ it("clears the consumed editSnapshotId when a manual continuation batch returns 
   expect(screen.getByRole("table", { name: "Read-only preview" })).toBeTruthy();
   expect(screen.queryByRole("table", { name: "Editable Snowflake preview" })).toBeNull();
 });
+
+it("inspects VARIANT :path trees, BINARY hex dumps, and GEOGRAPHY spatial previews and applies staged JSON edits", async () => {
+  setupWritableSnowflakeGrid();
+  const richInspection: RelationInspection = {
+    ...inspection,
+    columns: [
+      {
+        ...inspection.columns[0],
+        name: "PAYLOAD",
+        ordinal: 1,
+        fullType: "VARIANT",
+        dataType: "VARIANT",
+        resultKind: "json",
+        nullable: true,
+      },
+      {
+        ...inspection.columns[0],
+        name: "RAW_HASH",
+        ordinal: 2,
+        fullType: "BINARY(7)",
+        dataType: "BINARY",
+        resultKind: "binary",
+        nullable: true,
+      },
+      {
+        ...inspection.columns[0],
+        name: "REGION_GEO",
+        ordinal: 3,
+        fullType: "GEOGRAPHY",
+        dataType: "GEOGRAPHY",
+        resultKind: "text",
+        nullable: true,
+      },
+    ],
+  };
+  const richPreview: RelationPreview = {
+    columns: [
+      {
+        id: "c0",
+        name: "PAYLOAD",
+        databaseType: "VARIANT",
+        kind: "json",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+      {
+        id: "c1",
+        name: "RAW_HASH",
+        databaseType: "BINARY(7)",
+        kind: "binary",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+      {
+        id: "c2",
+        name: "REGION_GEO",
+        databaseType: "TEXT",
+        kind: "text",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+    ],
+    rows: [
+      [
+        '{"customer":{"orders":[{"id":42}]}}',
+        "4A6F696E657279",
+        '{"type":"Polygon","coordinates":[[[0,0],[4,0],[4,3],[0,3],[0,0]]]}',
+      ],
+    ],
+    truncated: false,
+    editSnapshotId: "snap-rich-1",
+  };
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return richInspection;
+    if (method === "preview_relation") return richPreview;
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("3 columns");
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  // 1. VARIANT :path tree + Format JSON + Apply to staged cell
+  fireEvent.click(screen.getByRole("button", { name: "Inspect row 1 PAYLOAD" }));
+  const treeViewer = await screen.findByTestId("json-tree-viewer");
+  expect(within(treeViewer).getByText("PAYLOAD:customer.orders[0].id")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Copy path PAYLOAD:customer.orders[0].id" }));
+  fireEvent.click(screen.getByRole("button", { name: "Format JSON" }));
+  fireEvent.click(screen.getByRole("button", { name: "Apply to staged cell" }));
+  await screen.findByRole("button", { name: "Review 1 change…" });
+
+  // 2. BINARY raw hex dump
+  fireEvent.click(screen.getByRole("button", { name: "Inspect row 1 RAW_HASH" }));
+  const hexViewer = await screen.findByTestId("binary-hex-viewer");
+  expect(hexViewer.textContent).toContain("|Joinery|");
+  fireEvent.click(screen.getByRole("button", { name: "Back to preview" }));
+
+  // 3. Read-only GEOGRAPHY spatial 2D SVG preview
+  fireEvent.click(screen.getByRole("button", { name: "Inspect row 1 REGION_GEO" }));
+  const spatialViewer = await screen.findByTestId("spatial-viewer");
+  expect(within(spatialViewer).getByText("Polygon")).toBeTruthy();
+  expect(screen.getByTestId("spatial-svg-preview")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.getByRole("table", { name: "Editable Snowflake preview" })).toBeTruthy();
+});

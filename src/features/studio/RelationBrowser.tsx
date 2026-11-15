@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
   BrowseCatalog,
   ChangePreview,
@@ -20,7 +20,21 @@ import type {
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { querySessionForTab, revokeSchemaSelectionBeforeWork, useStudio } from "../../state/studio";
-import { Modal } from "../../components/ui/Modal";
+import { InlineError, Modal } from "../../components/ui/Modal";
+import { tabNavigation } from "../../components/ui/tabs";
+import { JsonTreeViewer, SpatialViewer } from "../grid/ValueDialog";
+import {
+  MAX_HEX_PREVIEW_BYTES,
+  buildJsonTree,
+  decodeBinaryPreview,
+  formatHexDump,
+  formatJsonLossless,
+  isBinaryColumn,
+  isJsonColumn,
+  isRawHexBinaryType,
+  isSpatialColumn,
+  parseSpatialPreview,
+} from "../grid/value-format";
 import { ReviewDialog } from "../safety/ReviewDialog";
 import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
 import { DdlPanel } from "./ObjectInspectorView";
@@ -264,6 +278,10 @@ export function RelationBrowser({
   const [error, setError] = useState<string | null>(null);
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
+  const [inspectedCell, setInspectedCell] = useState<{
+    absRowIndex: number;
+    colIndex: number;
+  } | null>(null);
   const generation = useRef(0);
   const activationEpoch = generation.current;
   const navigationId = useId();
@@ -285,6 +303,7 @@ export function RelationBrowser({
     setGridReview(null);
     setGridError(null);
     setCsvPanelOpen(false);
+    setInspectedCell(null);
   };
   const resetPreviewSlice = () => {
     setDraftSortColumn("");
@@ -996,6 +1015,40 @@ export function RelationBrowser({
         onClose={onClose}
       />
     );
+  if (inspectedCell && preview) {
+    const cellCol = preview.columns[inspectedCell.colIndex];
+    const inspectedCol = inspection?.columns[inspectedCell.colIndex];
+    const rowValues = preview.rows[inspectedCell.absRowIndex];
+    if (cellCol && rowValues) {
+      const originalValue = rowValues[inspectedCell.colIndex] ?? null;
+      const override = updatedCells[inspectedCell.absRowIndex]?.[inspectedCell.colIndex];
+      const effective: SnowflakeGridCellInput =
+        override ??
+        (originalValue === null ? { kind: "null" } : { kind: "text", value: originalValue });
+      const cellEditable =
+        Boolean(activeSnapshotId) &&
+        !deletedRows[inspectedCell.absRowIndex] &&
+        Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
+      const effectiveDbType =
+        inspectedCol?.fullType || inspectedCol?.dataType || cellCol.databaseType;
+      return (
+        <SnowflakeCellInspectorModal
+          rowNumber={inspectedCell.absRowIndex + 1}
+          columnName={cellCol.name}
+          columnKind={cellCol.kind}
+          databaseType={effectiveDbType}
+          nullable={Boolean(inspectedCol?.nullable ?? cellCol.nullable)}
+          editable={cellEditable}
+          initialInput={effective}
+          onApply={(nextInput) => {
+            setCellOverride(inspectedCell.absRowIndex, inspectedCell.colIndex, nextInput);
+            setInspectedCell(null);
+          }}
+          onClose={() => setInspectedCell(null)}
+        />
+      );
+    }
+  }
   return (
     <Modal
       title="Browse relations"
@@ -2398,6 +2451,16 @@ export function RelationBrowser({
                           const colIndex = columnPage * PAGE_COLUMNS + i;
                           const value = row[colIndex];
                           const inspectedCol = inspection?.columns[colIndex];
+                          const effectiveDbType =
+                            inspectedCol?.fullType || inspectedCol?.dataType || column.databaseType;
+                          const classifierCol = {
+                            kind: column.kind,
+                            databaseType: effectiveDbType,
+                          };
+                          const richInspectorCol =
+                            isJsonColumn(classifierCol) ||
+                            isBinaryColumn(classifierCol) ||
+                            isSpatialColumn(classifierCol);
                           const cellEditable =
                             Boolean(activeSnapshotId) &&
                             !rowDeleted &&
@@ -2407,8 +2470,16 @@ export function RelationBrowser({
                             const effective: SnowflakeGridCellInput =
                               override ??
                               (value === null ? { kind: "null" } : { kind: "text", value });
+                            const textForCheck = effective.kind === "text" ? effective.value : null;
+                            const showInspect =
+                              richInspectorCol ||
+                              (textForCheck !== null &&
+                                (textForCheck.length > 64 || textForCheck.includes("\n")));
                             return (
-                              <td key={column.id}>
+                              <td
+                                key={column.id}
+                                onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                              >
                                 <input
                                   aria-label={`Row ${absRowIndex + 1} ${column.name}`}
                                   disabled={effective.kind === "null"}
@@ -2421,6 +2492,16 @@ export function RelationBrowser({
                                     })
                                   }
                                 />
+                                {showInspect && (
+                                  <button
+                                    type="button"
+                                    className="button small"
+                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                  >
+                                    Inspect
+                                  </button>
+                                )}
                                 {inspectedCol.nullable && (
                                   <button
                                     type="button"
@@ -2452,14 +2533,33 @@ export function RelationBrowser({
                               </td>
                             );
                           }
+                          const showInspectReadOnly =
+                            value !== null &&
+                            (richInspectorCol || value.length > 64 || value.includes("\n"));
                           return (
-                            <td key={column.id}>
+                            <td
+                              key={column.id}
+                              onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                            >
                               {value === null ? (
                                 <span aria-label="NULL">∅</span>
                               ) : value === "" ? (
                                 <span aria-label="Empty string">“”</span>
                               ) : (
                                 value
+                              )}
+                              {showInspectReadOnly && (
+                                <>
+                                  {" "}
+                                  <button
+                                    type="button"
+                                    className="button small"
+                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                  >
+                                    Inspect
+                                  </button>
+                                </>
                               )}
                             </td>
                           );
@@ -2473,6 +2573,243 @@ export function RelationBrowser({
           </>
         )}
       </div>
+    </Modal>
+  );
+}
+
+function SnowflakeCellInspectorModal({
+  rowNumber,
+  columnName,
+  columnKind,
+  databaseType,
+  nullable,
+  editable,
+  initialInput,
+  onApply,
+  onClose,
+}: {
+  rowNumber: number;
+  columnName: string;
+  columnKind: RelationPreview["columns"][number]["kind"];
+  databaseType: string;
+  nullable: boolean;
+  editable: boolean;
+  initialInput: SnowflakeGridCellInput;
+  onApply: (next: SnowflakeGridCellInput) => void;
+  onClose: () => void;
+}) {
+  const notify = useStudio((s) => s.notify);
+  const classifier = { kind: columnKind, databaseType };
+  const viewerKind = isBinaryColumn(classifier)
+    ? "binary"
+    : isSpatialColumn(classifier)
+      ? "spatial"
+      : isJsonColumn(classifier)
+        ? "json"
+        : null;
+
+  const [isNull, setIsNull] = useState(initialInput.kind === "null");
+  const [value, setValue] = useState(initialInput.kind === "text" ? initialInput.value : "");
+  const [viewMode, setViewMode] = useState<"formatted" | "tree" | "raw">(() => {
+    if (initialInput.kind === "null") return "raw";
+    if (viewerKind === "binary" || viewerKind === "spatial") return "formatted";
+    if (viewerKind === "json") {
+      const trimmed = initialInput.kind === "text" ? initialInput.value.trim() : "";
+      return trimmed.length > 0 && buildJsonTree(trimmed, columnName).ok ? "tree" : "raw";
+    }
+    return "raw";
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const showViewerTabs = viewerKind !== null && !isNull;
+
+  const binaryPreview = useMemo(() => {
+    if (viewerKind !== "binary" || isNull) return null;
+    const preview = decodeBinaryPreview(
+      value,
+      MAX_HEX_PREVIEW_BYTES,
+      isRawHexBinaryType(databaseType),
+    );
+    return { ...preview, dump: formatHexDump(preview.bytes) };
+  }, [viewerKind, value, isNull, databaseType]);
+
+  const spatialPreview = useMemo(() => {
+    if (viewerKind !== "spatial" || viewMode !== "formatted" || isNull) return null;
+    return parseSpatialPreview(value);
+  }, [viewerKind, viewMode, value, isNull]);
+
+  const jsonPreview = useMemo(() => {
+    if (viewerKind !== "json" || viewMode !== "formatted" || isNull) return null;
+    return formatJsonLossless(value);
+  }, [viewerKind, viewMode, value, isNull]);
+
+  const jsonTree = useMemo(() => {
+    if (viewerKind !== "json" || viewMode !== "tree" || isNull) return null;
+    return buildJsonTree(value, columnName);
+  }, [viewerKind, viewMode, value, isNull, columnName]);
+
+  const handleFormatJson = () => {
+    const formatted = formatJsonLossless(value);
+    if (!formatted.ok) {
+      setError(formatted.error);
+      setViewMode("raw");
+      return;
+    }
+    setError(null);
+    setValue(formatted.formatted);
+    setViewMode("raw");
+  };
+
+  const handleSubmit = () => {
+    setError(null);
+    if (!isNull && viewerKind === "json") {
+      try {
+        JSON.parse(value);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Enter valid JSON");
+        return;
+      }
+    }
+    onApply(isNull ? { kind: "null" } : { kind: "text", value });
+  };
+
+  const formattedTabLabel =
+    viewerKind === "binary" ? "Hex / ASCII" : viewerKind === "spatial" ? "Spatial" : "Formatted";
+
+  return (
+    <Modal
+      title={`${editable ? "Inspect & stage" : "Inspect"} ${columnName}`}
+      subtitle={`Row ${rowNumber} · ${databaseType}`}
+      wide
+      onClose={onClose}
+    >
+      <div className="modal-body" data-testid="snowflake-cell-inspector">
+        {editable && nullable && (
+          <label className="checkbox-label">
+            <input type="checkbox" checked={isNull} onChange={(e) => setIsNull(e.target.checked)} />
+            Set to NULL
+          </label>
+        )}
+        {showViewerTabs && (
+          <div className="value-viewer-toolbar">
+            <div
+              className="value-viewer-tabs"
+              role="tablist"
+              aria-label="Value view"
+              onKeyDown={tabNavigation}
+            >
+              {viewerKind === "json" && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={viewMode === "tree"}
+                  tabIndex={viewMode === "tree" ? 0 : -1}
+                  className={`value-viewer-tab ${viewMode === "tree" ? "active" : ""}`}
+                  onClick={() => setViewMode("tree")}
+                >
+                  Tree (:path)
+                </button>
+              )}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "formatted"}
+                tabIndex={viewMode === "formatted" ? 0 : -1}
+                className={`value-viewer-tab ${viewMode === "formatted" ? "active" : ""}`}
+                onClick={() => setViewMode("formatted")}
+              >
+                {formattedTabLabel}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "raw"}
+                tabIndex={viewMode === "raw" ? 0 : -1}
+                className={`value-viewer-tab ${viewMode === "raw" ? "active" : ""}`}
+                onClick={() => setViewMode("raw")}
+              >
+                Raw
+              </button>
+            </div>
+            <div className="value-viewer-meta">
+              {viewerKind === "binary" && binaryPreview && (
+                <span>
+                  {binaryPreview.totalBytes.toLocaleString()}{" "}
+                  {binaryPreview.totalBytes === 1 ? "byte" : "bytes"}
+                  {binaryPreview.truncated
+                    ? ` · showing first ${MAX_HEX_PREVIEW_BYTES.toLocaleString()} bytes`
+                    : ""}
+                </span>
+              )}
+              {viewerKind === "json" && viewMode === "tree" && jsonTree?.ok && (
+                <span>
+                  {jsonTree.totalNodes.toLocaleString()}{" "}
+                  {jsonTree.totalNodes === 1 ? "node" : "nodes"}
+                  {jsonTree.truncated
+                    ? ` · showing first ${jsonTree.nodes.length.toLocaleString()}`
+                    : ""}
+                </span>
+              )}
+              {viewerKind === "json" && editable && (
+                <button type="button" className="button ghost small" onClick={handleFormatJson}>
+                  Format JSON
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+        {showViewerTabs && viewMode === "tree" && viewerKind === "json" && jsonTree ? (
+          <JsonTreeViewer tree={jsonTree} onCopyPath={(p) => notify(`Copied path ${p}`)} />
+        ) : showViewerTabs && viewMode === "formatted" ? (
+          viewerKind === "binary" && binaryPreview ? (
+            <pre
+              className="value-viewer hex-dump"
+              data-testid="binary-hex-viewer"
+              aria-label="Binary hex and ASCII view"
+              tabIndex={0}
+            >
+              {binaryPreview.totalBytes === 0 ? "0 bytes (empty binary value)" : binaryPreview.dump}
+            </pre>
+          ) : viewerKind === "spatial" && spatialPreview ? (
+            <SpatialViewer spatial={spatialPreview} />
+          ) : viewerKind === "json" && jsonPreview ? (
+            jsonPreview.ok ? (
+              <pre
+                className="value-viewer json-viewer"
+                data-testid="json-formatted-viewer"
+                aria-label="Formatted JSON view"
+                tabIndex={0}
+              >
+                {jsonPreview.formatted}
+              </pre>
+            ) : (
+              <div className="value-viewer array-viewer-empty" data-testid="json-formatted-viewer">
+                Current text is not valid JSON ({jsonPreview.error}). Switch to Raw view to edit.
+              </div>
+            )
+          ) : null
+        ) : (
+          <textarea
+            className="value-editor"
+            aria-label="Cell value"
+            value={isNull ? "NULL" : value}
+            onChange={(e) => setValue(e.target.value)}
+            readOnly={!editable || isNull}
+            spellCheck={false}
+          />
+        )}
+        <InlineError message={error} />
+      </div>
+      <footer className="modal-footer">
+        <button type="button" className="button ghost" onClick={onClose}>
+          {editable ? "Back to preview" : "Close"}
+        </button>
+        {editable && (
+          <button type="button" className="button primary" onClick={handleSubmit}>
+            Apply to staged cell
+          </button>
+        )}
+      </footer>
     </Modal>
   );
 }

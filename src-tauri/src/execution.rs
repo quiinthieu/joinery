@@ -3404,7 +3404,17 @@ impl Studio {
                 "Schema diagrams are not supported for this database engine",
             ));
         }
-        session.driver.schema_diagram(schema).await
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            Some(Self::relation_lane(&session).await?)
+        } else {
+            None
+        };
+        let result = session.driver.schema_diagram(schema).await;
+        if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)
+        } else {
+            result
+        }
     }
     pub async fn schema_snapshot(
         &self,
@@ -3427,7 +3437,17 @@ impl Studio {
                 "Schema snapshots and comparison are not supported for this database engine",
             ));
         }
-        session.driver.schema_snapshot(schema).await
+        let _lane = if snowflake_dml::sdk_profile(&session.profile) {
+            Some(Self::relation_lane(&session).await?)
+        } else {
+            None
+        };
+        let result = session.driver.schema_snapshot(schema).await;
+        if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)
+        } else {
+            result
+        }
     }
     pub fn compare_schemas(
         &self,

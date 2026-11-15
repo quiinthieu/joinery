@@ -31,7 +31,7 @@ import type {
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { InlineError } from "../../components/ui/Modal";
-import { useStudio, type StudioTab } from "../../state/studio";
+import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import { ReviewDialog } from "../safety/ReviewDialog";
 
 function runApprovedPlan(
@@ -208,22 +208,40 @@ export function SchemaDiffView({
   const refreshCatalog = useStudio((s) => s.refreshCatalog);
   const captured = useSyncExternalStore(schemaSnapshots.subscribe, schemaSnapshots.snapshot);
 
+  const sessionSupportsSchemaDiff = (sess: (typeof sessions)[string] | undefined) =>
+    Boolean(
+      sess &&
+      (sess.capabilities.schemaDiff ?? (sess.engine === "postgres" || sess.engine === "mysql")),
+    );
+
+  const sessionSupportsDdlEditing = (sess: (typeof sessions)[string] | undefined) =>
+    Boolean(
+      sess &&
+      (sess.capabilities.ddlEditing ?? (sess.engine === "postgres" || sess.engine === "mysql")),
+    );
+
   const primaryConnectionId = tab.connectionId ?? "";
   const primarySession = primaryConnectionId ? sessions[primaryConnectionId] : undefined;
   const targetEngine: EngineKind | null =
-    primarySession?.engine ??
+    (sessionSupportsSchemaDiff(primarySession) ? primarySession?.engine : null) ??
     profiles.find((p) => p.id === primaryConnectionId)?.engine ??
-    Object.values(sessions)[0]?.engine ??
+    Object.values(sessions).find((s) => sessionSupportsSchemaDiff(s))?.engine ??
     null;
 
   const compatibleConnections = useMemo(() => {
     return Object.entries(sessions)
-      .filter(([, sess]) => !targetEngine || sess.engine === targetEngine)
+      .filter(
+        ([, sess]) =>
+          sessionSupportsSchemaDiff(sess) && (!targetEngine || sess.engine === targetEngine),
+      )
       .map(([connId, sess]) => {
         const profile = profiles.find((p) => p.id === connId);
         const schemaSet = new Set<string>();
         if (profile?.database && sess.engine === "mysql") {
           schemaSet.add(profile.database);
+        }
+        if (profile?.snowflake?.schema && sess.engine === "snowflake") {
+          schemaSet.add(profile.snowflake.schema);
         }
         for (const table of catalog[connId] ?? []) {
           schemaSet.add(table.table.schema);
@@ -235,7 +253,13 @@ export function SchemaDiffView({
           schemaSet.add(tab.diagramSchema);
         }
         if (schemaSet.size === 0) {
-          schemaSet.add(sess.engine === "mysql" ? (profile?.database ?? "mysql") : "public");
+          schemaSet.add(
+            sess.engine === "mysql"
+              ? (profile?.database ?? "mysql")
+              : sess.engine === "snowflake"
+                ? profile?.snowflake?.schema || "PUBLIC"
+                : "public",
+          );
         }
         return {
           connectionId: connId,
@@ -251,7 +275,10 @@ export function SchemaDiffView({
     [captured, targetEngine],
   );
 
-  const initialLeftSchema = tab.diagramSchema || compatibleConnections[0]?.schemas[0] || "public";
+  const initialLeftSchema =
+    tab.diagramSchema ||
+    compatibleConnections[0]?.schemas[0] ||
+    (targetEngine === "snowflake" ? "PUBLIC" : "public");
   const initialRightSchema = useMemo(() => {
     const firstConn = compatibleConnections[0];
     if (!firstConn) return initialLeftSchema;
@@ -308,6 +335,7 @@ export function SchemaDiffView({
     if (!schemaName) {
       throw new Error("Enter a schema name to snapshot.");
     }
+    revokeSchemaSelectionBeforeWork(conn.session.id);
     return client.call<SchemaSnapshot>("schema_snapshot", {
       sessionId: conn.session.id,
       schema: schemaName,
@@ -461,6 +489,7 @@ export function SchemaDiffView({
   const canApplyMigration = Boolean(
     isMigrationMode &&
     mutatedLiveConnection &&
+    sessionSupportsDdlEditing(mutatedLiveConnection.session) &&
     mutatedProfile &&
     mutatedProfile.safeMode !== "readOnly" &&
     expectedSnapshot &&
@@ -595,7 +624,9 @@ export function SchemaDiffView({
                   setTarget({
                     mode: "live",
                     connectionId: connId,
-                    schema: conn?.schemas[0] ?? "public",
+                    schema:
+                      conn?.schemas[0] ??
+                      (conn?.session.engine === "snowflake" ? "PUBLIC" : "public"),
                   });
                 }
               }}
@@ -903,11 +934,13 @@ export function SchemaDiffView({
                         title={
                           mutatedSideTarget?.mode !== "live"
                             ? "Select a live database connection on the target schema side to apply migration DDL"
-                            : mutatedProfile?.safeMode === "readOnly"
-                              ? "Target connection is in Read-Only Safe Mode"
-                              : selectedStatements.length === 0
-                                ? "Select at least one migration statement to apply"
-                                : `Apply ${selectedStatements.length} statement(s) to ${ddlPlan.targetSchema}`
+                            : !sessionSupportsDdlEditing(mutatedLiveConnection?.session)
+                              ? "Direct migration apply is not enabled for this engine; use Open in SQL editor to review and run the generated DDL"
+                              : mutatedProfile?.safeMode === "readOnly"
+                                ? "Target connection is in Read-Only Safe Mode"
+                                : selectedStatements.length === 0
+                                  ? "Select at least one migration statement to apply"
+                                  : `Apply ${selectedStatements.length} statement(s) to ${ddlPlan.targetSchema}`
                         }
                         onClick={() => void handlePrepareMigration()}
                       >

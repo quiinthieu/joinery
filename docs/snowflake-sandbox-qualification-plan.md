@@ -135,7 +135,7 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
   console DDL statements + explicit catalog reconciliations (`<= 280` bounded
   metadata/observation reads at `S <= 10` schemas).
 
-### Phase 3 — Object Explorer, Object Inspector, and Snowflake SQL authoring
+### Phase 3 — Object Explorer, Object Inspector, Schema Diagrams, Schema Diff, and Snowflake SQL authoring
 
 - **Actions:**
   1. Expand `SANDBOX` -> `BILLIE_TESTING` in the sidebar Object Explorer
@@ -144,11 +144,19 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
      in `ObjectInspectorView` (`object_details`): verify column types/nullability,
      PK/FK constraint mappings, view dependencies, `GET_DDL` output, and the
      `"Browse relations"` jump button.
-  3. In `SqlEditor`, verify Snowflake SQL keyword/function completion
+  3. Open `BILLIE_TESTING` in `SchemaDiagram` (`schema_diagram`): verify
+     `"JOINERY_QUAL_<RUN>_ALL_TYPES"` and `"JOINERY_QUAL_<RUN>_PARENT"` render
+     with their PK and outbound FK edge, and click a node to open
+     `ObjectInspectorView`.
+  4. Open `SchemaDiffView` (`schema_snapshot` -> `compare_schemas` ->
+     `generate_migration_ddl`): capture a baseline snapshot of `BILLIE_TESTING`,
+     compare live vs. snapshot, verify dialect-accurate Snowflake migration DDL
+     and unsupported-object disclosures, and test `Open in SQL editor`.
+  5. In `SqlEditor`, verify Snowflake SQL keyword/function completion
      (`QUALIFY`, `ILIKE`, `PARSE_JSON`, `OBJECT_CONSTRUCT`), quoted column
      completions, semi-structured path syntax (`PAYLOAD:tier::STRING`), and
      `"Inspect SQL columns"` (`inspection_schema`) live column verification.
-- **Statement budget:** `<= 25` bounded `SHOW` / `DESCRIBE` / `GET_DDL` /
+- **Statement budget:** `<= 45` bounded `SHOW` / `DESCRIBE` / `GET_DDL` /
   `INFORMATION_SCHEMA` reads.
 
 ### Phase 4 — Lossless editable grid, slice paging/sort/filter, review cancel, and multi-batch CSV import
@@ -168,7 +176,10 @@ and dropped in `SANDBOX.BILLIE_TESTING`:
      `<ReviewDialog>`, click **Cancel** (`cancel_snowflake_grid_plan`), and
      verify the snapshot is restored so `"Review 3 changes…"` re-opens and
      applies cleanly in **Automatic** transaction mode without reloading.
-  4. Reload preview and verify lossless readback across all 15 columns.
+  4. Reload preview and verify lossless readback across all 15 columns, plus
+     rich cell inspection (`Inspect` / double-click) on `PAYLOAD` (`VARIANT`
+     `:path` tree + lossless JSON formatting + `Apply to staged cell`) and
+     `RAW_BYTES` (16-byte Hex/ASCII viewer).
   5. Apply a server **Filter** (`ACTIVE = TRUE` / `LABEL ILIKE '%alpha%'`),
      **Sort** (`ID DESC`), and custom page slice (`offset > 0`), then stage and
      commit a single-row `UPDATE` (including `VARIANT` JSON and UTF-8

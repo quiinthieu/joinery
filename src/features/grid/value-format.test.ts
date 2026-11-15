@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildJsonTree,
   decodeBinaryPreview,
   formatHexDump,
   formatJsonLossless,
   isBinaryColumn,
   isJsonColumn,
   isPostgresArrayColumn,
+  isRawHexBinaryType,
+  isSpatialColumn,
   opensInValueDialog,
   parsePostgresArray,
+  parseSpatialPreview,
 } from "./value-format";
 
 describe("column viewer classification", () => {
@@ -168,5 +172,83 @@ describe("formatJsonLossless", () => {
   it("rejects invalid JSON syntax", () => {
     const invalid = formatJsonLossless('{"broken": }');
     expect(invalid.ok).toBe(false);
+  });
+});
+
+describe("Snowflake semi-structured, binary, and spatial value inspectors", () => {
+  it("classifies Snowflake VARIANT/OBJECT/ARRAY, BINARY/VARBINARY, and GEOGRAPHY/GEOMETRY columns", () => {
+    expect(isJsonColumn({ kind: "text", databaseType: "VARIANT" })).toBe(true);
+    expect(isJsonColumn({ kind: "text", databaseType: "OBJECT" })).toBe(true);
+    expect(isJsonColumn({ kind: "text", databaseType: "ARRAY" })).toBe(true);
+    expect(isBinaryColumn({ kind: "text", databaseType: "BINARY(16)" })).toBe(true);
+    expect(isRawHexBinaryType("VARBINARY")).toBe(true);
+    expect(isRawHexBinaryType("bytea")).toBe(false);
+    expect(isSpatialColumn({ kind: "text", databaseType: "GEOGRAPHY" })).toBe(true);
+    expect(isSpatialColumn({ kind: "text", databaseType: "GEOMETRY" })).toBe(true);
+    expect(opensInValueDialog({ kind: "text", databaseType: "GEOGRAPHY" })).toBe(true);
+  });
+
+  it("decodes Snowflake raw even-length hex when allowRawHex is enabled", () => {
+    const sfHex = decodeBinaryPreview("4A6F696E657279", 64, true);
+    expect(sfHex.encoding).toBe("hex");
+    expect(sfHex.totalBytes).toBe(7);
+    expect(formatHexDump(sfHex.bytes)).toBe(
+      "00000000  4a 6f 69 6e 65 72 79                              |Joinery|",
+    );
+  });
+
+  it("builds lossless Snowflake :path trees and bounds large documents", () => {
+    const tree = buildJsonTree(
+      '{"customer":{"orders":[{"id":9223372036854775807}],"odd.key":"ok"}}',
+      "PAYLOAD",
+    );
+    expect(tree.ok).toBe(true);
+    if (!tree.ok) return;
+    expect(tree.truncated).toBe(false);
+    expect(tree.nodes.map((n) => [n.path, n.kind, n.summary])).toEqual([
+      ["PAYLOAD", "object", "{1 key}"],
+      ["PAYLOAD:customer", "object", "{2 keys}"],
+      ["PAYLOAD:customer.orders", "array", "[1 item]"],
+      ["PAYLOAD:customer.orders[0]", "object", "{1 key}"],
+      ["PAYLOAD:customer.orders[0].id", "number", "9223372036854775807"],
+      ["PAYLOAD:customer['odd.key']", "string", '"ok"'],
+    ]);
+
+    const bounded = buildJsonTree("[1,2,3,4,5]", "ARR_COL", 3);
+    expect(bounded.ok).toBe(true);
+    if (bounded.ok) {
+      expect(bounded.totalNodes).toBe(6);
+      expect(bounded.nodes).toHaveLength(3);
+      expect(bounded.truncated).toBe(true);
+      expect(bounded.nodes[0].summary).toBe("[5 items]");
+    }
+  });
+
+  it("parses GeoJSON and EWKT/WKT spatial values into normalized 2D SVG shapes", () => {
+    const geojson = parseSpatialPreview(
+      '{"type":"Polygon","crs":{"type":"name","properties":{"name":"EPSG:4326"}},"coordinates":[[[-122.5,37.7],[-122.3,37.7],[-122.3,37.8],[-122.5,37.8],[-122.5,37.7]]]}',
+    );
+    expect(geojson.ok).toBe(true);
+    if (geojson.ok) {
+      expect(geojson.format).toBe("GeoJSON");
+      expect(geojson.geometryType).toBe("Polygon");
+      expect(geojson.srid).toBe(4326);
+      expect(geojson.coordinateCount).toBe(5);
+      expect(geojson.bbox).toEqual([-122.5, 37.7, -122.3, 37.8]);
+      expect(geojson.shapes).toHaveLength(1);
+      expect(geojson.shapes[0].kind).toBe("polygon");
+      expect(geojson.shapes[0].d).toContain("Z");
+    }
+
+    const ewkt = parseSpatialPreview("SRID=3857;LINESTRING(0 0, 10 20, 30 15)");
+    expect(ewkt.ok).toBe(true);
+    if (ewkt.ok) {
+      expect(ewkt.format).toBe("EWKT");
+      expect(ewkt.geometryType).toBe("LINESTRING");
+      expect(ewkt.srid).toBe(3857);
+      expect(ewkt.coordinateCount).toBe(3);
+      expect(ewkt.bbox).toEqual([0, 0, 30, 20]);
+      expect(ewkt.shapes[0].kind).toBe("polyline");
+    }
   });
 });

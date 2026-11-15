@@ -1,12 +1,89 @@
 # Replacement verification ledger
 
-Run started 9 November 2026 on macOS arm64, source `bcb606f`, task branch
-`feat/datagrip-replacement` from fetched `origin/main`. Local work is unmerged,
-unreleased and not installed. Actual-account evidence is limited to the explicit
-canary scopes recorded below; complete external workflow qualification is open.
-See [acceptance](replacement-acceptance.md) for required gates and migration.
+Run started 9 November 2026 on macOS arm64, updated 15 November 2026 through PR
+#72 (`33250cf`, shipped as GitHub pre-release `v0.1.0-preview.17` and installed
+at `/Applications/Joinery.app`) and branch
+`feat/snowflake-diagrams-diff-inspectors` (`v0.1.0-preview.18` candidate).
+Actual-account evidence remains limited to the explicit canary scopes recorded
+below; live `SANDBOX.BILLIE_TESTING` qualification, Apple Developer ID
+signing/notarization, and external non-fixture database qualification remain
+open. See [acceptance](replacement-acceptance.md) for required gates and
+migration.
 
 ## Environment and commands
+
+### Snowflake schema diagrams, schema diff/migration DDL, and rich cell inspectors (15 November 2026)
+
+Base `33250cf285f507b16885ccbeeb1a53cb35d4c6a3` (`origin/main`, PR #72,
+`v0.1.0-preview.17`), task branch `feat/snowflake-diagrams-diff-inspectors`.
+
+1. **Snowflake Schema Diagrams (`schema_diagram`)**:
+   - Added closed `ReadKind::ExplorerSchema*` variants and bounded `ReadSpec`
+     factories in `src-tauri/src/drivers/snowflake_metadata.rs`, SQL builders
+     and `parse_schema_diagram` in `src-tauri/src/drivers/snowflake_explorer.rs`,
+     `SnowflakeExternal::schema_diagram` in
+     `src-tauri/src/drivers/snowflake_external.rs`, `relation_lane` /
+     `publish_relation` wrapping in `src-tauri/src/execution.rs`, and
+     `DiagramView.tsx` + `App.tsx` integration opening `ObjectInspectorView` on
+     Snowflake node clicks while preserving `TableView` on PostgreSQL/MySQL.
+2. **Snowflake Schema Diff & Migration DDL (`schema_snapshot`, `ddl.rs`)**:
+   - Added `parse_schema_snapshot_base` in `snowflake_explorer.rs` and
+     `SnowflakeExternal::schema_snapshot` across tables (`CLUSTER BY`,
+     `IDENTITY`, column metadata, PK/UQ/FK/CHECK constraints), views (`GET_DDL`),
+     sequences, and overloaded functions/procedures, with explicit disclosures
+     for `DYNAMIC`, `EXTERNAL`, `HYBRID`, and `EVENT` tables.
+   - Added `EngineKind::Snowflake` full-schema and migration DDL generation in
+     `src-tauri/src/ddl.rs` (`SET DATA TYPE`, `SET|DROP NOT NULL`, `DROP DEFAULT`,
+     `.NEXTVAL` sequence defaults, `CLUSTER BY` / `DROP CLUSTERING KEY`,
+     `UNSET COMMENT`, `CREATE`/`ALTER` sequences, view pass-through, and
+     `$$`-delimited routines), and enabled Snowflake in `SchemaDiffView.tsx`
+     with `Open in SQL editor` handoff while gating in-place `Apply migration`
+     on `capabilities.ddlEditing`.
+3. **Rich Cell Value Inspectors (`value-format.ts`, `ValueDialog.tsx`, `RelationBrowser.tsx`)**:
+   - Added `buildJsonTree` (`<= 2,000` nodes, lossless >53-bit integer text,
+     Snowflake `COL:path[0]` / `COL['odd.key']` copy paths), raw even-length hex
+     `BINARY`/`VARBINARY` decoding in `decodeBinaryPreview`, and GeoJSON +
+     `WKT`/`EWKT` (`SRID=...;...`) 2D SVG projection in `parseSpatialPreview`,
+     shared across `ValueDialog.tsx` and `SnowflakeCellInspectorModal` in
+     `RelationBrowser.tsx` (with staged cell apply for `VARIANT`/`OBJECT`/`ARRAY`).
+
+Serialized host verification on `feat/snowflake-diagrams-diff-inspectors` passes:
+
+- `pnpm format:check`: PASS.
+- `pnpm check`: `1,062` Vitest tests across `73` files (`0` failed), `tsc -b`
+  (`0` errors).
+- `pnpm build`: PASS (`dist/` production bundle built cleanly).
+- `pnpm test:rust`: `845` standard Rust tests passed (`0` failed, `146` fixture
+  ignores).
+- `pnpm check:rust`: `cargo fmt --check`, `cargo check`, and strict
+  `cargo clippy --all-targets --all-features -- -D warnings` with `0` warnings.
+- Snowflake & runtime suites:
+  - `pnpm test:snowflake:helper`: `443` passed (`0` failed).
+  - `pnpm test:snowflake:process`: `315` unit (`1` ignored), `36` connection,
+    `43` process, `32` external (`426` passed, `0` failed).
+  - `pnpm test:snowflake:runtime`: `59` passed (`0` failed).
+  - `pnpm test:snowflake:qualification`: `136` passed (`0` failed).
+  - `pnpm test:native:resources`: `7` passed (`0` failed).
+  - `pnpm test:snowflake:startup`: `passed: true`, `authenticationRequests: 0`,
+    `sqlRequests: 0`.
+  - `pnpm test:git`: `6` passed (`0` failed).
+- Browser E2E: `27/27` Snowflake Playwright E2E tests passed across all `12`
+  `tests/e2e/snowflake*.spec.ts` files, including `3/3` in
+  `tests/e2e/snowflake-datagrip-workflows.spec.ts` (`Snowflake supports schema
+  diagrams, schema diff with Snowflake migration DDL, and rich
+  VARIANT/BINARY/GEOGRAPHY cell inspection`). (The `4` Docker Compose fixture
+  specs in `schema-diagram.spec.ts`, `schema-diff.spec.ts`, and
+  `snowflake-sdk-completion.spec.ts:375` require local Docker containers and run
+  in GitHub Actions `integration` CI.)
+- Hidden native macOS WebView smoke & encrypted recovery:
+  - `pnpm desktop:snowflake:smoke:build`: PASS (`entryCount: 15111`,
+    `symlinkCount: 5`, `sdkVersion: "3.4.1"`, `authenticationRequests: 0`,
+    `sqlRequests: 0`).
+  - `pnpm test:native`: `3/3` runs passed (`10` cleanup cycles each,
+    `nativeElapsedMs`: `3582`, `3555`, `3538`, `mainProcessPeakRssMiB`:
+    `103.19`, `103.20`, `102.59`).
+  - `pnpm test:native:encrypted-recovery:runner` (`11/11`) and
+    `pnpm test:native:encrypted-recovery`: `passed: true`, `errors: []`.
 
 ### Complete local Snowflake DataGrip-replacement workflows (14 November 2026, local schema-8 verification)
 
