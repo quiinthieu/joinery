@@ -41,6 +41,7 @@ struct Harness {
     commit_proxies: tokio::sync::Mutex<HashMap<String, CommitProxy>>,
     #[cfg(unix)]
     synthetic_snowflake: Option<joinery_core::snowflake_runtime::studio_fixture::Fixture>,
+    #[cfg(unix)]
     stop: Arc<tokio::sync::Notify>,
 }
 
@@ -1072,6 +1073,7 @@ async fn main() {
         commit_proxies: tokio::sync::Mutex::new(HashMap::new()),
         #[cfg(unix)]
         synthetic_snowflake,
+        #[cfg(unix)]
         stop: stop.clone(),
     });
     let origin = HeaderValue::from_static("http://127.0.0.1:1421");
