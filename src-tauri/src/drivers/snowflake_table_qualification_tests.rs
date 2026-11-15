@@ -445,7 +445,14 @@ fn ledger_tag(kind: SqlKind) -> &'static str {
             | ExplorerExactSequence
             | ExplorerExactFunction
             | ExplorerExactProcedure
-            | ExplorerDdl,
+            | ExplorerDdl
+            | ExplorerSchemaRelations
+            | ExplorerSchemaColumns
+            | ExplorerSchemaConstraints
+            | ExplorerSchemaChecks
+            | ExplorerSchemaPrimaryKeys
+            | ExplorerSchemaUniqueKeys
+            | ExplorerSchemaForeignKeys,
         ) => {
             panic!("Relation detail reads are outside the qualification ledger")
         }

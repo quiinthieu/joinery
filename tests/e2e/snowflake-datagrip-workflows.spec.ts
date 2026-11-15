@@ -5,12 +5,15 @@ import type {
   ChangePreview,
   ColumnInfo,
   ConnectionProfile,
+  DatabaseObjectSummary,
   ObjectDetails,
   PreparedPlan,
   QueryEvent,
   RelationInspection,
   RelationPreview,
   ResultInfo,
+  SchemaDiagram,
+  SchemaSnapshot,
   SessionRuntimeState,
   SnowflakeContextCatalog,
   SnowflakeGridResult,
@@ -895,6 +898,562 @@ test("Snowflake RelationBrowser supports slice paging/sort/filter, cancel recove
   );
   await page.getByRole("button", { name: "Browse relations", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Browse relations" })).toBeVisible();
+
+  expect(errors).toEqual([]);
+});
+
+test("Snowflake supports schema diagrams, schema diff with Snowflake migration DDL, and rich VARIANT/BINARY/GEOGRAPHY cell inspection", async ({
+  page,
+}) => {
+  const sessionId = "sf-diagram-diff-session";
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  let profile!: ConnectionProfile;
+  const runtimeState = (): SessionRuntimeState => ({
+    sessionId,
+    database: "SANDBOX",
+    role: "ANALYST",
+    warehouse: "WH_SMALL",
+    searchPath: ["SANDBOX.BILLIE_TESTING"],
+    contextKind: "schema",
+    activeContext: "BILLIE_TESTING",
+    contextFingerprint: "fp-sf-diagram-diff",
+    transactionMode: "autoCommit",
+    transactionState: "idle",
+    transactionObservation: {
+      status: "observed",
+      transactionId: null,
+      abortOnError: false,
+      usability: "unknown",
+    },
+    transactionControlAuthority: {
+      status: "observed",
+      revision: "tx-dd-1",
+      allowedActions: ["begin"],
+    },
+  });
+
+  const explorerObjects: DatabaseObjectSummary[] = [
+    {
+      object: { schema: "BILLIE_TESTING", name: "ORDERS", kind: "table", identity: null },
+      ownerTable: null,
+      signature: null,
+      estimatedRows: 25,
+      totalBytes: 4096,
+    },
+    {
+      object: { schema: "STAGING", name: "ORDERS", kind: "table", identity: null },
+      ownerTable: null,
+      signature: null,
+      estimatedRows: 10,
+      totalBytes: 2048,
+    },
+  ];
+
+  const diagram: SchemaDiagram = {
+    schema: "BILLIE_TESTING",
+    tables: [
+      {
+        table: { schema: "BILLIE_TESTING", name: "CUSTOMERS" },
+        kind: "BASE TABLE",
+        columns: [{ name: "ID", databaseType: "NUMBER(38, 0)", nullable: false, primaryKey: true }],
+      },
+      {
+        table: { schema: "BILLIE_TESTING", name: "ORDERS" },
+        kind: "BASE TABLE",
+        columns: [
+          { name: "ID", databaseType: "NUMBER(38, 0)", nullable: false, primaryKey: true },
+          {
+            name: "CUSTOMER_ID",
+            databaseType: "NUMBER(38, 0)",
+            nullable: false,
+            primaryKey: false,
+          },
+          { name: "PAYLOAD", databaseType: "VARIANT", nullable: true, primaryKey: false },
+        ],
+      },
+    ],
+    foreignKeys: [
+      {
+        name: "ORDERS_CUSTOMER_FK",
+        source: { schema: "BILLIE_TESTING", name: "ORDERS" },
+        columns: ["CUSTOMER_ID"],
+        target: { schema: "BILLIE_TESTING", name: "CUSTOMERS" },
+        targetColumns: ["ID"],
+      },
+    ],
+    truncated: false,
+    restricted: false,
+  };
+
+  const makeSnapshot = (schema: string): SchemaSnapshot =>
+    schema === "STAGING"
+      ? {
+          engine: "snowflake",
+          serverVersion: "synthetic-8.42",
+          database: "SANDBOX",
+          schema: "STAGING",
+          role: "ANALYST",
+          tables: [
+            {
+              name: "ORDERS",
+              kind: "table",
+              comment: null,
+              partitionKey: null,
+              viewDefinition: null,
+              columns: [
+                {
+                  name: "ID",
+                  dataType: "NUMBER(38, 0)",
+                  nullable: false,
+                  defaultExpression: null,
+                  identity: null,
+                  generated: null,
+                  ordinalPosition: 1,
+                },
+              ],
+              constraints: [],
+              indexes: [],
+              triggers: [],
+            },
+          ],
+          routines: [],
+          sequences: [],
+          unsupportedObjects: [],
+          truncated: false,
+          restricted: false,
+        }
+      : {
+          engine: "snowflake",
+          serverVersion: "synthetic-8.42",
+          database: "SANDBOX",
+          schema: "BILLIE_TESTING",
+          role: "ANALYST",
+          tables: [
+            {
+              name: "ORDERS",
+              kind: "table",
+              comment: "Order ledger",
+              partitionKey: "ID",
+              viewDefinition: null,
+              columns: [
+                {
+                  name: "ID",
+                  dataType: "NUMBER(38, 0)",
+                  nullable: false,
+                  defaultExpression: null,
+                  identity: null,
+                  generated: null,
+                  ordinalPosition: 1,
+                },
+                {
+                  name: "PAYLOAD",
+                  dataType: "VARIANT",
+                  nullable: true,
+                  defaultExpression: null,
+                  identity: null,
+                  generated: null,
+                  ordinalPosition: 2,
+                },
+              ],
+              constraints: [],
+              indexes: [],
+              triggers: [],
+            },
+          ],
+          routines: [],
+          sequences: [
+            {
+              name: "ORDER_SEQ",
+              dataType: "NUMBER",
+              startValue: "1",
+              minValue: "1",
+              maxValue: "999999",
+              incrementBy: "1",
+              cacheSize: "1",
+              cycle: false,
+            },
+          ],
+          unsupportedObjects: [
+            {
+              name: "LIVE_EVENTS",
+              objectType: "DYNAMIC TABLE",
+              reason: "Snowflake dynamic tables cannot be migrated via standard CREATE TABLE DDL",
+            },
+          ],
+          truncated: false,
+          restricted: false,
+        };
+
+  const ordersDetails: ObjectDetails = {
+    object: { schema: "BILLIE_TESTING", name: "ORDERS", kind: "table", identity: null },
+    ownerTable: null,
+    comment: "Order ledger",
+    ddl: {
+      status: "available",
+      ddl: 'CREATE TABLE "SANDBOX"."BILLIE_TESTING"."ORDERS" ("ID" NUMBER(38,0), "PAYLOAD" VARIANT);',
+      truncated: false,
+    },
+    indexes: [],
+    constraints: [],
+    triggers: [],
+    uses: [],
+    usedBy: [],
+    routine: null,
+    sequence: null,
+    trigger: null,
+    storage: null,
+  };
+
+  const browseCatalog: BrowseCatalog = {
+    revision: "cat-dd-1",
+    database: "SANDBOX",
+    relations: [
+      {
+        targetId: "orders-rich-target",
+        database: "SANDBOX",
+        table: { schema: "BILLIE_TESTING", name: "ORDERS" },
+        tableType: "BASE TABLE",
+        traits: {
+          transient: false,
+          temporary: false,
+          iceberg: false,
+          dynamic: false,
+          hybrid: false,
+          immutable: false,
+        },
+        availability: "available",
+      },
+    ],
+  };
+
+  const richInspection: RelationInspection = {
+    revision: "insp-dd-1",
+    targetId: "orders-rich-target",
+    database: "SANDBOX",
+    table: { schema: "BILLIE_TESTING", name: "ORDERS" },
+    constraints: "notFetched",
+    columns: [
+      {
+        name: "PAYLOAD",
+        ordinal: 1,
+        fullType: "VARIANT",
+        dataType: "VARIANT",
+        dataTypeAlias: null,
+        kind: "column",
+        resultKind: "json",
+        nullable: true,
+        defaultExpression: null,
+        descriptorDefaultExpression: null,
+        writeDefaultExpression: null,
+        writeDefaultStatus: "notReported",
+        comment: null,
+        characterMaximumLength: null,
+        characterOctetLength: null,
+        numericPrecision: null,
+        numericPrecisionRadix: null,
+        numericScale: null,
+        identity: {
+          isIdentity: false,
+          generation: null,
+          start: null,
+          increment: null,
+          ordered: null,
+        },
+        expression: null,
+      },
+      {
+        name: "RAW_HASH",
+        ordinal: 2,
+        fullType: "BINARY(7)",
+        dataType: "BINARY",
+        dataTypeAlias: null,
+        kind: "column",
+        resultKind: "binary",
+        nullable: true,
+        defaultExpression: null,
+        descriptorDefaultExpression: null,
+        writeDefaultExpression: null,
+        writeDefaultStatus: "notReported",
+        comment: null,
+        characterMaximumLength: null,
+        characterOctetLength: null,
+        numericPrecision: null,
+        numericPrecisionRadix: null,
+        numericScale: null,
+        identity: {
+          isIdentity: false,
+          generation: null,
+          start: null,
+          increment: null,
+          ordered: null,
+        },
+        expression: null,
+      },
+      {
+        name: "REGION_GEO",
+        ordinal: 3,
+        fullType: "GEOGRAPHY",
+        dataType: "GEOGRAPHY",
+        dataTypeAlias: null,
+        kind: "column",
+        resultKind: "text",
+        nullable: true,
+        defaultExpression: null,
+        descriptorDefaultExpression: null,
+        writeDefaultExpression: null,
+        writeDefaultStatus: "notReported",
+        comment: null,
+        characterMaximumLength: null,
+        characterOctetLength: null,
+        numericPrecision: null,
+        numericPrecisionRadix: null,
+        numericScale: null,
+        identity: {
+          isIdentity: false,
+          generation: null,
+          start: null,
+          increment: null,
+          ordered: null,
+        },
+        expression: null,
+      },
+    ],
+  };
+
+  const richPreview: RelationPreview = {
+    columns: [
+      {
+        id: "c0",
+        name: "PAYLOAD",
+        databaseType: "VARIANT",
+        kind: "json",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+      {
+        id: "c1",
+        name: "RAW_HASH",
+        databaseType: "BINARY(7)",
+        kind: "binary",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+      {
+        id: "c2",
+        name: "REGION_GEO",
+        databaseType: "TEXT",
+        kind: "text",
+        nullable: true,
+        primaryKey: false,
+        foreignKey: false,
+        editable: false,
+        insertable: false,
+        hasDefault: false,
+      },
+    ],
+    rows: [
+      [
+        '{"customer":{"orders":[{"id":777}]}}',
+        "4A6F696E657279",
+        '{"type":"Polygon","coordinates":[[[-122.5,37.7],[-122.3,37.7],[-122.3,37.8],[-122.5,37.8],[-122.5,37.7]]]}',
+      ],
+    ],
+    truncated: false,
+    editSnapshotId: "snap-dd-1",
+  };
+
+  await page.route(`${rpc}*`, async (route) => {
+    const command = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    const args = route.request().postDataJSON();
+    let result: unknown;
+    switch (command) {
+      case "save_profile":
+        profile = args.profile;
+        result = profile;
+        break;
+      case "prepare_connection":
+        result = "sf-dd-attempt";
+        break;
+      case "connect_prepared":
+        result = {
+          id: sessionId,
+          connectionId: profile.id,
+          engine: "snowflake",
+          serverVersion: "synthetic-8.42",
+          latencyMs: 1,
+          encrypted: true,
+          capabilities: {
+            sql: true,
+            transactions: false,
+            explicitTransactionControls: true,
+            cancellation: true,
+            tableBrowsing: false,
+            relationBrowsing: true,
+            objectExplorer: true,
+            schemaDiagram: true,
+            schemaDiff: true,
+            ddlEditing: false,
+            tableEditing: false,
+            tableFiltering: false,
+            processes: false,
+            snowflakeReviewedDml: true,
+            snowflakeReviewedDdl: true,
+            snowflakeGridEditing: true,
+          },
+        };
+        break;
+      case "session_contexts":
+        result = {
+          state: runtimeState(),
+          available: ["BILLIE_TESTING", "STAGING"],
+          revision: "schema-dd-1",
+        };
+        break;
+      case "snowflake_session_contexts":
+        result = {
+          state: runtimeState(),
+          revision: "ctx-dd-1",
+          availableRoles: ["ANALYST"],
+          availableWarehouses: ["WH_SMALL"],
+          availableDatabases: ["SANDBOX"],
+          availableSchemas: ["BILLIE_TESTING", "STAGING"],
+        };
+        break;
+      case "completion_catalog":
+        result = {
+          revision: "comp-dd-1",
+          identity: {
+            database: "SANDBOX",
+            role: "ANALYST",
+            searchPath: ["SANDBOX.BILLIE_TESTING"],
+            contextFingerprint: "fp-sf-diagram-diff",
+            caseSensitiveTableNames: true,
+          },
+          tables: [],
+          unqualifiedTables: [],
+        };
+        break;
+      case "database_objects":
+        result = explorerObjects;
+        break;
+      case "schema_diagram":
+        result = diagram;
+        break;
+      case "schema_snapshot":
+        result = makeSnapshot(args.schema);
+        break;
+      case "object_details":
+        result = ordersDetails;
+        break;
+      case "relation_catalog":
+        result = browseCatalog;
+        break;
+      case "inspect_relation":
+        result = richInspection;
+        break;
+      case "preview_relation":
+        result = richPreview;
+        break;
+      case "health":
+        result = 1;
+        break;
+      default:
+        // Forward compare_schemas, generate_migration_ddl, and generate_schema_ddl to the real Rust test-harness!
+        await route.continue();
+        return;
+    }
+    await route.fulfill({ json: { result } });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Connect a database" }).click();
+  await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("externalBrowser");
+  await page.getByLabel("Connection name", { exact: true }).fill("Snowflake Architect");
+  await page
+    .getByLabel("Snowflake account hostname")
+    .fill("fixture.invalid.snowflakecomputing.com");
+  await page.getByLabel("Database", { exact: true }).fill("SANDBOX");
+  await page.getByLabel("Username", { exact: true }).fill("ANALYST");
+  await page.getByLabel("Role", { exact: true }).fill("ANALYST");
+  await page.getByLabel("Warehouse", { exact: true }).fill("WH_SMALL");
+  await page.getByLabel("Schema", { exact: true }).fill("BILLIE_TESTING");
+  await page.getByLabel("Safe Mode").selectOption("guard");
+  await page.getByRole("checkbox", { name: /Allow separately reviewed single INSERT/ }).check();
+  await page.getByRole("button", { name: "Save and connect", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // Load Snowflake objects in sidebar to expose schema actions
+  await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Open schema diagram for BILLIE_TESTING", exact: true }),
+  ).toBeVisible();
+
+  // 1. Snowflake Schema Diagram + click node -> ObjectInspectorView
+  await page
+    .getByRole("button", { name: "Open schema diagram for BILLIE_TESTING", exact: true })
+    .click();
+  await expect(page.locator(".diagram-view")).toContainText("2 relations · 1 foreign keys");
+  await page.getByRole("button", { name: "ORDERS, 3 columns", exact: true }).click();
+  await expect(page.getByLabel("Object DDL")).toContainText(
+    'CREATE TABLE "SANDBOX"."BILLIE_TESTING"."ORDERS"',
+  );
+
+  // 2. Snowflake Schema Diff + real Rust generate_migration_ddl + Open in SQL editor
+  await page.getByRole("button", { name: "Compare schema STAGING", exact: true }).click();
+  await expect(page.getByText(/Unsupported objects disclosed \(1\)/)).toBeVisible();
+  await expect(page.getByText(/LIVE_EVENTS/)).toBeVisible();
+  await page.getByRole("button", { name: "Migrate Left → Right DDL", exact: true }).click();
+  const ddlPreview = page.getByTestId("schema-ddl-preview");
+  await expect(ddlPreview).toContainText(
+    'ALTER TABLE "STAGING"."ORDERS" ADD COLUMN "PAYLOAD" VARIANT',
+  );
+  await expect(ddlPreview).toContainText('ALTER TABLE "STAGING"."ORDERS" CLUSTER BY (ID)');
+  await expect(ddlPreview).toContainText('CREATE SEQUENCE "STAGING"."ORDER_SEQ"');
+  await expect(
+    ddlPreview.getByRole("button", { name: "Review and apply migration" }),
+  ).toBeDisabled();
+  await ddlPreview.getByRole("button", { name: "Open generated DDL in SQL editor" }).click();
+  await expect(page.getByRole("textbox", { name: "SQL editor" })).toContainText(
+    'ALTER TABLE "STAGING"."ORDERS" CLUSTER BY (ID)',
+  );
+
+  // 3. Rich Cell Value Inspector inside RelationBrowser (VARIANT :path tree, BINARY hex, GEOGRAPHY SVG)
+  await page.getByRole("button", { name: "Browse relations", exact: true }).click();
+  const browseDialog = page.getByRole("dialog", { name: "Browse relations" });
+  await browseDialog.getByLabel("Relation", { exact: true }).selectOption("orders-rich-target");
+  await browseDialog.getByRole("button", { name: "Inspect relation", exact: true }).click();
+  await browseDialog.getByRole("button", { name: "Preview rows", exact: true }).click();
+  await expect(
+    browseDialog.getByRole("table", { name: "Editable Snowflake preview" }),
+  ).toBeVisible();
+
+  await browseDialog.getByRole("button", { name: "Inspect row 1 PAYLOAD", exact: true }).click();
+  await expect(page.getByTestId("json-tree-viewer")).toContainText("PAYLOAD:customer.orders[0].id");
+  await page.getByRole("button", { name: "Format JSON", exact: true }).click();
+  await page.getByRole("button", { name: "Apply to staged cell", exact: true }).click();
+  await expect(
+    browseDialog.getByRole("button", { name: "Review 1 change…", exact: true }),
+  ).toBeEnabled();
+
+  await browseDialog.getByRole("button", { name: "Inspect row 1 RAW_HASH", exact: true }).click();
+  await expect(page.getByTestId("binary-hex-viewer")).toContainText("|Joinery|");
+  await page.getByRole("button", { name: "Back to preview", exact: true }).click();
+
+  await browseDialog.getByRole("button", { name: "Inspect row 1 REGION_GEO", exact: true }).click();
+  await expect(page.getByTestId("spatial-viewer")).toContainText("Polygon");
+  await expect(page.getByTestId("spatial-svg-preview")).toBeVisible();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
 
   expect(errors).toEqual([]);
 });

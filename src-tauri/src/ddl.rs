@@ -173,7 +173,42 @@ fn format_column_ddl(
 ) -> String {
     let col_ident = quote_engine_identifier(engine, &col.name);
     match engine {
-        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+        EngineKind::Snowflake => {
+            let mut parts = vec![col_ident, col.data_type.clone()];
+            if let Some(gen_kind) = &col.generated
+                && !gen_kind.trim().is_empty()
+            {
+                let expr = col
+                    .default_expression
+                    .as_deref()
+                    .map(|e| retarget_schema_sql(e, engine, source_schema, target_schema))
+                    .unwrap_or_else(|| "NULL".into());
+                parts.push(format!("AS ({expr})"));
+            } else if let Some(id_mode) = &col.identity
+                && !id_mode.trim().is_empty()
+            {
+                let trimmed = id_mode.trim();
+                if trimmed.eq_ignore_ascii_case("IDENTITY")
+                    || trimmed.eq_ignore_ascii_case("AUTOINCREMENT")
+                {
+                    parts.push("IDENTITY".into());
+                } else {
+                    parts.push(format!("IDENTITY {trimmed}"));
+                }
+            } else if let Some(def) = &col.default_expression
+                && !def.trim().is_empty()
+            {
+                parts.push(format!(
+                    "DEFAULT {}",
+                    retarget_schema_sql(def, engine, source_schema, target_schema)
+                ));
+            }
+            if !col.nullable {
+                parts.push("NOT NULL".into());
+            }
+            parts.join(" ")
+        }
+        EngineKind::Postgres | EngineKind::Redis => {
             let mut parts = vec![col_ident, col.data_type.clone()];
             if let Some(gen_kind) = &col.generated
                 && !gen_kind.trim().is_empty()
@@ -309,6 +344,16 @@ fn build_create_sequence_stmt(
 ) -> DdlStatement {
     let qualified = quote_qualified(engine, target_schema, &seq.name);
     let sql = match engine {
+        EngineKind::Snowflake => {
+            let mut parts = vec![format!("CREATE SEQUENCE {qualified}")];
+            if !seq.start_value.is_empty() {
+                parts.push(format!("START WITH {}", seq.start_value));
+            }
+            if !seq.increment_by.is_empty() {
+                parts.push(format!("INCREMENT BY {}", seq.increment_by));
+            }
+            format!("{};", parts.join(" "))
+        }
         EngineKind::Mysql => {
             let mut parts = vec![format!("CREATE SEQUENCE {qualified}")];
             if !seq.increment_by.is_empty() {
@@ -377,6 +422,14 @@ fn build_alter_sequence_stmt(
 ) -> DdlStatement {
     let qualified = quote_qualified(engine, target_schema, &seq.name);
     let sql = match engine {
+        EngineKind::Snowflake => {
+            let inc = if seq.increment_by.is_empty() {
+                "1"
+            } else {
+                seq.increment_by.as_str()
+            };
+            format!("ALTER SEQUENCE {qualified} SET INCREMENT BY {inc};")
+        }
         EngineKind::Mysql => {
             let mut parts = vec![format!("ALTER SEQUENCE {qualified}")];
             if !seq.increment_by.is_empty() {
@@ -473,7 +526,11 @@ fn build_create_table_stmts(
     if let Some(part_key) = &table.partition_key
         && !part_key.trim().is_empty()
     {
-        suffix.push_str(&format!(" PARTITION BY {}", part_key.trim()));
+        if engine == EngineKind::Snowflake {
+            suffix.push_str(&format!(" CLUSTER BY ({})", part_key.trim()));
+        } else {
+            suffix.push_str(&format!(" PARTITION BY {}", part_key.trim()));
+        }
     }
     if engine == EngineKind::Mysql
         && let Some(comment) = &table.comment
@@ -772,7 +829,9 @@ fn build_create_view_stmts(
     let retargeted = retarget_schema_sql(raw_def, engine, source_schema, target_schema);
     let body = retargeted.trim().trim_end_matches(';').trim_end();
     let qualified = quote_qualified(engine, target_schema, &view.name);
-    let create_sql = if view.kind == DatabaseObjectKind::MaterializedView {
+    let create_sql = if body.to_ascii_uppercase().starts_with("CREATE ") {
+        ensure_semicolon(body)
+    } else if view.kind == DatabaseObjectKind::MaterializedView {
         format!("CREATE MATERIALIZED VIEW {qualified} AS {body};")
     } else {
         format!("CREATE OR REPLACE VIEW {qualified} AS {body};")
@@ -884,6 +943,42 @@ fn build_create_routine_stmts(
                     header.push_str(&format!(" COMMENT {}", quote_sql_literal(comment)));
                 }
                 ensure_semicolon(&format!("{header} {retargeted}"))
+            }
+        }
+        EngineKind::Snowflake => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let kind_kw = if r.kind == DatabaseObjectKind::Procedure {
+                    "PROCEDURE"
+                } else {
+                    "FUNCTION"
+                };
+                let ret_clause = if r.kind == DatabaseObjectKind::Function {
+                    format!(" RETURNS {}", r.return_type.as_deref().unwrap_or("VARCHAR"))
+                } else {
+                    String::new()
+                };
+                let vol_clause = r
+                    .volatility
+                    .as_deref()
+                    .filter(|v| !v.is_empty() && r.kind == DatabaseObjectKind::Function)
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default();
+                format!(
+                    "CREATE OR REPLACE {kind_kw} {qualified}({}){ret_clause} LANGUAGE {}{vol_clause} AS $$\n{}\n$$;",
+                    r.arguments,
+                    if r.language.is_empty() {
+                        "SQL"
+                    } else {
+                        &r.language
+                    },
+                    retargeted.trim()
+                )
             }
         }
         _ => {
@@ -1683,7 +1778,19 @@ pub fn generate_migration_ddl(
                 statements.push(build_create_sequence_stmt(r_seq, engine, dst_schema));
             }
             Some(l_seq) if format_sequence_spec(l_seq) != format_sequence_spec(r_seq) => {
-                statements.push(build_alter_sequence_stmt(r_seq, engine, dst_schema));
+                if engine == EngineKind::Snowflake {
+                    if l_seq.increment_by != r_seq.increment_by {
+                        statements.push(build_alter_sequence_stmt(r_seq, engine, dst_schema));
+                    }
+                    if l_seq.start_value != r_seq.start_value {
+                        warnings.push(format!(
+                            "Sequence '{}' changed START WITH ({} -> {}); Snowflake ALTER SEQUENCE cannot reset START WITH in place.",
+                            r_seq.name, l_seq.start_value, r_seq.start_value
+                        ));
+                    }
+                } else {
+                    statements.push(build_alter_sequence_stmt(r_seq, engine, dst_schema));
+                }
             }
             _ => {}
         }
@@ -1784,6 +1891,113 @@ pub fn generate_migration_ddl(
                         destructive: false,
                     });
                 }
+                EngineKind::Snowflake => {
+                    if l_col.data_type != r_col.data_type {
+                        statements.push(DdlStatement {
+                            sql: format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} SET DATA TYPE {};",
+                                r_col.data_type
+                            ),
+                            description: format!(
+                                "Change type of {}.{} to {}",
+                                r_tbl.name, r_col.name, r_col.data_type
+                            ),
+                            object_kind: r_tbl.kind,
+                            object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                            destructive: false,
+                        });
+                    }
+                    if l_col.nullable != r_col.nullable {
+                        let clause = if r_col.nullable {
+                            "DROP NOT NULL"
+                        } else {
+                            "SET NOT NULL"
+                        };
+                        statements.push(DdlStatement {
+                            sql: format!(
+                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} {clause};"
+                            ),
+                            description: format!("{clause} on {}.{}", r_tbl.name, r_col.name),
+                            object_kind: r_tbl.kind,
+                            object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                            destructive: false,
+                        });
+                    }
+                    if l_col.identity != r_col.identity {
+                        match (&l_col.identity, &r_col.identity) {
+                            (Some(_), None) => statements.push(DdlStatement {
+                                sql: format!(
+                                    "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} DROP DEFAULT;"
+                                ),
+                                description: format!(
+                                    "Drop identity default on {}.{}",
+                                    r_tbl.name, r_col.name
+                                ),
+                                object_kind: r_tbl.kind,
+                                object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                                destructive: false,
+                            }),
+                            (_, Some(_)) => warnings.push(format!(
+                                "Column '{}.{}' adds or modifies IDENTITY; Snowflake cannot add IDENTITY to an existing column in place.",
+                                r_tbl.name, r_col.name
+                            )),
+                            (None, None) => {}
+                        }
+                    }
+                    if r_col.generated.is_none() && r_col.identity.is_none() {
+                        let l_def = l_col
+                            .default_expression
+                            .as_deref()
+                            .map(|d| normalize_self_schema_sql(d, engine, left_schema));
+                        let r_def = r_col
+                            .default_expression
+                            .as_deref()
+                            .map(|d| normalize_self_schema_sql(d, engine, right_schema));
+                        if l_def != r_def {
+                            match &r_col.default_expression {
+                                Some(def) if !def.trim().is_empty() => {
+                                    let retargeted_def =
+                                        retarget_schema_sql(def, engine, right_schema, dst_schema);
+                                    if retargeted_def
+                                        .trim()
+                                        .to_ascii_uppercase()
+                                        .ends_with(".NEXTVAL")
+                                    {
+                                        statements.push(DdlStatement {
+                                            sql: format!(
+                                                "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} SET DEFAULT {retargeted_def};"
+                                            ),
+                                            description: format!(
+                                                "Update sequence default on {}.{}",
+                                                r_tbl.name, r_col.name
+                                            ),
+                                            object_kind: r_tbl.kind,
+                                            object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                                            destructive: false,
+                                        });
+                                    } else {
+                                        warnings.push(format!(
+                                            "Column '{}.{}' changed DEFAULT expression; Snowflake ALTER COLUMN SET DEFAULT only supports <sequence>.NEXTVAL on existing columns.",
+                                            r_tbl.name, r_col.name
+                                        ));
+                                    }
+                                }
+                                _ => statements.push(DdlStatement {
+                                    sql: format!(
+                                        "ALTER TABLE {qualified_table} ALTER COLUMN {quoted_col} DROP DEFAULT;"
+                                    ),
+                                    description: format!(
+                                        "Drop default on {}.{}",
+                                        r_tbl.name, r_col.name
+                                    ),
+                                    object_kind: r_tbl.kind,
+                                    object_name: format!("{}.{}", r_tbl.name, r_col.name),
+                                    destructive: false,
+                                }),
+                            }
+                        }
+                    }
+                }
                 _ => {
                     if l_col.data_type != r_col.data_type {
                         statements.push(DdlStatement {
@@ -1879,13 +2093,37 @@ pub fn generate_migration_ddl(
             }
         }
 
-        // 4d: Update table comment if changed
+        // 4d: Update clustering key on Snowflake & table comment if changed
+        if engine == EngineKind::Snowflake && l_tbl.partition_key != r_tbl.partition_key {
+            let sql = match &r_tbl.partition_key {
+                Some(ck) if !ck.trim().is_empty() => {
+                    format!("ALTER TABLE {qualified_table} CLUSTER BY ({});", ck.trim())
+                }
+                _ => format!("ALTER TABLE {qualified_table} DROP CLUSTERING KEY;"),
+            };
+            statements.push(DdlStatement {
+                sql,
+                description: format!("Update clustering key on table {}", r_tbl.name),
+                object_kind: r_tbl.kind,
+                object_name: r_tbl.name.clone(),
+                destructive: false,
+            });
+        }
         if l_tbl.comment != r_tbl.comment {
             let sql = match engine {
                 EngineKind::Mysql => format!(
                     "ALTER TABLE {qualified_table} COMMENT = {};",
                     quote_sql_literal(r_tbl.comment.as_deref().unwrap_or(""))
                 ),
+                EngineKind::Snowflake => match &r_tbl.comment {
+                    Some(c) if !c.is_empty() => {
+                        format!(
+                            "COMMENT ON TABLE {qualified_table} IS {};",
+                            quote_sql_literal(c)
+                        )
+                    }
+                    _ => format!("ALTER TABLE {qualified_table} UNSET COMMENT;"),
+                },
                 _ => match &r_tbl.comment {
                     Some(c) if !c.is_empty() => {
                         format!(
@@ -4710,6 +4948,159 @@ mod tests {
             .unwrap_err()
             .code,
             ErrorCode::Unsupported
+        );
+    }
+
+    #[test]
+    fn snowflake_schema_and_migration_ddl_use_snowflake_syntax() {
+        let left = SchemaSnapshot {
+            engine: EngineKind::Snowflake,
+            server_version: "8.42.0".into(),
+            database: "DB".into(),
+            schema: "PUBLIC".into(),
+            role: "ANALYST".into(),
+            tables: vec![
+                SnapshotTable {
+                    name: "ORDERS".into(),
+                    kind: DatabaseObjectKind::Table,
+                    comment: Some("Initial ledger".into()),
+                    partition_key: Some("CREATED_AT".into()),
+                    view_definition: None,
+                    columns: vec![
+                        SnapshotColumn {
+                            name: "ID".into(),
+                            data_type: "NUMBER(38, 0)".into(),
+                            nullable: false,
+                            default_expression: None,
+                            identity: Some("START 1 INCREMENT 1".into()),
+                            generated: None,
+                            ordinal_position: 1,
+                        },
+                        SnapshotColumn {
+                            name: "NOTES".into(),
+                            data_type: "VARCHAR(100)".into(),
+                            nullable: true,
+                            default_expression: Some("'pending'".into()),
+                            identity: None,
+                            generated: None,
+                            ordinal_position: 2,
+                        },
+                        SnapshotColumn {
+                            name: "DOUBLE_ID".into(),
+                            data_type: "NUMBER(38, 0)".into(),
+                            nullable: true,
+                            default_expression: Some("\"ID\" * 2".into()),
+                            identity: None,
+                            generated: Some("VIRTUAL".into()),
+                            ordinal_position: 3,
+                        },
+                    ],
+                    constraints: vec![ConstraintInfo {
+                        name: "ORDERS_PK".into(),
+                        kind: ConstraintKind::PrimaryKey,
+                        columns: vec!["ID".into()],
+                        target: None,
+                        target_columns: vec![],
+                        definition: "PRIMARY KEY (\"ID\")".into(),
+                    }],
+                    indexes: vec![],
+                    triggers: vec![],
+                },
+                SnapshotTable {
+                    name: "ACTIVE_ORDERS".into(),
+                    kind: DatabaseObjectKind::View,
+                    comment: None,
+                    partition_key: None,
+                    view_definition: Some(
+                        "CREATE OR REPLACE VIEW \"PUBLIC\".\"ACTIVE_ORDERS\" AS SELECT \"ID\" FROM \"PUBLIC\".\"ORDERS\"".into(),
+                    ),
+                    columns: vec![],
+                    constraints: vec![],
+                    indexes: vec![],
+                    triggers: vec![],
+                },
+            ],
+            routines: vec![SnapshotRoutine {
+                name: "CALC_TAX".into(),
+                kind: DatabaseObjectKind::Function,
+                identity_arguments: "NUMBER".into(),
+                arguments: "AMOUNT NUMBER".into(),
+                return_type: Some("NUMBER(18, 2)".into()),
+                language: "SQL".into(),
+                volatility: Some("IMMUTABLE".into()),
+                security_definer: false,
+                definition: Some(
+                    "CREATE OR REPLACE FUNCTION \"PUBLIC\".\"CALC_TAX\"(AMOUNT NUMBER) RETURNS NUMBER(18, 2) AS 'AMOUNT * 0.1'".into(),
+                ),
+                comment: None,
+            }],
+            sequences: vec![SnapshotSequence {
+                name: "ORDER_SEQ".into(),
+                data_type: "NUMBER".into(),
+                start_value: "1".into(),
+                min_value: "1".into(),
+                max_value: "999999".into(),
+                increment_by: "1".into(),
+                cache_size: String::new(),
+                cycle: false,
+            }],
+            unsupported_objects: vec![],
+            truncated: false,
+            restricted: false,
+        };
+
+        let full = generate_schema_ddl(&left, Some("STAGING")).unwrap();
+        assert!(
+            full.script
+                .contains("CREATE SEQUENCE \"STAGING\".\"ORDER_SEQ\" START WITH 1 INCREMENT BY 1;")
+        );
+        assert!(
+            full.script
+                .contains("\"ID\" NUMBER(38, 0) IDENTITY START 1 INCREMENT 1 NOT NULL")
+        );
+        assert!(
+            full.script
+                .contains("\"DOUBLE_ID\" NUMBER(38, 0) AS (\"ID\" * 2)")
+        );
+        assert!(full.script.contains("CLUSTER BY (CREATED_AT);"));
+        assert!(
+            full.script.contains(
+                "CREATE OR REPLACE VIEW \"STAGING\".\"ACTIVE_ORDERS\" AS SELECT \"ID\" FROM \"STAGING\".\"ORDERS\";"
+            )
+        );
+        assert!(!full.script.contains("AS CREATE OR REPLACE VIEW"));
+
+        let mut right = left.clone();
+        right.sequences[0].increment_by = "5".into();
+        right.tables[0].comment = None;
+        right.tables[0].partition_key = None;
+        right.tables[0].columns[1].data_type = "VARCHAR(250)".into();
+        right.tables[0].columns[1].nullable = false;
+        right.tables[0].columns[1].default_expression =
+            Some("\"PUBLIC\".\"ORDER_SEQ\".NEXTVAL".into());
+
+        let mig = generate_migration_ddl(&left, &right, None).unwrap();
+        assert!(
+            mig.script
+                .contains("ALTER SEQUENCE \"PUBLIC\".\"ORDER_SEQ\" SET INCREMENT BY 5;")
+        );
+        assert!(mig.script.contains(
+            "ALTER TABLE \"PUBLIC\".\"ORDERS\" ALTER COLUMN \"NOTES\" SET DATA TYPE VARCHAR(250);"
+        ));
+        assert!(
+            mig.script
+                .contains("ALTER TABLE \"PUBLIC\".\"ORDERS\" ALTER COLUMN \"NOTES\" SET NOT NULL;")
+        );
+        assert!(mig.script.contains(
+            "ALTER TABLE \"PUBLIC\".\"ORDERS\" ALTER COLUMN \"NOTES\" SET DEFAULT \"PUBLIC\".\"ORDER_SEQ\".NEXTVAL;"
+        ));
+        assert!(
+            mig.script
+                .contains("ALTER TABLE \"PUBLIC\".\"ORDERS\" DROP CLUSTERING KEY;")
+        );
+        assert!(
+            mig.script
+                .contains("ALTER TABLE \"PUBLIC\".\"ORDERS\" UNSET COMMENT;")
         );
     }
 }

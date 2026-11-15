@@ -50,6 +50,13 @@ pub(crate) enum ReadKind {
     ExplorerExactFunction,
     ExplorerExactProcedure,
     ExplorerDdl,
+    ExplorerSchemaRelations,
+    ExplorerSchemaColumns,
+    ExplorerSchemaConstraints,
+    ExplorerSchemaChecks,
+    ExplorerSchemaPrimaryKeys,
+    ExplorerSchemaUniqueKeys,
+    ExplorerSchemaForeignKeys,
 }
 
 /// An immutable production read. Only closed factories below construct it;
@@ -383,6 +390,85 @@ pub(crate) fn explorer_routine_ddl_read(
         1,
         explorer::DETAIL_MAX_BYTES as u64,
     ))
+}
+
+pub(crate) fn explorer_schema_relations_read(
+    context: &LiveContext,
+    schema: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerSchemaRelations,
+        explorer::schema_relations_sql(context, schema)?,
+        (explorer::SCHEMA_RELATION_LIMIT + 1) as u64,
+        explorer::SCHEMA_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_schema_columns_read(
+    context: &LiveContext,
+    schema: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    Ok(ReadSpec::bounded(
+        ReadKind::ExplorerSchemaColumns,
+        explorer::schema_columns_sql(context, schema)?,
+        (explorer::SCHEMA_COLUMN_LIMIT + 1) as u64,
+        explorer::SCHEMA_MAX_BYTES as u64,
+    ))
+}
+
+pub(crate) fn explorer_schema_constraints_read(
+    context: &LiveContext,
+    schema: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    let db = context.database.as_deref().unwrap_or_default().to_owned();
+    let mut read = ReadSpec::bounded(
+        ReadKind::ExplorerSchemaConstraints,
+        explorer::schema_constraints_sql(context, schema)?,
+        (explorer::SCHEMA_CONSTRAINT_LIMIT + 1) as u64,
+        explorer::SCHEMA_MAX_BYTES as u64,
+    );
+    read.binds = vec![db.into(), schema.to_owned().into()];
+    Ok(read)
+}
+
+pub(crate) fn explorer_schema_checks_read(
+    context: &LiveContext,
+    schema: &str,
+) -> AppResult<ReadSpec> {
+    use super::snowflake_explorer as explorer;
+    let db = context.database.as_deref().unwrap_or_default().to_owned();
+    let mut read = ReadSpec::bounded(
+        ReadKind::ExplorerSchemaChecks,
+        explorer::schema_checks_sql(context, schema)?,
+        (explorer::SCHEMA_CHECK_LIMIT + 1) as u64,
+        explorer::SCHEMA_MAX_BYTES as u64,
+    );
+    read.binds = vec![db.into(), schema.to_owned().into()];
+    Ok(read)
+}
+
+pub(crate) fn explorer_schema_mapping_reads(
+    context: &LiveContext,
+    schema: &str,
+) -> AppResult<[ReadSpec; 3]> {
+    use super::snowflake_explorer as explorer;
+    use crate::relation_inspection::RelationKeyConstraintKind as Kind;
+    let make = |kind, tag| -> AppResult<ReadSpec> {
+        Ok(ReadSpec::bounded(
+            tag,
+            explorer::schema_mapping_sql(context, schema, kind)?,
+            (explorer::SCHEMA_KEY_LIMIT + 1) as u64,
+            explorer::SCHEMA_MAX_BYTES as u64,
+        ))
+    };
+    Ok([
+        make(Kind::PrimaryKey, ReadKind::ExplorerSchemaPrimaryKeys)?,
+        make(Kind::Unique, ReadKind::ExplorerSchemaUniqueKeys)?,
+        make(Kind::ForeignKey, ReadKind::ExplorerSchemaForeignKeys)?,
+    ])
 }
 
 // CURRENT_SESSION is VARCHAR, not a numeric identity. CURRENT_SECONDARY_ROLES

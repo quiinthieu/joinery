@@ -9,24 +9,37 @@ use super::snowflake_browsing::{self as browsing, BrowseRelation};
 use super::snowflake_metadata::{self as metadata, LiveContext, MetadataResult};
 use crate::domain::{
     AppError, AppResult, ConstraintInfo, ConstraintKind, DatabaseObjectKind, DatabaseObjectRef,
-    DatabaseObjectSummary, DependencyEdge, ErrorCode, ObjectDdlStatus, ObjectDetails, RoutineInfo,
-    SequenceInfo, TableRef, TableStorageStats,
+    DatabaseObjectSummary, DependencyEdge, DiagramColumn, DiagramKeyRow, EngineKind, ErrorCode,
+    ObjectDdlStatus, ObjectDetails, RoutineInfo, SchemaDiagram, SchemaSnapshot, SequenceInfo,
+    SnapshotColumn, SnapshotRoutine, SnapshotSequence, SnapshotTable, TableRef, TableStorageStats,
+    UnsupportedSchemaObject,
 };
 use crate::relation_inspection::{
     RelationAvailability, RelationCheckConstraint, RelationConstraintMapping,
     RelationKeyConstraint, RelationKeyConstraintKind, RelationTraits,
+};
+use crate::schema_diff::{
+    MAX_SNAPSHOT_COLUMNS, MAX_SNAPSHOT_CONSTRAINTS, MAX_SNAPSHOT_RELATIONS, MAX_SNAPSHOT_ROUTINES,
+    MAX_SNAPSHOT_SEQUENCES, MAX_SNAPSHOT_UNSUPPORTED, quote_engine_identifier,
 };
 use sqlparser::{
     ast::{Visit, Visitor},
     dialect::SnowflakeDialect,
     parser::Parser,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::ControlFlow;
 
 pub(crate) const OBJECT_LIMIT: usize = 10_000;
 pub(crate) const OBJECT_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const DETAIL_MAX_BYTES: usize = 1024 * 1024;
+pub(crate) const SCHEMA_RELATION_LIMIT: usize = 1000;
+pub(crate) const SCHEMA_COLUMN_LIMIT: usize = 20_000;
+pub(crate) const SCHEMA_KEY_LIMIT: usize = 20_000;
+pub(crate) const SCHEMA_CONSTRAINT_LIMIT: usize = 10_000;
+pub(crate) const SCHEMA_CHECK_LIMIT: usize = 5_000;
+pub(crate) const SCHEMA_SNAPSHOT_DDL_LIMIT: usize = 200;
+pub(crate) const SCHEMA_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 const EXPLORER_TABLE_COLUMNS: [&str; 7] = [
     "TABLE_CATALOG",
@@ -924,6 +937,1107 @@ pub(crate) fn empty_details(object: DatabaseObjectRef) -> ObjectDetails {
     }
 }
 
+const SCHEMA_RELATION_COLUMNS: [&str; 12] = [
+    "TABLE_CATALOG",
+    "TABLE_SCHEMA",
+    "TABLE_NAME",
+    "TABLE_TYPE",
+    "IS_TRANSIENT",
+    "IS_TEMPORARY",
+    "IS_ICEBERG",
+    "IS_DYNAMIC",
+    "IS_HYBRID",
+    "IS_IMMUTABLE",
+    "CLUSTERING_KEY",
+    "COMMENT",
+];
+
+const SCHEMA_COLUMN_COLUMNS: [&str; 16] = [
+    "TABLE_CATALOG",
+    "TABLE_SCHEMA",
+    "TABLE_NAME",
+    "COLUMN_NAME",
+    "ORDINAL_POSITION",
+    "COLUMN_DEFAULT",
+    "IS_NULLABLE",
+    "DATA_TYPE",
+    "CHARACTER_MAXIMUM_LENGTH",
+    "NUMERIC_PRECISION",
+    "NUMERIC_SCALE",
+    "IS_IDENTITY",
+    "IDENTITY_START",
+    "IDENTITY_INCREMENT",
+    "EXPRESSION",
+    "KIND",
+];
+
+const SCHEMA_CONSTRAINT_COLUMNS: [&str; 11] = [
+    "TABLE_CATALOG",
+    "TABLE_SCHEMA",
+    "TABLE_NAME",
+    "CONSTRAINT_NAME",
+    "CONSTRAINT_TYPE",
+    "ENFORCED",
+    "RELY",
+    "UNIQUE_CONSTRAINT_CATALOG",
+    "UNIQUE_CONSTRAINT_SCHEMA",
+    "UPDATE_RULE",
+    "DELETE_RULE",
+];
+
+const SCHEMA_CHECK_COLUMNS: [&str; 5] = [
+    "CONSTRAINT_CATALOG",
+    "CONSTRAINT_SCHEMA",
+    "CONSTRAINT_TABLE",
+    "CONSTRAINT_NAME",
+    "CHECK_CLAUSE",
+];
+
+const SCHEMA_KEY_COLUMNS: [&str; 6] = [
+    "DATABASE_NAME",
+    "SCHEMA_NAME",
+    "TABLE_NAME",
+    "COLUMN_NAME",
+    "KEY_SEQUENCE",
+    "CONSTRAINT_NAME",
+];
+
+const SCHEMA_FOREIGN_COLUMNS: [&str; 11] = [
+    "FK_DATABASE_NAME",
+    "FK_SCHEMA_NAME",
+    "FK_TABLE_NAME",
+    "FK_COLUMN_NAME",
+    "KEY_SEQUENCE",
+    "FK_NAME",
+    "PK_DATABASE_NAME",
+    "PK_SCHEMA_NAME",
+    "PK_TABLE_NAME",
+    "PK_COLUMN_NAME",
+    "PK_NAME",
+];
+
+pub(crate) fn validate_user_schema(schema: &str) -> AppResult<()> {
+    user_schema(schema)
+}
+
+fn check_columns_truncatable(
+    result: &MetadataResult,
+    expected: &[&str],
+    max_rows: usize,
+) -> AppResult<bool> {
+    if result.columns.len() != expected.len()
+        || result
+            .columns
+            .iter()
+            .zip(expected.iter())
+            .any(|(col, exp)| col.name != *exp)
+        || result.rows.iter().any(|row| row.len() != expected.len())
+    {
+        return Err(malformed());
+    }
+    Ok(result.truncated || result.rows_seen > max_rows as u64 || result.rows.len() > max_rows)
+}
+
+pub(crate) fn strip_active_database_qualifier(database: &str, sql: &str) -> String {
+    let trimmed = sql.trim();
+    if trimmed.is_empty() || database.is_empty() {
+        return trimmed.to_owned();
+    }
+    let mut out = if let Ok(quoted_db) = metadata::quote_identifier(database) {
+        trimmed
+            .replace(&format!("'{quoted_db}."), "'")
+            .replace(&format!("{quoted_db}."), "")
+    } else {
+        trimmed.to_owned()
+    };
+    if database
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'$'))
+    {
+        for prefix in [' ', '\n', '\t', '('] {
+            let needle = format!("{prefix}{database}.");
+            let replacement = prefix.to_string();
+            out = out.replace(&needle, &replacement);
+        }
+        if let Some(rest) = out.strip_prefix(&format!("{database}.")) {
+            out = rest.to_owned();
+        }
+    }
+    out
+}
+
+pub(crate) fn format_snowflake_column_type(
+    data_type: &str,
+    char_max: Option<&str>,
+    num_precision: Option<&str>,
+    num_scale: Option<&str>,
+) -> String {
+    let upper = data_type.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "NUMBER" => match (
+            num_precision.filter(|s| !s.is_empty()),
+            num_scale.filter(|s| !s.is_empty()),
+        ) {
+            (Some(p), Some(s)) => format!("NUMBER({p}, {s})"),
+            (Some(p), None) => format!("NUMBER({p})"),
+            _ => "NUMBER".into(),
+        },
+        "TEXT" => match char_max.filter(|s| !s.is_empty() && *s != "16777216") {
+            Some(len) => format!("VARCHAR({len})"),
+            None => "VARCHAR".into(),
+        },
+        "BINARY" => match char_max.filter(|s| !s.is_empty() && *s != "8388608") {
+            Some(len) => format!("BINARY({len})"),
+            None => "BINARY".into(),
+        },
+        _ => upper,
+    }
+}
+
+fn normalize_clustering_key(database: &str, raw: Option<&str>) -> Option<String> {
+    let value = raw?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let stripped = strip_active_database_qualifier(database, value);
+    let inner = if stripped.len() >= 8
+        && stripped[..7].eq_ignore_ascii_case("LINEAR(")
+        && stripped.ends_with(')')
+    {
+        stripped[7..stripped.len() - 1].trim()
+    } else {
+        stripped.trim()
+    };
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_owned())
+    }
+}
+
+pub(crate) fn schema_relations_sql(context: &LiveContext, schema: &str) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    Ok(format!(
+        "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE, IS_TRANSIENT, IS_TEMPORARY, IS_ICEBERG, IS_DYNAMIC, IS_HYBRID, IS_IMMUTABLE, CLUSTERING_KEY, COMMENT FROM {}.INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = {} AND TABLE_SCHEMA = {} ORDER BY TABLE_NAME, TABLE_TYPE, IS_TEMPORARY DESC LIMIT {}",
+        metadata::quote_identifier(db)?,
+        literal(db)?,
+        literal(schema)?,
+        SCHEMA_RELATION_LIMIT + 1,
+    ))
+}
+
+pub(crate) fn schema_columns_sql(context: &LiveContext, schema: &str) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    Ok(format!(
+        "SELECT TABLE_CATALOG, TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION::VARCHAR AS ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH::VARCHAR AS CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION::VARCHAR AS NUMERIC_PRECISION, NUMERIC_SCALE::VARCHAR AS NUMERIC_SCALE, IS_IDENTITY, IDENTITY_START::VARCHAR AS IDENTITY_START, IDENTITY_INCREMENT::VARCHAR AS IDENTITY_INCREMENT, EXPRESSION, KIND FROM {}.INFORMATION_SCHEMA.COLUMNS AS SC WHERE TABLE_CATALOG = {} AND TABLE_SCHEMA = {} ORDER BY SC.TABLE_NAME, SC.ORDINAL_POSITION LIMIT {}",
+        metadata::quote_identifier(db)?,
+        literal(db)?,
+        literal(schema)?,
+        SCHEMA_COLUMN_LIMIT + 1,
+    ))
+}
+
+pub(crate) fn schema_constraints_sql(context: &LiveContext, schema: &str) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    let quoted_db = metadata::quote_identifier(db)?;
+    Ok(format!(
+        "SELECT STC.TABLE_CATALOG AS TABLE_CATALOG, STC.TABLE_SCHEMA AS TABLE_SCHEMA, STC.TABLE_NAME AS TABLE_NAME, STC.CONSTRAINT_NAME AS CONSTRAINT_NAME, STC.CONSTRAINT_TYPE AS CONSTRAINT_TYPE, STC.ENFORCED AS ENFORCED, STC.RELY AS RELY, SRC.UNIQUE_CONSTRAINT_CATALOG AS UNIQUE_CONSTRAINT_CATALOG, SRC.UNIQUE_CONSTRAINT_SCHEMA AS UNIQUE_CONSTRAINT_SCHEMA, SRC.UPDATE_RULE AS UPDATE_RULE, SRC.DELETE_RULE AS DELETE_RULE FROM {quoted_db}.INFORMATION_SCHEMA.TABLE_CONSTRAINTS AS STC LEFT JOIN {quoted_db}.INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS AS SRC ON STC.CONSTRAINT_TYPE = 'FOREIGN KEY' AND STC.CONSTRAINT_CATALOG = SRC.CONSTRAINT_CATALOG AND STC.CONSTRAINT_SCHEMA = SRC.CONSTRAINT_SCHEMA AND STC.CONSTRAINT_NAME = SRC.CONSTRAINT_NAME WHERE STC.TABLE_CATALOG = ? AND STC.TABLE_SCHEMA = ? ORDER BY STC.TABLE_NAME, STC.CONSTRAINT_NAME, STC.CONSTRAINT_TYPE LIMIT {}",
+        SCHEMA_CONSTRAINT_LIMIT + 1,
+    ))
+}
+
+pub(crate) fn schema_checks_sql(context: &LiveContext, schema: &str) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    let quoted_db = metadata::quote_identifier(db)?;
+    Ok(format!(
+        "SELECT CONSTRAINT_CATALOG, CONSTRAINT_SCHEMA, CONSTRAINT_TABLE, CONSTRAINT_NAME, CHECK_CLAUSE FROM {quoted_db}.INFORMATION_SCHEMA.CHECK_CONSTRAINTS AS SCC WHERE SCC.CONSTRAINT_CATALOG = ? AND SCC.CONSTRAINT_SCHEMA = ? ORDER BY SCC.CONSTRAINT_TABLE, SCC.CONSTRAINT_NAME LIMIT {}",
+        SCHEMA_CHECK_LIMIT + 1,
+    ))
+}
+
+pub(crate) fn schema_mapping_sql(
+    context: &LiveContext,
+    schema: &str,
+    kind: RelationKeyConstraintKind,
+) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    let qualified_schema = format!(
+        "{}.{}",
+        metadata::quote_identifier(db)?,
+        metadata::quote_identifier(schema)?
+    );
+    let (command, columns, table_col, name_col, col_col) = match kind {
+        RelationKeyConstraintKind::PrimaryKey => (
+            "PRIMARY",
+            SCHEMA_KEY_COLUMNS.as_slice(),
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+        ),
+        RelationKeyConstraintKind::Unique => (
+            "UNIQUE",
+            SCHEMA_KEY_COLUMNS.as_slice(),
+            "TABLE_NAME",
+            "CONSTRAINT_NAME",
+            "COLUMN_NAME",
+        ),
+        RelationKeyConstraintKind::ForeignKey => (
+            "IMPORTED",
+            SCHEMA_FOREIGN_COLUMNS.as_slice(),
+            "FK_TABLE_NAME",
+            "FK_NAME",
+            "FK_COLUMN_NAME",
+        ),
+    };
+    let projection = columns
+        .iter()
+        .map(|column| {
+            format!(
+                "TO_VARCHAR(\"{}\") AS {column}",
+                column.to_ascii_lowercase()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Ok(format!(
+        "SHOW {command} KEYS IN SCHEMA {qualified_schema} ->> SELECT {projection} FROM $1 ORDER BY {table_col}, {name_col}, \"key_sequence\", {col_col} LIMIT {}",
+        SCHEMA_KEY_LIMIT + 1
+    ))
+}
+
+struct ParsedSchemaRelation {
+    name: String,
+    table_type: String,
+    traits: RelationTraits,
+    clustering_key: Option<String>,
+    comment: Option<String>,
+}
+
+fn parse_schema_relation_rows(
+    db: &str,
+    schema: &str,
+    result: &MetadataResult,
+) -> AppResult<(Vec<ParsedSchemaRelation>, HashSet<String>, bool)> {
+    let truncated =
+        check_columns_truncatable(result, &SCHEMA_RELATION_COLUMNS, SCHEMA_RELATION_LIMIT)?;
+    let mut name_counts: HashMap<String, usize> = HashMap::new();
+    let mut parsed = Vec::with_capacity(result.rows.len().min(SCHEMA_RELATION_LIMIT));
+    for row in result.rows.iter().take(SCHEMA_RELATION_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let name = required_cell(&row[2])?.to_owned();
+        metadata::quote_identifier(&name)?;
+        let table_type = required_cell(&row[3])?.to_owned();
+        let traits = RelationTraits {
+            transient: yes_no(&row[4])?,
+            temporary: yes_no(&row[5])?,
+            iceberg: yes_no(&row[6])?,
+            dynamic: yes_no(&row[7])?,
+            hybrid: yes_no(&row[8])?,
+            immutable: yes_no(&row[9])?,
+        };
+        let clustering_key = normalize_clustering_key(db, row[10].as_deref());
+        let comment = row[11].clone().filter(|s| !s.is_empty());
+        *name_counts.entry(name.clone()).or_insert(0) += 1;
+        parsed.push(ParsedSchemaRelation {
+            name,
+            table_type,
+            traits,
+            clustering_key,
+            comment,
+        });
+    }
+    let collided: HashSet<String> = name_counts
+        .into_iter()
+        .filter_map(|(name, count)| (count > 1).then_some(name))
+        .collect();
+    Ok((parsed, collided, truncated))
+}
+
+type ConstraintColumnMap = HashMap<(String, String), Vec<String>>;
+
+fn parse_schema_key_groups(
+    db: &str,
+    schema: &str,
+    result: &MetadataResult,
+) -> AppResult<(ConstraintColumnMap, bool, bool)> {
+    let truncated = check_columns_truncatable(result, &SCHEMA_KEY_COLUMNS, SCHEMA_KEY_LIMIT)?;
+    let mut raw_groups: HashMap<(String, String), BTreeMap<u32, String>> = HashMap::new();
+    let mut restricted = false;
+    for row in result.rows.iter().take(SCHEMA_KEY_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let table = required_cell(&row[2])?.to_owned();
+        let column = required_cell(&row[3])?.to_owned();
+        let seq = required_cell(&row[4])?
+            .parse::<u32>()
+            .map_err(|_| malformed())?;
+        let cname = required_cell(&row[5])?.to_owned();
+        metadata::quote_identifier(&table)?;
+        metadata::quote_identifier(&column)?;
+        metadata::quote_identifier(&cname)?;
+        if seq == 0 {
+            return Err(malformed());
+        }
+        if raw_groups
+            .entry((table, cname))
+            .or_default()
+            .insert(seq, column)
+            .is_some()
+        {
+            return Err(malformed());
+        }
+    }
+    let mut out = HashMap::with_capacity(raw_groups.len());
+    for (key, cols) in raw_groups {
+        if cols.keys().copied().ne(1..=cols.len() as u32) {
+            restricted = true;
+            continue;
+        }
+        out.insert(key, cols.into_values().collect());
+    }
+    Ok((out, truncated, restricted))
+}
+
+struct ParsedForeignGroup {
+    columns: Vec<String>,
+    target_database: String,
+    target: TableRef,
+    target_columns: Vec<String>,
+}
+
+type ForeignConstraintGroupMap = HashMap<(String, String), ParsedForeignGroup>;
+
+fn parse_schema_foreign_groups(
+    db: &str,
+    schema: &str,
+    result: &MetadataResult,
+) -> AppResult<(ForeignConstraintGroupMap, bool, bool)> {
+    let truncated = check_columns_truncatable(result, &SCHEMA_FOREIGN_COLUMNS, SCHEMA_KEY_LIMIT)?;
+    struct RawFk {
+        cols: BTreeMap<u32, (String, String)>,
+        target_db: String,
+        target_schema: String,
+        target_table: String,
+        ambiguous: bool,
+    }
+    let mut groups: HashMap<(String, String), RawFk> = HashMap::new();
+    for row in result.rows.iter().take(SCHEMA_KEY_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let fk_table = required_cell(&row[2])?.to_owned();
+        let fk_col = required_cell(&row[3])?.to_owned();
+        let seq = required_cell(&row[4])?
+            .parse::<u32>()
+            .map_err(|_| malformed())?;
+        let fk_name = required_cell(&row[5])?.to_owned();
+        let pk_db = required_cell(&row[6])?.to_owned();
+        let pk_schema = required_cell(&row[7])?.to_owned();
+        let pk_table = required_cell(&row[8])?.to_owned();
+        let pk_col = required_cell(&row[9])?.to_owned();
+        let _pk_name = required_cell(&row[10])?;
+        for ident in [
+            &fk_table, &fk_col, &fk_name, &pk_db, &pk_schema, &pk_table, &pk_col,
+        ] {
+            metadata::quote_identifier(ident)?;
+        }
+        if seq == 0 {
+            return Err(malformed());
+        }
+        let entry = groups.entry((fk_table, fk_name)).or_insert_with(|| RawFk {
+            cols: BTreeMap::new(),
+            target_db: pk_db.clone(),
+            target_schema: pk_schema.clone(),
+            target_table: pk_table.clone(),
+            ambiguous: false,
+        });
+        if entry.target_db != pk_db
+            || entry.target_schema != pk_schema
+            || entry.target_table != pk_table
+            || entry.cols.insert(seq, (fk_col, pk_col)).is_some()
+        {
+            entry.ambiguous = true;
+        }
+    }
+    let mut restricted = false;
+    let mut out = HashMap::with_capacity(groups.len());
+    for (key, raw) in groups {
+        if raw.ambiguous || raw.cols.keys().copied().ne(1..=raw.cols.len() as u32) {
+            restricted = true;
+            continue;
+        }
+        let mut columns = Vec::with_capacity(raw.cols.len());
+        let mut target_columns = Vec::with_capacity(raw.cols.len());
+        for (src, dst) in raw.cols.into_values() {
+            columns.push(src);
+            target_columns.push(dst);
+        }
+        out.insert(
+            key,
+            ParsedForeignGroup {
+                columns,
+                target_database: raw.target_db,
+                target: TableRef {
+                    schema: raw.target_schema,
+                    name: raw.target_table,
+                },
+                target_columns,
+            },
+        );
+    }
+    Ok((out, truncated, restricted))
+}
+
+pub(crate) fn parse_schema_diagram(
+    context: &LiveContext,
+    schema: &str,
+    relations_res: &MetadataResult,
+    columns_res: &MetadataResult,
+    primary_keys_res: &MetadataResult,
+    foreign_keys_res: &MetadataResult,
+) -> AppResult<SchemaDiagram> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    let (relations, collided, rel_trunc) = parse_schema_relation_rows(db, schema, relations_res)?;
+    let col_trunc =
+        check_columns_truncatable(columns_res, &SCHEMA_COLUMN_COLUMNS, SCHEMA_COLUMN_LIMIT)?;
+    let (pk_groups, pk_trunc, pk_restr) = parse_schema_key_groups(db, schema, primary_keys_res)?;
+    let (fk_groups, fk_trunc, fk_restr) =
+        parse_schema_foreign_groups(db, schema, foreign_keys_res)?;
+
+    let mut extra_truncated = rel_trunc || col_trunc || pk_trunc || fk_trunc;
+    let mut extra_restricted = !collided.is_empty() || pk_restr || fk_restr;
+
+    let mut tables = Vec::new();
+    for rel in &relations {
+        if collided.contains(&rel.name) {
+            continue;
+        }
+        if matches!(
+            rel.table_type.as_str(),
+            "BASE TABLE" | "TEMPORARY TABLE" | "VIEW" | "MATERIALIZED VIEW"
+        ) {
+            tables.push((rel.name.clone(), rel.table_type.clone()));
+        }
+    }
+
+    let mut pk_columns: HashSet<(String, String)> = HashSet::new();
+    for ((table, _cname), cols) in &pk_groups {
+        for col in cols {
+            pk_columns.insert((table.clone(), col.clone()));
+        }
+    }
+
+    let mut readable_columns: HashSet<(String, String)> = HashSet::new();
+    let mut diagram_columns = Vec::with_capacity(columns_res.rows.len().min(SCHEMA_COLUMN_LIMIT));
+    for row in columns_res.rows.iter().take(SCHEMA_COLUMN_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let table_name = required_cell(&row[2])?.to_owned();
+        if collided.contains(&table_name) {
+            continue;
+        }
+        let col_name = required_cell(&row[3])?.to_owned();
+        metadata::quote_identifier(&table_name)?;
+        metadata::quote_identifier(&col_name)?;
+        let _ordinal = required_cell(&row[4])?
+            .parse::<u32>()
+            .map_err(|_| malformed())?;
+        let nullable = yes_no(&row[6])?.ok_or_else(malformed)?;
+        let database_type = format_snowflake_column_type(
+            required_cell(&row[7])?,
+            row[8].as_deref(),
+            row[9].as_deref(),
+            row[10].as_deref(),
+        );
+        readable_columns.insert((table_name.clone(), col_name.clone()));
+        diagram_columns.push((
+            table_name.clone(),
+            DiagramColumn {
+                primary_key: pk_columns.contains(&(table_name, col_name.clone())),
+                name: col_name,
+                database_type,
+                nullable,
+            },
+        ));
+    }
+
+    let mut sorted_fks: Vec<_> = fk_groups.into_iter().collect();
+    sorted_fks.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut diagram_keys = Vec::new();
+    for ((source_table, fk_name), group) in sorted_fks {
+        if collided.contains(&source_table) {
+            extra_restricted = true;
+            continue;
+        }
+        if group.target_database != db {
+            extra_restricted = true;
+            continue;
+        }
+        if group
+            .columns
+            .iter()
+            .any(|col| !readable_columns.contains(&(source_table.clone(), col.clone())))
+        {
+            extra_restricted = true;
+            continue;
+        }
+        let width = group.columns.len();
+        for (src_col, dst_col) in group.columns.into_iter().zip(group.target_columns) {
+            if diagram_keys.len() > crate::domain::MAX_DIAGRAM_KEY_ROWS {
+                extra_truncated = true;
+                break;
+            }
+            diagram_keys.push(DiagramKeyRow {
+                name: fk_name.clone(),
+                source_table: source_table.clone(),
+                target: group.target.clone(),
+                column: src_col,
+                target_column: dst_col,
+                expected: Some(width),
+            });
+        }
+    }
+
+    let mut diagram = SchemaDiagram::assemble(schema, tables, diagram_columns, diagram_keys);
+    diagram.truncated |= extra_truncated;
+    diagram.restricted |= extra_restricted;
+    Ok(diagram)
+}
+
+pub(crate) struct SnapshotRelationPlan {
+    pub snapshot: SchemaSnapshot,
+    pub view_targets: Vec<BrowseRelation>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_schema_snapshot_base(
+    context: &LiveContext,
+    server_version: &str,
+    schema: &str,
+    relations_res: &MetadataResult,
+    columns_res: &MetadataResult,
+    constraints_res: &MetadataResult,
+    checks_res: &MetadataResult,
+    primary_keys_res: &MetadataResult,
+    unique_keys_res: &MetadataResult,
+    foreign_keys_res: &MetadataResult,
+    sequences_res: &MetadataResult,
+    functions_res: &MetadataResult,
+    procedures_res: &MetadataResult,
+) -> AppResult<SnapshotRelationPlan> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    let role = context
+        .role
+        .clone()
+        .unwrap_or_else(|| context.principal.clone());
+
+    let (relations, collided, rel_trunc) = parse_schema_relation_rows(db, schema, relations_res)?;
+    let col_trunc =
+        check_columns_truncatable(columns_res, &SCHEMA_COLUMN_COLUMNS, MAX_SNAPSHOT_COLUMNS)?;
+    let con_trunc = check_columns_truncatable(
+        constraints_res,
+        &SCHEMA_CONSTRAINT_COLUMNS,
+        SCHEMA_CONSTRAINT_LIMIT,
+    )?;
+    let chk_trunc =
+        check_columns_truncatable(checks_res, &SCHEMA_CHECK_COLUMNS, SCHEMA_CHECK_LIMIT)?;
+    let (pk_groups, pk_trunc, pk_restr) = parse_schema_key_groups(db, schema, primary_keys_res)?;
+    let (uq_groups, uq_trunc, uq_restr) = parse_schema_key_groups(db, schema, unique_keys_res)?;
+    let (fk_groups, fk_trunc, fk_restr) =
+        parse_schema_foreign_groups(db, schema, foreign_keys_res)?;
+    let seq_trunc =
+        check_columns_truncatable(sequences_res, &SEQUENCE_COLUMNS, MAX_SNAPSHOT_SEQUENCES)?;
+    let fn_trunc =
+        check_columns_truncatable(functions_res, &FUNCTION_COLUMNS, MAX_SNAPSHOT_ROUTINES)?;
+    let proc_trunc =
+        check_columns_truncatable(procedures_res, &PROCEDURE_COLUMNS, MAX_SNAPSHOT_ROUTINES)?;
+
+    let mut truncated = rel_trunc
+        || col_trunc
+        || con_trunc
+        || chk_trunc
+        || pk_trunc
+        || uq_trunc
+        || fk_trunc
+        || seq_trunc
+        || fn_trunc
+        || proc_trunc;
+    let mut restricted = pk_restr || uq_restr || fk_restr;
+    let mut unsupported_objects: Vec<UnsupportedSchemaObject> = Vec::new();
+    let push_unsupported = |out: &mut Vec<UnsupportedSchemaObject>,
+                            trunc: &mut bool,
+                            name: String,
+                            object_type: &str,
+                            reason: &str| {
+        if out.len() < MAX_SNAPSHOT_UNSUPPORTED {
+            out.push(UnsupportedSchemaObject {
+                name,
+                object_type: object_type.to_owned(),
+                reason: reason.to_owned(),
+            });
+        } else {
+            *trunc = true;
+        }
+    };
+
+    for name in &collided {
+        restricted = true;
+        push_unsupported(
+            &mut unsupported_objects,
+            &mut truncated,
+            name.clone(),
+            "Shadowed relation",
+            "Multiple Snowflake relations share this name (such as a temporary shadow) and cannot be snapshotted unambiguously.",
+        );
+    }
+
+    let mut tables: Vec<SnapshotTable> = Vec::new();
+    let mut table_index: HashMap<String, usize> = HashMap::new();
+    let mut view_targets: Vec<BrowseRelation> = Vec::new();
+
+    for rel in relations {
+        if collided.contains(&rel.name) {
+            continue;
+        }
+        match rel.table_type.as_str() {
+            "EXTERNAL TABLE" => {
+                push_unsupported(
+                    &mut unsupported_objects,
+                    &mut truncated,
+                    rel.name,
+                    "External table",
+                    "External stage-backed Snowflake tables cannot be recreated by portable schema DDL.",
+                );
+                continue;
+            }
+            "EVENT TABLE" => {
+                push_unsupported(
+                    &mut unsupported_objects,
+                    &mut truncated,
+                    rel.name,
+                    "Event table",
+                    "Snowflake telemetry event tables are omitted from schema snapshots.",
+                );
+                continue;
+            }
+            "TEMPORARY TABLE" => {
+                push_unsupported(
+                    &mut unsupported_objects,
+                    &mut truncated,
+                    rel.name,
+                    "Temporary table",
+                    "Session-scoped Snowflake temporary tables are omitted from schema snapshots.",
+                );
+                continue;
+            }
+            "BASE TABLE" | "VIEW" | "MATERIALIZED VIEW" => {}
+            _ => continue,
+        }
+        if rel.traits.dynamic == Some(true) {
+            push_unsupported(
+                &mut unsupported_objects,
+                &mut truncated,
+                rel.name,
+                "Dynamic table",
+                "Snowflake Dynamic Tables use declarative lag/warehouse refresh pipelines and are omitted from standard table DDL.",
+            );
+            continue;
+        }
+        if rel.traits.iceberg == Some(true) {
+            push_unsupported(
+                &mut unsupported_objects,
+                &mut truncated,
+                rel.name,
+                "Iceberg table",
+                "Snowflake Iceberg Tables depend on external volume/catalog bindings and are omitted from standard table DDL.",
+            );
+            continue;
+        }
+        if rel.traits.hybrid == Some(true) {
+            push_unsupported(
+                &mut unsupported_objects,
+                &mut truncated,
+                rel.name,
+                "Hybrid table",
+                "Snowflake Hybrid Tables are omitted from standard table DDL.",
+            );
+            continue;
+        }
+        if tables.len() >= MAX_SNAPSHOT_RELATIONS {
+            truncated = true;
+            break;
+        }
+        let kind = match rel.table_type.as_str() {
+            "MATERIALIZED VIEW" => DatabaseObjectKind::MaterializedView,
+            "VIEW" => DatabaseObjectKind::View,
+            _ => DatabaseObjectKind::Table,
+        };
+        if matches!(
+            kind,
+            DatabaseObjectKind::View | DatabaseObjectKind::MaterializedView
+        ) {
+            view_targets.push(BrowseRelation {
+                database: db.to_owned(),
+                table: TableRef {
+                    schema: schema.to_owned(),
+                    name: rel.name.clone(),
+                },
+                table_type: rel.table_type.clone(),
+                traits: rel.traits.clone(),
+                availability: RelationAvailability::Available,
+                created: None,
+                last_ddl: None,
+            });
+        }
+        let idx = tables.len();
+        table_index.insert(rel.name.clone(), idx);
+        tables.push(SnapshotTable {
+            name: rel.name,
+            kind,
+            comment: rel.comment,
+            partition_key: if kind == DatabaseObjectKind::Table {
+                rel.clustering_key
+            } else {
+                None
+            },
+            view_definition: None,
+            columns: Vec::new(),
+            constraints: Vec::new(),
+            indexes: Vec::new(),
+            triggers: Vec::new(),
+        });
+    }
+
+    let mut total_columns = 0usize;
+    for row in columns_res.rows.iter().take(MAX_SNAPSHOT_COLUMNS + 1) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let table_name = required_cell(&row[2])?;
+        let Some(&t_idx) = table_index.get(table_name) else {
+            continue;
+        };
+        if total_columns >= MAX_SNAPSHOT_COLUMNS {
+            truncated = true;
+            break;
+        }
+        let col_name = required_cell(&row[3])?.to_owned();
+        metadata::quote_identifier(&col_name)?;
+        let ordinal_position = required_cell(&row[4])?
+            .parse::<u32>()
+            .map_err(|_| malformed())?;
+        let nullable = yes_no(&row[6])?.ok_or_else(malformed)?;
+        let data_type = format_snowflake_column_type(
+            required_cell(&row[7])?,
+            row[8].as_deref(),
+            row[9].as_deref(),
+            row[10].as_deref(),
+        );
+        let is_identity = yes_no(&row[11])?.unwrap_or(false);
+        let id_start = row[12].as_deref().filter(|s| !s.is_empty());
+        let id_inc = row[13].as_deref().filter(|s| !s.is_empty());
+        let expr = row[14].as_deref().filter(|s| !s.is_empty());
+        let col_kind = required_cell(&row[15])?;
+
+        let (identity, generated, default_expression) =
+            if col_kind == "VIRTUAL_COLUMN" && expr.is_some() {
+                (
+                    None,
+                    Some("VIRTUAL".to_owned()),
+                    expr.map(|e| strip_active_database_qualifier(db, e)),
+                )
+            } else if is_identity {
+                let id_spec = match (id_start, id_inc) {
+                    (Some(s), Some(i)) => format!("START {s} INCREMENT {i}"),
+                    _ => "IDENTITY".to_owned(),
+                };
+                (Some(id_spec), None, None)
+            } else {
+                (
+                    None,
+                    None,
+                    row[5]
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                        .map(|d| strip_active_database_qualifier(db, d)),
+                )
+            };
+
+        tables[t_idx].columns.push(SnapshotColumn {
+            name: col_name,
+            data_type,
+            nullable,
+            default_expression,
+            identity,
+            generated,
+            ordinal_position,
+        });
+        total_columns += 1;
+    }
+
+    let mut total_constraints = 0usize;
+    for row in constraints_res.rows.iter().take(SCHEMA_CONSTRAINT_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let table_name = required_cell(&row[2])?;
+        let Some(&t_idx) = table_index.get(table_name) else {
+            continue;
+        };
+        if tables[t_idx].kind != DatabaseObjectKind::Table {
+            continue;
+        }
+        if total_constraints >= MAX_SNAPSHOT_CONSTRAINTS {
+            truncated = true;
+            break;
+        }
+        let cname = required_cell(&row[3])?.to_owned();
+        metadata::quote_identifier(&cname)?;
+        let ctype = required_cell(&row[4])?;
+        let key_lookup = (table_name.to_owned(), cname.clone());
+        match ctype {
+            "PRIMARY KEY" => {
+                let Some(cols) = pk_groups.get(&key_lookup) else {
+                    restricted = true;
+                    continue;
+                };
+                let quoted_cols = cols
+                    .iter()
+                    .map(|c| quote_engine_identifier(EngineKind::Snowflake, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tables[t_idx].constraints.push(ConstraintInfo {
+                    name: cname,
+                    kind: ConstraintKind::PrimaryKey,
+                    columns: cols.clone(),
+                    target: None,
+                    target_columns: Vec::new(),
+                    definition: format!("PRIMARY KEY ({quoted_cols})"),
+                });
+                total_constraints += 1;
+            }
+            "UNIQUE" => {
+                let Some(cols) = uq_groups.get(&key_lookup) else {
+                    restricted = true;
+                    continue;
+                };
+                let quoted_cols = cols
+                    .iter()
+                    .map(|c| quote_engine_identifier(EngineKind::Snowflake, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tables[t_idx].constraints.push(ConstraintInfo {
+                    name: cname,
+                    kind: ConstraintKind::Unique,
+                    columns: cols.clone(),
+                    target: None,
+                    target_columns: Vec::new(),
+                    definition: format!("UNIQUE ({quoted_cols})"),
+                });
+                total_constraints += 1;
+            }
+            "FOREIGN KEY" => {
+                let Some(fk) = fk_groups.get(&key_lookup) else {
+                    restricted = true;
+                    continue;
+                };
+                if fk.target_database != db {
+                    restricted = true;
+                    push_unsupported(
+                        &mut unsupported_objects,
+                        &mut truncated,
+                        format!("{table_name}.{cname}"),
+                        "Cross-database foreign key",
+                        "References another Snowflake database and cannot be retargeted within a single-database schema snapshot.",
+                    );
+                    continue;
+                }
+                let quoted_cols = fk
+                    .columns
+                    .iter()
+                    .map(|c| quote_engine_identifier(EngineKind::Snowflake, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let quoted_ref_cols = fk
+                    .target_columns
+                    .iter()
+                    .map(|c| quote_engine_identifier(EngineKind::Snowflake, c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut def = format!(
+                    "FOREIGN KEY ({quoted_cols}) REFERENCES {}.{} ({quoted_ref_cols})",
+                    quote_engine_identifier(EngineKind::Snowflake, &fk.target.schema),
+                    quote_engine_identifier(EngineKind::Snowflake, &fk.target.name),
+                );
+                if let Some(upd) = row[9]
+                    .as_deref()
+                    .filter(|r| !r.is_empty() && *r != "NO ACTION")
+                {
+                    def.push_str(&format!(" ON UPDATE {upd}"));
+                }
+                if let Some(del) = row[10]
+                    .as_deref()
+                    .filter(|r| !r.is_empty() && *r != "NO ACTION")
+                {
+                    def.push_str(&format!(" ON DELETE {del}"));
+                }
+                tables[t_idx].constraints.push(ConstraintInfo {
+                    name: cname,
+                    kind: ConstraintKind::ForeignKey,
+                    columns: fk.columns.clone(),
+                    target: Some(fk.target.clone()),
+                    target_columns: fk.target_columns.clone(),
+                    definition: def,
+                });
+                total_constraints += 1;
+            }
+            _ => {}
+        }
+    }
+
+    for row in checks_res.rows.iter().take(SCHEMA_CHECK_LIMIT) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let table_name = required_cell(&row[2])?;
+        let Some(&t_idx) = table_index.get(table_name) else {
+            continue;
+        };
+        if tables[t_idx].kind != DatabaseObjectKind::Table {
+            continue;
+        }
+        if total_constraints >= MAX_SNAPSHOT_CONSTRAINTS {
+            truncated = true;
+            break;
+        }
+        let cname = required_cell(&row[3])?.to_owned();
+        metadata::quote_identifier(&cname)?;
+        let Some(raw_clause) = row[4].as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            restricted = true;
+            continue;
+        };
+        let stripped = strip_active_database_qualifier(db, raw_clause);
+        let definition = if stripped.len() >= 5 && stripped[..5].eq_ignore_ascii_case("CHECK") {
+            stripped
+        } else {
+            format!("CHECK ({stripped})")
+        };
+        tables[t_idx].constraints.push(ConstraintInfo {
+            name: cname,
+            kind: ConstraintKind::Check,
+            columns: Vec::new(),
+            target: None,
+            target_columns: Vec::new(),
+            definition,
+        });
+        total_constraints += 1;
+    }
+
+    let mut sequences = Vec::with_capacity(sequences_res.rows.len().min(MAX_SNAPSHOT_SEQUENCES));
+    for row in sequences_res.rows.iter().take(MAX_SNAPSHOT_SEQUENCES) {
+        if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+            return Err(malformed());
+        }
+        let name = required_cell(&row[2])?.to_owned();
+        metadata::quote_identifier(&name)?;
+        sequences.push(SnapshotSequence {
+            name,
+            data_type: required_cell(&row[3])?.to_owned(),
+            start_value: required_cell(&row[4])?.to_owned(),
+            min_value: required_cell(&row[5])?.to_owned(),
+            max_value: required_cell(&row[6])?.to_owned(),
+            increment_by: required_cell(&row[7])?.to_owned(),
+            cache_size: String::new(),
+            cycle: yes_no(&row[8])?.unwrap_or(false),
+        });
+    }
+
+    let mut routines = Vec::new();
+    for (is_procedure, res) in [(false, functions_res), (true, procedures_res)] {
+        for row in res.rows.iter() {
+            if routines.len() >= MAX_SNAPSHOT_ROUTINES {
+                truncated = true;
+                break;
+            }
+            if required_cell(&row[0])? != db || required_cell(&row[1])? != schema {
+                return Err(malformed());
+            }
+            let name = required_cell(&row[2])?.to_owned();
+            metadata::quote_identifier(&name)?;
+            let arg_sig = required_cell(&row[3])?;
+            let identity_arguments = normalize_argument_types(arg_sig)?;
+            let arguments = arg_sig
+                .trim()
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or(arg_sig)
+                .trim()
+                .to_owned();
+            let return_type = Some(required_cell(&row[4])?.to_owned());
+            let language = row[5]
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or("SQL")
+                .to_owned();
+            let (volatility, comment) = if is_procedure {
+                (None, row[6].clone().filter(|s| !s.is_empty()))
+            } else {
+                let vol = match yes_no(&row[6])? {
+                    Some(true) => Some("VOLATILE".to_owned()),
+                    Some(false) => Some("IMMUTABLE".to_owned()),
+                    None => None,
+                };
+                (vol, row[7].clone().filter(|s| !s.is_empty()))
+            };
+            routines.push(SnapshotRoutine {
+                name,
+                kind: if is_procedure {
+                    DatabaseObjectKind::Procedure
+                } else {
+                    DatabaseObjectKind::Function
+                },
+                identity_arguments,
+                arguments,
+                return_type,
+                language,
+                volatility,
+                security_definer: false,
+                definition: None,
+                comment,
+            });
+        }
+    }
+
+    Ok(SnapshotRelationPlan {
+        snapshot: SchemaSnapshot {
+            engine: EngineKind::Snowflake,
+            server_version: server_version.to_owned(),
+            database: db.to_owned(),
+            schema: schema.to_owned(),
+            role,
+            tables,
+            routines,
+            sequences,
+            unsupported_objects,
+            truncated,
+            restricted,
+        },
+        view_targets,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1046,5 +2160,325 @@ mod tests {
         );
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].object.name, "ORDERS");
+    }
+
+    #[test]
+    fn parses_schema_diagram_and_snapshot_with_constraints_and_disclosures() {
+        let ctx = sample_context();
+        let row_of = |items: &[Option<&str>]| -> Vec<Option<String>> {
+            items.iter().map(|s| s.map(str::to_owned)).collect()
+        };
+        let relations = MetadataResult {
+            columns: cols(&SCHEMA_RELATION_COLUMNS),
+            rows: vec![
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("BASE TABLE"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("LINEAR(CREATED_AT)"),
+                    Some("Order ledger"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ACTIVE_ORDERS"),
+                    Some("VIEW"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    None,
+                    Some("Active orders view"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("DYN_ORDERS"),
+                    Some("BASE TABLE"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("YES"),
+                    Some("NO"),
+                    Some("NO"),
+                    None,
+                    None,
+                ]),
+            ],
+            rows_seen: 3,
+            truncated: false,
+        };
+        let columns = MetadataResult {
+            columns: cols(&SCHEMA_COLUMN_COLUMNS),
+            rows: vec![
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("ID"),
+                    Some("1"),
+                    None,
+                    Some("NO"),
+                    Some("NUMBER"),
+                    None,
+                    Some("38"),
+                    Some("0"),
+                    Some("YES"),
+                    Some("1"),
+                    Some("1"),
+                    None,
+                    Some("COLUMN"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("CUSTOMER_ID"),
+                    Some("2"),
+                    None,
+                    Some("NO"),
+                    Some("NUMBER"),
+                    None,
+                    Some("38"),
+                    Some("0"),
+                    Some("NO"),
+                    None,
+                    None,
+                    None,
+                    Some("COLUMN"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("TOTAL_CENTS"),
+                    Some("3"),
+                    None,
+                    Some("YES"),
+                    Some("NUMBER"),
+                    None,
+                    Some("18"),
+                    Some("0"),
+                    Some("NO"),
+                    None,
+                    None,
+                    Some("\"CUSTOMER_ID\" * 100"),
+                    Some("VIRTUAL_COLUMN"),
+                ]),
+            ],
+            rows_seen: 3,
+            truncated: false,
+        };
+        let pks = MetadataResult {
+            columns: cols(&SCHEMA_KEY_COLUMNS),
+            rows: vec![row_of(&[
+                Some("DB"),
+                Some("PUBLIC"),
+                Some("ORDERS"),
+                Some("ID"),
+                Some("1"),
+                Some("ORDERS_PK"),
+            ])],
+            rows_seen: 1,
+            truncated: false,
+        };
+        let uqs = MetadataResult {
+            columns: cols(&SCHEMA_KEY_COLUMNS),
+            rows: vec![],
+            rows_seen: 0,
+            truncated: false,
+        };
+        let fks = MetadataResult {
+            columns: cols(&SCHEMA_FOREIGN_COLUMNS),
+            rows: vec![
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("CUSTOMER_ID"),
+                    Some("1"),
+                    Some("ORDERS_CUSTOMER_FK"),
+                    Some("DB"),
+                    Some("CORE"),
+                    Some("CUSTOMERS"),
+                    Some("ID"),
+                    Some("CUSTOMERS_PK"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("CUSTOMER_ID"),
+                    Some("1"),
+                    Some("ORDERS_EXT_DB_FK"),
+                    Some("OTHER_DB"),
+                    Some("CORE"),
+                    Some("CUSTOMERS"),
+                    Some("ID"),
+                    Some("CUSTOMERS_PK"),
+                ]),
+            ],
+            rows_seen: 2,
+            truncated: false,
+        };
+        let diagram = parse_schema_diagram(&ctx, "PUBLIC", &relations, &columns, &pks, &fks)
+            .expect("diagram parses");
+        assert!(!diagram.truncated);
+        assert!(diagram.restricted, "cross-db FK marks restricted");
+        assert_eq!(diagram.tables.len(), 3);
+        assert_eq!(diagram.foreign_keys.len(), 1);
+        assert_eq!(diagram.foreign_keys[0].target.schema, "CORE");
+        assert_eq!(diagram.foreign_keys[0].target.name, "CUSTOMERS");
+
+        let constraints = MetadataResult {
+            columns: cols(&SCHEMA_CONSTRAINT_COLUMNS),
+            rows: vec![
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("ORDERS_PK"),
+                    Some("PRIMARY KEY"),
+                    Some("NO"),
+                    Some("YES"),
+                    None,
+                    None,
+                    None,
+                    None,
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("ORDERS_CUSTOMER_FK"),
+                    Some("FOREIGN KEY"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("DB"),
+                    Some("CORE"),
+                    Some("NO ACTION"),
+                    Some("NO ACTION"),
+                ]),
+                row_of(&[
+                    Some("DB"),
+                    Some("PUBLIC"),
+                    Some("ORDERS"),
+                    Some("ORDERS_EXT_DB_FK"),
+                    Some("FOREIGN KEY"),
+                    Some("NO"),
+                    Some("NO"),
+                    Some("OTHER_DB"),
+                    Some("CORE"),
+                    Some("NO ACTION"),
+                    Some("NO ACTION"),
+                ]),
+            ],
+            rows_seen: 3,
+            truncated: false,
+        };
+        let checks = MetadataResult {
+            columns: cols(&SCHEMA_CHECK_COLUMNS),
+            rows: vec![row_of(&[
+                Some("DB"),
+                Some("PUBLIC"),
+                Some("ORDERS"),
+                Some("ORDERS_POS_CHK"),
+                Some("\"ID\" > 0"),
+            ])],
+            rows_seen: 1,
+            truncated: false,
+        };
+        let seqs = MetadataResult {
+            columns: cols(&SEQUENCE_COLUMNS),
+            rows: vec![row_of(&[
+                Some("DB"),
+                Some("PUBLIC"),
+                Some("ORDER_SEQ"),
+                Some("NUMBER"),
+                Some("1"),
+                Some("1"),
+                Some("999999"),
+                Some("1"),
+                Some("NO"),
+                None,
+            ])],
+            rows_seen: 1,
+            truncated: false,
+        };
+        let fns = MetadataResult {
+            columns: cols(&FUNCTION_COLUMNS),
+            rows: vec![row_of(&[
+                Some("DB"),
+                Some("PUBLIC"),
+                Some("CALC_TAX"),
+                Some("(AMOUNT NUMBER)"),
+                Some("NUMBER(18, 2)"),
+                Some("SQL"),
+                Some("NO"),
+                Some("Tax helper"),
+            ])],
+            rows_seen: 1,
+            truncated: false,
+        };
+        let procs = MetadataResult {
+            columns: cols(&PROCEDURE_COLUMNS),
+            rows: vec![],
+            rows_seen: 0,
+            truncated: false,
+        };
+
+        let mut plan = parse_schema_snapshot_base(
+            &ctx,
+            "8.42.0",
+            "PUBLIC",
+            &relations,
+            &columns,
+            &constraints,
+            &checks,
+            &pks,
+            &uqs,
+            &fks,
+            &seqs,
+            &fns,
+            &procs,
+        )
+        .expect("snapshot base parses");
+        plan.snapshot.canonicalize();
+        assert_eq!(plan.view_targets.len(), 1);
+        assert_eq!(plan.snapshot.tables.len(), 2);
+        assert!(plan.snapshot.restricted);
+        assert_eq!(plan.snapshot.unsupported_objects.len(), 2);
+        let orders = plan
+            .snapshot
+            .tables
+            .iter()
+            .find(|t| t.name == "ORDERS")
+            .unwrap();
+        assert_eq!(orders.partition_key.as_deref(), Some("CREATED_AT"));
+        assert_eq!(orders.columns.len(), 3);
+        assert_eq!(
+            orders.columns[0].identity.as_deref(),
+            Some("START 1 INCREMENT 1")
+        );
+        assert_eq!(orders.columns[2].generated.as_deref(), Some("VIRTUAL"));
+        assert_eq!(orders.constraints.len(), 3);
+        assert_eq!(plan.snapshot.routines.len(), 1);
+        assert_eq!(plan.snapshot.routines[0].arguments, "AMOUNT NUMBER");
+        assert_eq!(
+            strip_active_database_qualifier(
+                "DB",
+                "CREATE OR REPLACE VIEW \"DB\".\"PUBLIC\".\"ACTIVE_ORDERS\" AS SELECT * FROM DB.PUBLIC.ORDERS"
+            ),
+            "CREATE OR REPLACE VIEW \"PUBLIC\".\"ACTIVE_ORDERS\" AS SELECT * FROM PUBLIC.ORDERS"
+        );
     }
 }
