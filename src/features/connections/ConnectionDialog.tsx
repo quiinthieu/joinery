@@ -1,11 +1,28 @@
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 import { Database, Loader2, ShieldCheck } from "lucide-react";
 import { Modal, InlineError } from "../../components/ui/Modal";
 import { client, desktopAvailable, messageOf } from "../../ipc/client";
-import type { ConnectionProfile, SafeMode, SessionInfo } from "../../ipc/generated";
+import type {
+  ConnectionProfile,
+  SafeMode,
+  SessionInfo,
+  SnowflakeAuthentication,
+} from "../../ipc/generated";
 import { useStudio } from "../../state/studio";
 import { useSshTrust } from "./SshHostTrust";
 import { orderedGroups } from "./GroupManager";
+import { useConnectionSetup } from "./connectionSetup";
+
+function snowflakeAuthentication(config: ConnectionProfile["snowflake"]): SnowflakeAuthentication {
+  return config?.authentication ?? "localApplicationOauth";
+}
+
+function withSnowflakeAuthentication(
+  config: Omit<NonNullable<ConnectionProfile["snowflake"]>, "authentication">,
+  authentication: SnowflakeAuthentication,
+): NonNullable<ConnectionProfile["snowflake"]> {
+  return { ...config, authentication };
+}
 
 function completeConnection(profile: ConnectionProfile, session: SessionInfo, onClose: () => void) {
   const state = useStudio.getState();
@@ -31,40 +48,79 @@ export function ConnectionDialog({
   const bootstrap = useStudio((s) => s.bootstrap);
   const [profile, setProfile] = useState(initialProfile);
   const initialGroup = bootstrap?.groups.find((g) => g.id === (profile?.groupId ?? groupId));
-  const [draft, setDraft] = useState<ConnectionProfile>(
-    () =>
-      profile ?? {
-        id: crypto.randomUUID(),
-        name: "",
-        groupId,
-        engine: "postgres",
-        host: "localhost",
-        port: 5432,
-        database: "postgres",
-        username: "postgres",
-        environment: initialGroup?.environment ?? "local",
-        safeMode:
-          initialGroup?.environment === "production"
-            ? "passwordGated"
-            : initialGroup?.environment === "staging"
-              ? "confirm"
-              : "silent",
-        tlsMode: "verifyFull",
-        caCertPath: null,
-        ssh: null,
-        rememberPassword: false,
-        storeQueryText: false,
-        storeDrafts: false,
-        snowflake: null,
-      },
-  );
+  const [draft, setDraft] = useState<ConnectionProfile>(() => {
+    if (profile) {
+      if (profile.engine === "snowflake" && profile.snowflake) {
+        const authentication = snowflakeAuthentication(profile.snowflake);
+        const environment = initialGroup?.environment ?? profile.environment;
+        return {
+          ...profile,
+          safeMode:
+            authentication !== "externalBrowser"
+              ? "readOnly"
+              : environment === "production" && profile.safeMode !== "readOnly"
+                ? "passwordGated"
+                : profile.safeMode,
+          snowflake: {
+            ...withSnowflakeAuthentication(profile.snowflake, authentication),
+            reviewedConsole:
+              authentication === "externalBrowser" && profile.safeMode !== "readOnly"
+                ? (profile.snowflake.reviewedConsole ?? false)
+                : false,
+            reviewedDml:
+              authentication === "externalBrowser" && profile.safeMode !== "readOnly"
+                ? (profile.snowflake.reviewedDml ?? false)
+                : false,
+            reviewedDdl:
+              authentication === "externalBrowser" && profile.safeMode !== "readOnly"
+                ? (profile.snowflake.reviewedDdl ?? false)
+                : false,
+          },
+        };
+      }
+      return profile;
+    }
+    return {
+      id: crypto.randomUUID(),
+      name: "",
+      groupId,
+      engine: "postgres",
+      host: "localhost",
+      port: 5432,
+      database: "postgres",
+      username: "postgres",
+      environment: initialGroup?.environment ?? "local",
+      safeMode:
+        initialGroup?.environment === "production"
+          ? "passwordGated"
+          : initialGroup?.environment === "staging"
+            ? "confirm"
+            : "silent",
+      tlsMode: "verifyFull",
+      caCertPath: null,
+      ssh: null,
+      rememberPassword: false,
+      storeQueryText: false,
+      storeDrafts: false,
+      snowflake: null,
+    };
+  });
   const [password, setPassword] = useState(""),
     [passphrase, setPassphrase] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState<string | null>(null);
+  const [consoleTimeout, setConsoleTimeout] = useState(() =>
+    String(initialProfile?.snowflake?.reviewedConsoleTimeoutSeconds ?? 65),
+  );
+  const consoleTimeoutDescription = useId();
   const [sshPassword, setSshPassword] = useState(""),
     [keyPassphrase, setKeyPassphrase] = useState("");
   const trust = useSshTrust();
+  const setup = useConnectionSetup();
+  function close() {
+    setup.cancel();
+    onClose();
+  }
   const [deleting, setDeleting] = useState(false);
   const production =
     bootstrap?.groups.find((g) => g.id === draft.groupId)?.environment === "production";
@@ -73,34 +129,64 @@ export function ConnectionDialog({
   }
   async function submit(event: FormEvent) {
     event.preventDefault();
+    let submitted = draft;
+    if (
+      draft.engine === "snowflake" &&
+      draft.snowflake?.reviewedConsole &&
+      snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+      draft.safeMode !== "readOnly"
+    ) {
+      const seconds = Number(consoleTimeout);
+      if (
+        !/^\d+$/.test(consoleTimeout) ||
+        !Number.isInteger(seconds) ||
+        seconds < 1 ||
+        seconds > 86_400
+      ) {
+        setError("Console query limit must be a whole number from 1 to 86400 seconds.");
+        return;
+      }
+      submitted = {
+        ...draft,
+        snowflake: { ...draft.snowflake, reviewedConsoleTimeoutSeconds: seconds },
+      };
+    }
+    const attempt = setup.begin();
+    if (!attempt) return;
     setBusy(true);
     setError(null);
     try {
       const saved = await client.call<ConnectionProfile>("save_profile", {
-        profile: draft,
+        profile: submitted,
         passphrase: passphrase || null,
       });
+      if (!attempt.active) return;
       setProfile(saved);
       useStudio.getState().resetConnectionResults(saved.id);
       useStudio.getState().updateProfile(saved);
-      await trust.verify(saved);
-      const session = await client.call<SessionInfo>("connect", {
-        id: saved.id,
-        secrets: {
+      const attemptId = await attempt.prepare(saved.id);
+      if (!attemptId) return;
+      await trust.verify(saved, attemptId, () => attempt.active);
+      await attempt.connect(
+        saved.id,
+        {
           password: password || null,
           sshPassword: sshPassword || null,
           keyPassphrase: keyPassphrase || null,
         },
-      });
-      completeConnection(saved, session, onClose);
+        (session) => completeConnection(saved, session, onClose),
+      );
     } catch (error) {
-      setError(messageOf(error));
+      if (attempt.active) setError(messageOf(error));
     } finally {
-      setPassword("");
-      setPassphrase("");
-      setSshPassword("");
-      setKeyPassphrase("");
-      setBusy(false);
+      if (attempt.active) {
+        setPassword("");
+        setPassphrase("");
+        setSshPassword("");
+        setKeyPassphrase("");
+        setBusy(false);
+      }
+      setup.finish(attempt);
     }
   }
   if (trust.dialog) return trust.dialog;
@@ -164,8 +250,7 @@ export function ConnectionDialog({
       key="edit"
       title={profile ? "Edit connection" : "New connection"}
       subtitle="A direct line to your data."
-      onClose={onClose}
-      busy={busy}
+      onClose={close}
     >
       <form onSubmit={(event) => void submit(event)}>
         <div className="modal-body form-grid">
@@ -207,7 +292,21 @@ export function ConnectionDialog({
                   ssh: null,
                   rememberPassword: false,
                   snowflake:
-                    engine === "snowflake" ? { role: "", warehouse: "", schema: "" } : null,
+                    engine === "snowflake"
+                      ? current.engine === "snowflake" && current.snowflake
+                        ? current.snowflake
+                        : withSnowflakeAuthentication(
+                            {
+                              role: "",
+                              warehouse: "",
+                              schema: "",
+                              reviewedConsole: false,
+                              reviewedDml: false,
+                              reviewedDdl: false,
+                            },
+                            "externalBrowser",
+                          )
+                      : null,
                 }));
               }}
             >
@@ -219,7 +318,9 @@ export function ConnectionDialog({
                       ? "MySQL / MariaDB"
                       : engine === "redis"
                         ? "Redis"
-                        : engine}
+                        : engine === "snowflake"
+                          ? "Snowflake"
+                          : engine}
                 </option>
               ))}
             </select>
@@ -237,7 +338,12 @@ export function ConnectionDialog({
                   environment: group?.environment ?? "local",
                   safeMode:
                     draft.engine === "snowflake"
-                      ? "readOnly"
+                      ? snowflakeAuthentication(draft.snowflake) !== "externalBrowser" ||
+                        draft.safeMode === "readOnly"
+                        ? "readOnly"
+                        : group?.environment === "production"
+                          ? "passwordGated"
+                          : draft.safeMode
                       : group?.environment === "production"
                         ? "passwordGated"
                         : group?.environment === "staging"
@@ -268,6 +374,47 @@ export function ConnectionDialog({
           </label>
           {draft.engine === "snowflake" && draft.snowflake && (
             <>
+              <label className="span-2">
+                Snowflake authentication
+                <select
+                  aria-label="Snowflake authentication"
+                  value={snowflakeAuthentication(draft.snowflake)}
+                  onChange={(event) => {
+                    const authentication = event.target.value as SnowflakeAuthentication;
+                    setDraft((current) => ({
+                      ...current,
+                      safeMode:
+                        authentication === "externalBrowser" &&
+                        snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                          ? current.safeMode
+                          : "readOnly",
+                      snowflake: current.snowflake
+                        ? {
+                            ...withSnowflakeAuthentication(current.snowflake, authentication),
+                            reviewedConsole:
+                              authentication === "externalBrowser" &&
+                              snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                                ? (current.snowflake.reviewedConsole ?? false)
+                                : false,
+                            reviewedDml:
+                              authentication === "externalBrowser" &&
+                              snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                                ? (current.snowflake.reviewedDml ?? false)
+                                : false,
+                            reviewedDdl:
+                              authentication === "externalBrowser" &&
+                              snowflakeAuthentication(current.snowflake) === "externalBrowser"
+                                ? (current.snowflake.reviewedDdl ?? false)
+                                : false,
+                          }
+                        : null,
+                    }));
+                  }}
+                >
+                  <option value="externalBrowser">External browser SSO (Snowflake SDK)</option>
+                  <option value="localApplicationOauth">Local application OAuth (SQL API)</option>
+                </select>
+              </label>
               <label>
                 Role
                 <input
@@ -303,8 +450,18 @@ export function ConnectionDialog({
                 />
               </label>
               <p className="form-note span-2">
-                Joinery opens your system browser for Snowflake sign-in. Read-only SQL and bounded
-                table previews need the account’s local-application OAuth integration.
+                {snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
+                  <>
+                    External browser SSO uses the Snowflake SDK. Writable SQL requires separate
+                    consent and review. Joinery will not fall back to local application OAuth.
+                  </>
+                ) : (
+                  <>
+                    Local application OAuth uses Snowflake SQL API. SQL access is read-only, and
+                    bounded table previews require the account’s OAuth integration. Joinery will not
+                    fall back to external browser SSO.
+                  </>
+                )}
               </p>
             </>
           )}
@@ -517,9 +674,41 @@ export function ConnectionDialog({
             <select
               aria-label="Safe Mode"
               value={draft.safeMode}
-              disabled={draft.engine === "snowflake"}
-              onChange={(e) => change("safeMode", e.target.value as SafeMode)}
+              disabled={
+                draft.engine === "snowflake" &&
+                snowflakeAuthentication(draft.snowflake) !== "externalBrowser"
+              }
+              onChange={(e) => {
+                const safeMode = e.target.value as SafeMode;
+                setDraft((current) => ({
+                  ...current,
+                  safeMode,
+                  ...(safeMode === "readOnly" && current.snowflake
+                    ? {
+                        snowflake: {
+                          ...current.snowflake,
+                          reviewedConsole: false,
+                          reviewedDml: false,
+                          reviewedDdl: false,
+                        },
+                      }
+                    : {}),
+                }));
+              }}
             >
+              {draft.engine === "snowflake" &&
+              snowflakeAuthentication(draft.snowflake) === "externalBrowser" ? (
+                <>
+                  {!production && (
+                    <>
+                      <option value="silent">Silent · no boundary confirmation</option>
+                      <option value="confirm">Confirm · review explicit boundaries</option>
+                      <option value="guard">Guard · review explicit boundaries</option>
+                    </>
+                  )}
+                  <option value="passwordGated">Password gated · authorize each boundary</option>
+                </>
+              ) : null}
               {!production && draft.engine !== "snowflake" && (
                 <>
                   <option value="silent">Silent · run without confirmations</option>
@@ -533,6 +722,116 @@ export function ConnectionDialog({
               <option value="readOnly">Read only · block writes</option>
             </select>
           </label>
+          {draft.engine === "snowflake" &&
+            draft.snowflake &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="checkbox-label span-2">
+                <input
+                  type="checkbox"
+                  checked={draft.snowflake.reviewedDml ?? false}
+                  onChange={(event) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      reviewedDml: event.target.checked,
+                    })
+                  }
+                />
+                Allow separately reviewed single INSERT, UPDATE, and DELETE statements
+                <span className="optional">
+                  Can change data and transaction state, and may incur warehouse charges. Joinery
+                  does not automatically retry submitted SQL. Broader write grammar remains
+                  unavailable.
+                </span>
+              </label>
+            )}
+          {draft.engine === "snowflake" &&
+            draft.snowflake &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="checkbox-label span-2">
+                <input
+                  type="checkbox"
+                  checked={draft.snowflake.reviewedDdl ?? false}
+                  onChange={(event) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      reviewedDdl: event.target.checked,
+                    })
+                  }
+                />
+                Allow separately reviewed CREATE TABLE, nullable ADD COLUMN, and DROP TABLE
+                <span className="optional">
+                  Schema changes cannot be rolled back and may incur warehouse charges. Use a
+                  dedicated disposable schema without concurrent schema changes. Every operation
+                  requires review; DROP also requires the exact qualified table name. Broader DDL
+                  remains unavailable.
+                </span>
+              </label>
+            )}
+          {draft.engine === "snowflake" &&
+            draft.snowflake &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="checkbox-label span-2">
+                <input
+                  type="checkbox"
+                  aria-label="Enable reviewed Snowflake SQL console"
+                  checked={draft.snowflake.reviewedConsole ?? false}
+                  onChange={(event) =>
+                    change("snowflake", {
+                      ...draft.snowflake!,
+                      reviewedConsole: event.target.checked,
+                    })
+                  }
+                />
+                Enable reviewed Snowflake SQL console
+                <span className="optional">
+                  Authorize exact owner-written SQL, scalar parameters and explicit transaction
+                  boundaries. SQL can change data, schema, session settings and incur warehouse
+                  charges. Every run requires review. After initial sign-in bootstrap, this physical
+                  connection belongs permanently to the console: automatic probes and metadata
+                  queries are disabled to preserve statement history. Use a separate profile with
+                  this option off for metadata; it cannot share temporary objects or transactions.
+                  PUT/GET file transfer is denied. Joinery never automatically retries, commits,
+                  rolls back or reconnects a console.
+                </span>
+              </label>
+            )}
+          {draft.engine === "snowflake" &&
+            draft.snowflake?.reviewedConsole &&
+            snowflakeAuthentication(draft.snowflake) === "externalBrowser" &&
+            draft.safeMode !== "readOnly" && (
+              <label className="span-2">
+                Console query limit (seconds)
+                <input
+                  type="number"
+                  aria-label="Console query limit (seconds)"
+                  aria-describedby={consoleTimeoutDescription}
+                  min={1}
+                  max={86_400}
+                  step={1}
+                  required
+                  value={consoleTimeout}
+                  onChange={(event) => setConsoleTimeout(event.target.value)}
+                />
+                <span className="optional" id={consoleTimeoutDescription}>
+                  Choose 1–86400 seconds per unit for execution and result delivery, including
+                  draining rows. Save and connect applies this setting to a fresh session; each
+                  review shows its bound limit. Expiration closes the console connection. Safe
+                  outcome recording and settlement may take longer. Closing does not prove server
+                  cancellation, commit, rollback or other effects; SQL is never replayed
+                  automatically.
+                </span>
+              </label>
+            )}
+          {draft.engine === "snowflake" && (
+            <p className="form-note span-2">
+              {snowflakeAuthentication(draft.snowflake) === "externalBrowser"
+                ? "Safe Mode controls approval for opted-in operations. A separately enabled reviewed SQL console authorizes exact owner-written SQL, including server-validated selected units; otherwise generated DML/DDL keep their existing limits."
+                : "This authentication route supports read-only SQL."}
+            </p>
+          )}
           <label className="checkbox-label span-2">
             <input
               type="checkbox"
@@ -591,7 +890,7 @@ export function ConnectionDialog({
               Delete connection
             </button>
           )}
-          <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="button ghost" onClick={close}>
             Cancel
           </button>
           <button type="submit" className="button primary" disabled={busy || !desktopAvailable}>
@@ -619,31 +918,45 @@ export function ConnectDialog({
   const [sshPassword, setSshPassword] = useState(""),
     [keyPassphrase, setKeyPassphrase] = useState("");
   const trust = useSshTrust();
+  const setup = useConnectionSetup();
+  function close() {
+    setup.cancel();
+    onClose();
+  }
   async function connect(event: FormEvent) {
     event.preventDefault();
+    const attempt = setup.begin();
+    if (!attempt) return;
     setBusy(true);
     setError(null);
     try {
-      await trust.verify(profile);
-      const session = await client.call<SessionInfo>("connect", {
-        id: profile.id,
-        secrets: {
+      const attemptId = await attempt.prepare(profile.id);
+      if (!attemptId) return;
+      await trust.verify(profile, attemptId, () => attempt.active);
+      await attempt.connect(
+        profile.id,
+        {
           password: password || null,
           sshPassword: sshPassword || null,
           keyPassphrase: keyPassphrase || null,
         },
-      });
-      if (onConnected) {
-        onConnected(session);
-        onClose();
-      } else completeConnection(profile, session, onClose);
+        (session) => {
+          if (onConnected) {
+            onConnected(session);
+            onClose();
+          } else completeConnection(profile, session, onClose);
+        },
+      );
     } catch (error) {
-      setError(messageOf(error));
+      if (attempt.active) setError(messageOf(error));
     } finally {
-      setPassword("");
-      setSshPassword("");
-      setKeyPassphrase("");
-      setBusy(false);
+      if (attempt.active) {
+        setPassword("");
+        setSshPassword("");
+        setKeyPassphrase("");
+        setBusy(false);
+      }
+      setup.finish(attempt);
     }
   }
   if (trust.dialog) return trust.dialog;
@@ -651,8 +964,7 @@ export function ConnectDialog({
     <Modal
       title={onConnected ? `New SQL session for ${profile.name}` : `Connect to ${profile.name}`}
       subtitle={`${profile.username}@${profile.host}:${profile.port}/${profile.database}`}
-      onClose={onClose}
-      busy={busy}
+      onClose={close}
     >
       <form onSubmit={(e) => void connect(e)}>
         <div className="modal-body">
@@ -700,7 +1012,7 @@ export function ConnectDialog({
           <InlineError message={error} />
         </div>
         <footer className="modal-footer">
-          <button type="button" className="button ghost" onClick={onClose} disabled={busy}>
+          <button type="button" className="button ghost" onClick={close}>
             Cancel
           </button>
           <button className="button primary" type="submit" disabled={busy}>

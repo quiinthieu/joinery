@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("Redis connects, scans keys, inspects typed values and reviews a byte-safe edit", async ({
   page,

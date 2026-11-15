@@ -6,7 +6,20 @@ import type {
   NoArgCommandName,
   RequiredArgCommandName,
 } from "./command-map";
-import type { Bootstrap, PreparedPlan, SchemaDdlPlan, TableSchema } from "./generated";
+import type {
+  Bootstrap,
+  ChangePreview,
+  PreparedPlan,
+  RelationDefinition,
+  RelationConstraints,
+  RelationCheckConstraints,
+  RelationConstraintMappings,
+  RelationPreview,
+  SchemaDdlPlan,
+  SnowflakeContextCatalog,
+  SnowflakeGridResult,
+  TableSchema,
+} from "./generated";
 
 describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
   it("infers exact return types and argument shapes for zero-arg and required-arg commands", async () => {
@@ -14,6 +27,10 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     const typedClient: StudioClient = {
       call: callMock as unknown as StudioClient["call"],
       execute: vi.fn(),
+      prepareSnowflakeConsole: vi.fn(),
+      startSnowflakeConsole: vi.fn(),
+      snowflakeConsoleRun: vi.fn(),
+      snowflakeConsoleRequest: vi.fn(),
       exportData: vi.fn(),
       range: vi.fn(),
     };
@@ -26,6 +43,30 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       table: { schema: "public", name: "orders" },
     });
     expectTypeOf(schemaPromise).toEqualTypeOf<Promise<TableSchema>>();
+
+    const definitionPromise = typedClient.call("define_relation", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(definitionPromise).toEqualTypeOf<Promise<RelationDefinition>>();
+
+    const constraintsPromise = typedClient.call("inspect_relation_constraints", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(constraintsPromise).toEqualTypeOf<Promise<RelationConstraints>>();
+
+    const checkConstraintsPromise = typedClient.call("inspect_relation_check_constraints", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(checkConstraintsPromise).toEqualTypeOf<Promise<RelationCheckConstraints>>();
+
+    const mappingsPromise = typedClient.call("inspect_relation_constraint_mappings", {
+      sessionId: "session-1",
+      request: { revision: "catalog-1", targetId: "opaque-target" },
+    });
+    expectTypeOf(mappingsPromise).toEqualTypeOf<Promise<RelationConstraintMappings>>();
 
     const explicitGenericPromise = typedClient.call<TableSchema>("table_schema", {
       sessionId: "session-1",
@@ -60,13 +101,91 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
     });
     expectTypeOf(migrationPrepPromise).toEqualTypeOf<Promise<PreparedPlan>>();
 
+    const releasePreviewPromise = typedClient.call("release_csv_import_preview", {
+      sessionId: "session-1",
+      sourceToken: "source-1",
+      previewToken: "preview-1",
+    });
+    expectTypeOf(releasePreviewPromise).toEqualTypeOf<Promise<void>>();
+
+    const prepareGridPromise = typedClient.call("prepare_snowflake_grid_plan", {
+      request: {
+        sessionId: "session-1",
+        transactionId: null,
+        preview: {
+          revision: "catalog-1",
+          targetId: "opaque-target",
+          inspectionRevision: "inspect-1",
+        },
+        snapshotId: "snap-1",
+        mutations: [{ kind: "delete", rowIndex: 0 }],
+        mode: "manual",
+        rollbackPrior: false,
+      },
+    });
+    expectTypeOf(prepareGridPromise).toEqualTypeOf<Promise<ChangePreview>>();
+
+    const executeGridPromise = typedClient.call("execute_snowflake_grid_plan", {
+      planId: "plan-1",
+      approval: "approval-1",
+    });
+    expectTypeOf(executeGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
+
+    const cancelGridPromise = typedClient.call("cancel_snowflake_grid_plan", {
+      planId: "plan-1",
+    });
+    expectTypeOf(cancelGridPromise).toEqualTypeOf<Promise<string | null>>();
+
+    const pendingPreviewPromise = typedClient.call("preview_snowflake_grid_transaction_relation", {
+      transactionId: "tx-1",
+      request: {
+        revision: "catalog-1",
+        targetId: "opaque-target",
+        inspectionRevision: "inspect-1",
+      },
+    });
+    expectTypeOf(pendingPreviewPromise).toEqualTypeOf<Promise<RelationPreview>>();
+
+    const finishGridPromise = typedClient.call("finish_snowflake_grid_transaction", {
+      transactionId: "tx-1",
+      action: "commit",
+    });
+    expectTypeOf(finishGridPromise).toEqualTypeOf<Promise<SnowflakeGridResult>>();
+
+    const snowflakeContextsPromise = typedClient.call("snowflake_session_contexts", {
+      sessionId: "session-1",
+    });
+    expectTypeOf(snowflakeContextsPromise).toEqualTypeOf<Promise<SnowflakeContextCatalog>>();
+
+    const switchSnowflakeContextPromise = typedClient.call("switch_snowflake_context", {
+      sessionId: "session-1",
+      request: {
+        revision: "rev-1",
+        contextFingerprint: "fp-1",
+        target: { kind: "warehouse", warehouse: "COMPUTE_WH" },
+      },
+    });
+    expectTypeOf(switchSnowflakeContextPromise).toEqualTypeOf<Promise<SnowflakeContextCatalog>>();
+
     await Promise.all([
       bootstrapPromise,
+      definitionPromise,
+      constraintsPromise,
+      checkConstraintsPromise,
+      mappingsPromise,
       schemaPromise,
       explicitGenericPromise,
       migrationPrepPromise,
+      releasePreviewPromise,
+      prepareGridPromise,
+      executeGridPromise,
+      cancelGridPromise,
+      pendingPreviewPromise,
+      finishGridPromise,
+      snowflakeContextsPromise,
+      switchSnowflakeContextPromise,
     ]);
-    expect(callMock).toHaveBeenCalledTimes(4);
+    expect(callMock).toHaveBeenCalledTimes(16);
   });
 
   it("rejects unknown command names and invalid argument payloads at compile time", () => {
@@ -80,11 +199,105 @@ describe("JoineryCommandMap closed typed IPC contract (I03)", () => {
       // @ts-expect-error — missing required arguments for table_schema
       void c.call("table_schema");
 
+      void c.call("define_relation", {
+        sessionId: "session-1",
+        // @ts-expect-error — definitions resolve only retained targets, never caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("define_relation", {
+        sessionId: "session-1",
+        // @ts-expect-error — a retained target requires its catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraint inspection never accepts caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("inspect_relation_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraints require the retained catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_check_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraint inspection never accepts caller SQL
+        request: { revision: "catalog-1", targetId: "opaque-target", sql: "SELECT 1" },
+      });
+      void c.call("inspect_relation_check_constraints", {
+        sessionId: "session-1",
+        // @ts-expect-error — constraints require the retained catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
+      void c.call("inspect_relation_constraint_mappings", {
+        sessionId: "session-1",
+        // @ts-expect-error — mappings resolve names from the retained target only
+        request: { revision: "catalog-1", targetId: "opaque-target", table: "orders" },
+      });
+      void c.call("inspect_relation_constraint_mappings", {
+        sessionId: "session-1",
+        // @ts-expect-error — mapping reads require the retained catalog revision
+        request: { targetId: "opaque-target" },
+      });
+
       // @ts-expect-error — wrong argument shape for connect
       void c.call("connect", { id: 123 });
 
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        request: { action: "rollback", revision: "one-use" },
+      });
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        // @ts-expect-error — explicit controls cannot carry arbitrary SQL
+        request: { action: "begin", revision: "one-use", sql: "DROP TABLE x" },
+      });
+      void c.call("prepare_transaction_control", {
+        sessionId: "session-1",
+        // @ts-expect-error — action is a closed typed enumeration
+        request: { action: "autocommit", revision: "one-use" },
+      });
+      // @ts-expect-error — executing a boundary requires its prepared plan
+      void c.call("execute_transaction_control", { sessionId: "session-1", action: "commit" });
+
       // @ts-expect-error — wrong argument shape for generate_schema_ddl
       void c.call("generate_schema_ddl", { snapshot: "invalid" });
+
+      // @ts-expect-error — preparing a batch requires its exact preview generation
+      void c.call("prepare_csv_import_batch", {
+        sessionId: "session-1",
+        sourceToken: "source-1",
+        table: { schema: "public", name: "orders" },
+        options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+        mappings: [],
+        batchIndex: 0,
+      });
+
+      // @ts-expect-error — releasing a preview requires its exact generation
+      void c.call("release_csv_import_preview", {
+        sessionId: "session-1",
+        sourceToken: "source-1",
+      });
+
+      void c.call("finish_snowflake_grid_transaction", {
+        transactionId: "tx-1",
+        // @ts-expect-error — finish_snowflake_grid_transaction rejects arbitrary SQL actions
+        action: "savepoint",
+      });
+
+      void c.call("switch_snowflake_context", {
+        sessionId: "session-1",
+        request: {
+          revision: "rev-1",
+          contextFingerprint: "fp-1",
+          target: { kind: "role", role: "ANALYST" },
+          // @ts-expect-error — switch_snowflake_context never accepts caller SQL
+          sql: "USE ROLE ACCOUNTADMIN",
+        },
+      });
     };
 
     expect(typeof verifyCompileTimeConstraints).toBe("function");

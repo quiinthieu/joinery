@@ -95,15 +95,43 @@ impl Snowflake {
                 "Use uppercase unquoted Snowflake role, warehouse, database, and schema names",
             ));
         }
+        config.effective_console_timeout_seconds()?;
+        let explicit_boundary_policy =
+            config.authentication == SnowflakeAuthentication::ExternalBrowser;
+        if config.reviewed_dml
+            && (!explicit_boundary_policy || profile.safe_mode == SafeMode::ReadOnly)
+        {
+            return Err(AppError::invalid(
+                "Reviewed Snowflake SQL writes require explicit external-browser opt-in and a non-read-only policy",
+            ));
+        }
+        if config.reviewed_ddl
+            && (!explicit_boundary_policy || profile.safe_mode == SafeMode::ReadOnly)
+        {
+            return Err(AppError::invalid(
+                "Reviewed Snowflake table DDL requires explicit external-browser opt-in and a non-read-only policy",
+            ));
+        }
+        if config.reviewed_console
+            && (!explicit_boundary_policy || profile.safe_mode == SafeMode::ReadOnly)
+        {
+            return Err(AppError::invalid(
+                "Reviewed Snowflake consoles require explicit external-browser opt-in and a non-read-only policy",
+            ));
+        }
+        if !explicit_boundary_policy && profile.safe_mode != SafeMode::ReadOnly {
+            return Err(AppError::invalid(
+                "Only external browser SSO profiles may choose a non-read-only Snowflake transaction policy",
+            ));
+        }
         if profile.port != 443
             || profile.tls_mode != TlsMode::VerifyFull
             || profile.ssh.is_some()
             || profile.remember_password
-            || profile.safe_mode != SafeMode::ReadOnly
             || profile.ca_cert_path.is_some()
         {
             return Err(AppError::invalid(
-                "Snowflake requires read-only mode and direct verified HTTPS on port 443 without a stored password",
+                "Snowflake requires direct verified HTTPS on port 443 without a stored password",
             ));
         }
         account_url(&profile.host)?;
@@ -116,6 +144,13 @@ impl Snowflake {
     ) -> AppResult<(Arc<Self>, SessionInfo)> {
         let started = Instant::now();
         Self::validate_profile(profile)?;
+        if profile.snowflake.as_ref().unwrap().authentication
+            != SnowflakeAuthentication::LocalApplicationOauth
+        {
+            return Err(AppError::invalid(
+                "This profile requires Snowflake external browser SSO",
+            ));
+        }
         let config = profile
             .snowflake
             .as_ref()
@@ -163,6 +198,7 @@ impl Snowflake {
             ));
         }
         let info = SessionInfo {
+            console_mode: false,
             id: session_id.into(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Snowflake,
@@ -172,8 +208,10 @@ impl Snowflake {
             capabilities: EngineCapabilities {
                 sql: true,
                 transactions: false,
+                explicit_transaction_controls: false,
                 cancellation: true,
                 table_browsing: true,
+                relation_browsing: false,
                 table_editing: false,
                 table_filtering: false,
                 processes: false,
@@ -181,6 +219,8 @@ impl Snowflake {
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
+                snowflake_reviewed_ddl: false,
+                snowflake_grid_editing: false,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: true,
@@ -759,8 +799,12 @@ impl Driver for Snowflake {
             context_kind: SessionContextKind::Schema,
             active_context: Some(schema),
             database: self.database.clone(),
-            role: self.role.clone(),
+            role: Some(self.role.clone()),
+            warehouse: Some(self.warehouse.clone()),
             search_path: vec![qualified_schema],
+            context_fingerprint: None,
+            transaction_observation: None,
+            transaction_control_authority: None,
         })
     }
     async fn list_contexts(&self) -> AppResult<Vec<String>> {
@@ -869,6 +913,119 @@ mod tests {
         fn complete(&mut self, _: u64) -> AppResult<()> {
             self.completed = true;
             Ok(())
+        }
+    }
+
+    fn validation_profile(
+        authentication: SnowflakeAuthentication,
+        safe_mode: SafeMode,
+    ) -> ConnectionProfile {
+        ConnectionProfile {
+            id: "snowflake-profile".into(),
+            name: "Snowflake fixture".into(),
+            group_id: "local".into(),
+            engine: EngineKind::Snowflake,
+            host: "org-account.snowflakecomputing.com".into(),
+            port: 443,
+            database: "ANALYTICS".into(),
+            username: "BILLIE".into(),
+            environment: Environment::Local,
+            safe_mode,
+            tls_mode: TlsMode::VerifyFull,
+            ca_cert_path: None,
+            ssh: None,
+            remember_password: false,
+            store_query_text: false,
+            store_drafts: false,
+            snowflake: Some(SnowflakeConfig {
+                authentication,
+                reviewed_dml: false,
+                reviewed_ddl: false,
+                reviewed_console: false,
+                reviewed_console_timeout_seconds: None,
+                role: "READ_ONLY".into(),
+                warehouse: "COMPUTE".into(),
+                schema: "PUBLIC".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn only_explicit_external_browser_profiles_accept_owner_selected_transaction_policy() {
+        for safe_mode in [
+            SafeMode::Silent,
+            SafeMode::Confirm,
+            SafeMode::Guard,
+            SafeMode::PasswordGated,
+            SafeMode::ReadOnly,
+        ] {
+            let external = validation_profile(SnowflakeAuthentication::ExternalBrowser, safe_mode);
+            assert!(
+                Snowflake::validate_profile(&external).is_ok(),
+                "external-browser profile should accept {safe_mode:?}"
+            );
+
+            let oauth =
+                validation_profile(SnowflakeAuthentication::LocalApplicationOauth, safe_mode);
+            let legacy_default = validation_profile(SnowflakeAuthentication::default(), safe_mode);
+            if safe_mode == SafeMode::ReadOnly {
+                assert!(Snowflake::validate_profile(&oauth).is_ok());
+                assert!(Snowflake::validate_profile(&legacy_default).is_ok());
+            } else {
+                assert!(Snowflake::validate_profile(&oauth).is_err());
+                assert!(Snowflake::validate_profile(&legacy_default).is_err());
+            }
+        }
+
+        let legacy_config: SnowflakeConfig = serde_json::from_value(json!({
+            "role": "READ_ONLY",
+            "warehouse": "COMPUTE",
+            "schema": "PUBLIC"
+        }))
+        .unwrap();
+        assert_eq!(
+            legacy_config.authentication,
+            SnowflakeAuthentication::LocalApplicationOauth
+        );
+    }
+
+    #[test]
+    fn external_browser_policy_does_not_relax_snowflake_transport_or_identifiers() {
+        let valid = validation_profile(
+            SnowflakeAuthentication::ExternalBrowser,
+            SafeMode::PasswordGated,
+        );
+        assert!(Snowflake::validate_profile(&valid).is_ok());
+
+        let mut cases = Vec::new();
+        let mut profile = valid.clone();
+        profile.port = 444;
+        cases.push(profile);
+        let mut profile = valid.clone();
+        profile.tls_mode = TlsMode::Disable;
+        cases.push(profile);
+        let mut profile = valid.clone();
+        profile.ssh = Some(SshConfig {
+            host: "bastion.example".into(),
+            port: 22,
+            username: "fixture".into(),
+            authentication: SshAuthentication::Agent,
+            private_key_path: None,
+            agent_socket_path: None,
+        });
+        cases.push(profile);
+        let mut profile = valid.clone();
+        profile.remember_password = true;
+        cases.push(profile);
+        let mut profile = valid.clone();
+        profile.ca_cert_path = Some("/tmp/ca.pem".into());
+        cases.push(profile);
+        let mut profile = valid.clone();
+        profile.database = "MixedCase".into();
+        cases.push(profile);
+
+        for profile in cases {
+            assert!(Snowflake::validate_profile(&profile).is_err());
         }
     }
 
@@ -1055,7 +1212,7 @@ mod tests {
                             serde_json::from_slice(&bytes[end + 4..end + 4 + length]).unwrap();
                         assert_eq!(
                             payload.get("statement").and_then(Value::as_str),
-                            Some("SELECT ?, CAST(? AS DATE), PARSE_JSON(?)")
+                            Some("SELECT CAST(? AS NUMBER(38,0)), CAST(? AS DATE), PARSE_JSON(?)")
                         );
                         assert_eq!(
                             payload.get("bindings"),
@@ -1152,6 +1309,17 @@ mod tests {
         assert_eq!(sink.rows[0][0].as_deref(), Some("42"));
         assert_eq!(sink.rows[0][1].as_deref(), Some("2024-02-29"));
         assert_eq!(sink.rows[0][2], None);
+        assert_eq!(
+            driver
+                .inspection_schema(&TableRef {
+                    schema: "PUBLIC".into(),
+                    name: "ORDERS".into(),
+                })
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unsupported
+        );
         server.await.unwrap();
 
         // Verify rewritten compilation error maps back to original UTF-16 token

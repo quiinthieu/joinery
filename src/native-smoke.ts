@@ -1,14 +1,19 @@
-import { client, messageOf } from "./ipc/client";
+import { appErrorOf, client, messageOf } from "./ipc/client";
 import { resultCache } from "./data/result-cache";
 import { useStudio } from "./state/studio";
 import type {
   Bootstrap,
   BrowseQuery,
+  ConnectionProfile,
   ResourceUsage,
   ResultInfo,
   TableChanges,
+  SwitchSchemaRequest,
+  SwitchSnowflakeContextRequest,
+  TransactionControlRequest,
 } from "./ipc/generated";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { EditorState } from "@codemirror/state";
 import { CompletionContext } from "@codemirror/autocomplete";
 import { sql } from "@codemirror/lang-sql";
@@ -39,14 +44,72 @@ function workerRoundtrip(worker: Worker, payload: unknown) {
   });
 }
 export async function runNativeSmoke() {
+  const { runNativeEncryptedRecovery } = await import("./native-encrypted-recovery");
+  if (await runNativeEncryptedRecovery()) return;
+  const { runNativeRecovery } = await import("./native-recovery");
+  if (await runNativeRecovery()) return;
   const started = performance.now();
   const report: Record<string, unknown> = { passed: false, checks: [] };
   try {
     await useStudio.getState().initialize();
     assert(useStudio.getState().bootstrap, "Native bootstrap failed");
+    const history = await client.call("history_page", {
+      request: { search: "", cursor: null, limit: 50 },
+    });
+    assert(
+      history.entries.length === 0 && history.nextCursor === null,
+      "Fresh native history must be empty",
+    );
+    assert(
+      (await client.call("history_entry", { id: "missing-native-history" })) === null,
+      "Missing native history must not return cached SQL",
+    );
     for (const [command, args] of [
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1" }],
       ["prepare_explain", { sessionId: "missing-native-fixture", sql: "SELECT 1", analyze: true }],
+      ["relation_catalog", { sessionId: "missing-native-fixture" }],
+      [
+        "define_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "inspect_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "inspect_relation_constraints",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "inspect_relation_check_constraints",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "inspect_relation_constraint_mappings",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing" },
+        },
+      ],
+      [
+        "preview_relation",
+        {
+          sessionId: "missing-native-fixture",
+          request: { revision: "obsolete", targetId: "missing", inspectionRevision: "obsolete" },
+        },
+      ],
       [
         "completion_catalog",
         {
@@ -155,6 +218,67 @@ export async function runNativeSmoke() {
         },
       ],
       [
+        "switch_session_schema",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            database: "DB",
+            schema: "PUBLIC",
+            contextFingerprint: "obsolete",
+          } satisfies SwitchSchemaRequest,
+        },
+      ],
+      ["snowflake_session_contexts", { sessionId: "missing-native-fixture" }],
+      [
+        "switch_snowflake_context",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            contextFingerprint: "obsolete",
+            target: { kind: "role", role: "ANALYST" },
+          } satisfies SwitchSnowflakeContextRequest,
+        },
+      ],
+      [
+        "preflight_snowflake_ddl",
+        {
+          request: {
+            sessionId: "missing-native-fixture",
+            action: {
+              kind: "createTable",
+              database: "DB",
+              schema: "PUBLIC",
+              name: "NEW_NATIVE_FIXTURE",
+              columns: [{ name: "ID", dataType: "NUMBER(38,0)", nullable: true }],
+            },
+          },
+        },
+      ],
+      [
+        "prepare_snowflake_ddl",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            revision: "obsolete",
+            action: { kind: "dropTable", browseRevision: "obsolete", targetId: "opaque" },
+            sql: 'DROP TABLE "DB"."PUBLIC"."NEW_NATIVE_FIXTURE" RESTRICT',
+          },
+        },
+      ],
+      ["refresh_snowflake_ddl_metadata", { sessionId: "missing-native-fixture" }],
+      [
+        "prepare_transaction_control",
+        {
+          sessionId: "missing-native-fixture",
+          request: {
+            action: "rollback",
+            revision: "00000000-0000-4000-8000-000000000001",
+          } satisfies TransactionControlRequest,
+        },
+      ],
+      [
         "set_transaction_mode",
         {
           sessionId: "missing-native-fixture",
@@ -239,6 +363,27 @@ export async function runNativeSmoke() {
     }
     for (const [command, expectedCode, invokeCommand] of [
       [
+        "authorize_snowflake_ddl",
+        "approvalExpired",
+        () => client.call("authorize_snowflake_ddl", { planId: "missing-native-ddl-plan" }),
+      ],
+      [
+        "execute_snowflake_ddl",
+        "approvalExpired",
+        () => client.call("execute_snowflake_ddl", { planId: "missing-native-ddl-plan" }),
+      ],
+      [
+        "execute_snowflake_dml",
+        "approvalExpired",
+        () => client.call("execute_snowflake_dml", { planId: "missing-native-dml-plan" }),
+      ],
+      [
+        "execute_transaction_control",
+        "approvalExpired",
+        () =>
+          client.call("execute_transaction_control", { planId: "missing-native-boundary-plan" }),
+      ],
+      [
         "pick_export_destination",
         "invalidInput",
         () => client.call("pick_export_destination", { suggestedName: "", format: "csv" }),
@@ -288,6 +433,7 @@ export async function runNativeSmoke() {
             options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
             mappings: [],
             batchIndex: 0,
+            previewToken: "missing-preview-generation",
           }),
       ],
       [
@@ -502,6 +648,25 @@ export async function runNativeSmoke() {
       }
       assert(matched, `Native ${command} must reach its Rust guard (${expectedCode})`);
     }
+    // Exercise Tauri's real named-argument decoder independently of typed callers.
+    for (const previewToken of [undefined, null]) {
+      const args: Record<string, unknown> = {
+        sessionId: "missing-native-fixture",
+        sourceToken: "missing-import-token",
+        table: { schema: "public", name: "missing" },
+        options: { delimiter: "comma", hasHeader: true, nullToken: "\\N" },
+        mappings: [],
+        batchIndex: 0,
+      };
+      if (previewToken !== undefined) args.previewToken = previewToken;
+      let rejected = false;
+      try {
+        await invoke("prepare_csv_import_batch", args);
+      } catch (error) {
+        rejected = typeof error === "string" && error.includes("previewToken");
+      }
+      assert(rejected, "Native CSV preparation must reject missing/null preview ownership");
+    }
     const extractedParams = await client.call<{ key: string }[]>("extract_query_params", {
       engine: "postgres",
       sql: "SELECT * FROM orders WHERE id = :order_id AND status = $1",
@@ -547,6 +712,24 @@ export async function runNativeSmoke() {
     );
     await useStudio.getState().deleteSqlSnippet(savedSnippet.id);
     await useStudio.getState().saveSqlFormatSettings(originalFormat);
+    const originalStorage = Boolean(reloaded.temporaryResultStorage);
+    try {
+      assert(
+        await client.call("set_temporary_result_storage", { enabled: true }),
+        "Native temporary result storage command failed",
+      );
+      assert(
+        (await client.call("bootstrap")).temporaryResultStorage === true,
+        "Native temporary result storage preference was not persisted",
+      );
+      assert(
+        (await client.call("set_temporary_result_storage", { enabled: false })) === false &&
+          (await client.call("bootstrap")).temporaryResultStorage === false,
+        "Native temporary result storage could not be disabled",
+      );
+    } finally {
+      await client.call("set_temporary_result_storage", { enabled: originalStorage });
+    }
     await client.call("release_sql_file_grant", { token: "missing-native-smoke-sql-grant" });
     report.bootstrapMs = performance.now() - started;
     const shellDeadline = performance.now() + 3000;
@@ -723,10 +906,64 @@ export async function runNativeSmoke() {
     await new Promise((resolve) => setTimeout(resolve, options.idleMs));
     await checkpoint("idle");
     report.checkpoints = checkpoints;
+    // Exercise the actual native command permissions without opening a socket.
+    // Shutdown comes last because its publication barrier is irreversible.
+    const setupProfile: ConnectionProfile = {
+      id: crypto.randomUUID(),
+      name: "Native connection cancellation fixture",
+      groupId: "local",
+      engine: "redis",
+      host: "127.0.0.1",
+      port: 9,
+      database: "0",
+      username: "default",
+      environment: "local",
+      safeMode: "readOnly",
+      tlsMode: "disable",
+      caCertPath: null,
+      ssh: null,
+      rememberPassword: false,
+      storeQueryText: false,
+      storeDrafts: false,
+      snowflake: null,
+    };
+    const expectCancelled = async (operation: Promise<unknown>) => {
+      let failure: unknown;
+      try {
+        await operation;
+      } catch (error) {
+        failure = error;
+      }
+      assert(failure && appErrorOf(failure).code === "cancelled", "Native setup was not cancelled");
+    };
+    await client.call("save_profile", { profile: setupProfile });
+    try {
+      const attemptId = await client.call("prepare_connection", { id: setupProfile.id });
+      await client.call("cancel_connection_attempt", { attemptId });
+      const secrets = { password: null, sshPassword: null, keyPassphrase: null };
+      await expectCancelled(client.call("connect_prepared", { attemptId, secrets }));
+      const closingAttempt = await client.call("prepare_connection", { id: setupProfile.id });
+      await client.call("app_shutdown");
+      await client.call("app_shutdown");
+      await expectCancelled(
+        client.call("connect_prepared", { attemptId: closingAttempt, secrets }),
+      );
+      await expectCancelled(client.call("prepare_connection", { id: setupProfile.id }));
+      const usage = await client.call("resource_usage");
+      assert(
+        usage.sessionCount === 0 && usage.activeRuns === 0,
+        "Native shutdown leaked a session",
+      );
+    } finally {
+      await client.call("delete_profile", { id: setupProfile.id });
+    }
     report.passed = true;
     report.checks = [
       "native bootstrap",
+      "main WebView history page/detail command permissions",
       "completion IPC disconnected-session guards",
+      "explicit transaction IPC admission guards",
+      "CSV required preview ownership IPC",
       "raw binary channel",
       "Arrow worker",
       "exact integer",
@@ -734,12 +971,15 @@ export async function runNativeSmoke() {
       "Unicode",
       "formatter worker",
       "format and snippet persistence",
+      "temporary result storage IPC and persistence",
       "scoped completion worker and quoted acceptance",
       "CodeMirror",
       "Canvas grid",
       "native close guard",
       "repeated result/tab cleanup",
       "in-flight Arrow release",
+      "native connection reservation and cancellation IPC",
+      "native shutdown publication barrier and idempotence",
     ];
     report.frontendElapsedMs = performance.now() - started;
   } catch (error) {

@@ -3,6 +3,130 @@ use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 mod common;
 
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn csv_preview_release_discards_only_its_pending_plan_and_releases_mdl() {
+    use futures_util::FutureExt;
+    use joinery_core::file_capability::SandboxFileDialog;
+    for port in [53306, 53307] {
+        let root = tempfile::tempdir().unwrap();
+        let dialog = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+        let studio = Studio::with_secrets_and_dialog(
+            root.path(),
+            Arc::new(MemorySecrets::default()),
+            dialog.clone(),
+        )
+        .unwrap();
+        let p = studio
+            .save_profile(profile(port, SafeMode::Confirm), None)
+            .unwrap();
+        let session = studio
+            .connect(
+                &p.id,
+                ConnectionSecrets {
+                    password: Some("joinery-local-only".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // A separate Studio cannot revoke this Studio's leases before its DDL.
+        let (_observer_root, observer, observer_session) = setup(port, SafeMode::Silent).await;
+        let table = TableRef {
+            schema: "joinery".into(),
+            name: format!("csv_release_{}", new_id().replace('-', "")),
+        };
+        let qualified = format!("joinery.{}", table.name);
+        completed(&run(&observer, &observer_session, &format!("CREATE TABLE {qualified} (id integer PRIMARY KEY, note varchar(64)) ENGINE=InnoDB")).await);
+        let checked = std::panic::AssertUnwindSafe(async {
+            std::fs::write(dialog.root().join("release.csv"), "id,note\n1,unused\n").unwrap();
+            dialog.queue_open(Some("release.csv")).unwrap();
+            let source = studio.pick_import_source().await.unwrap().unwrap();
+            let old = studio
+                .preview_csv_import(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let current = studio
+                .preview_csv_import(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+            let old_token = old.preview_token.as_deref().unwrap();
+            let token = current.preview_token.as_deref().unwrap();
+            let batch = studio
+                .prepare_csv_import_batch(
+                    &session.id,
+                    &source.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    current.mappings,
+                    0,
+                    token,
+                )
+                .await
+                .unwrap();
+            studio.release_csv_import_preview(&session.id, &source.token, old_token);
+            let approval = studio
+                .authorize(
+                    &batch.plan.id,
+                    None,
+                    batch.plan.confirmation_text.as_deref(),
+                )
+                .expect("releasing another generation must preserve this pending plan");
+            studio.release_csv_import_preview(&session.id, &source.token, token);
+            assert_eq!(
+                studio
+                    .execute(&batch.plan.id, Some(&approval), Arc::new(|_| true))
+                    .unwrap_err()
+                    .code,
+                ErrorCode::ApprovalExpired
+            );
+            // If the unused plan still owned its cloned guard, this independent
+            // DROP would wait for the production 60-second lease, then time out.
+            let dropped = tokio::time::timeout(
+                Duration::from_secs(4),
+                run(
+                    &observer,
+                    &observer_session,
+                    &format!("DROP TABLE {qualified}"),
+                ),
+            )
+            .await
+            .expect("last preview/plan release must promptly release actual MDL");
+            completed(&dropped);
+        })
+        .catch_unwind()
+        .await;
+        studio.shutdown();
+        let cleanup = run(
+            &observer,
+            &observer_session,
+            &format!("DROP TABLE IF EXISTS {qualified}"),
+        )
+        .await;
+        let absence = result(&run(&observer, &observer_session, &format!("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='joinery' AND table_name='{}'", table.name)).await);
+        let count = observer.results.row(&absence.id, 0).unwrap();
+        observer.release_result(&absence.id);
+        observer.shutdown();
+        completed(&cleanup);
+        assert_eq!(count, vec![Some("0".into())]);
+        if let Err(panic) = checked {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
 fn profile(port: u16, mode: SafeMode) -> ConnectionProfile {
     ConnectionProfile {
         id: new_id(),
@@ -2246,7 +2370,9 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .unwrap()
             .unwrap();
         let usage_before = studio.results.usage();
-        assert_eq!(usage_before.0, 0, "port {port}");
+        // Setup statement descriptors now count toward the memory budget.
+        // Export must add neither retained data/metadata nor temporary bytes.
+        let disk_before = studio.results.disk_usage();
         let (tx, rx) = mpsc::unbounded_channel();
         studio
             .start_export(
@@ -2270,6 +2396,7 @@ async fn mysql_and_mariadb_stream_multi_page_exports_without_retaining_rows() {
             .unwrap();
         let events = finish_export(rx).await;
         assert_eq!(studio.results.usage(), usage_before, "port {port}");
+        assert_eq!(studio.results.disk_usage(), disk_before, "port {port}");
         assert!(
             matches!(
                 events.last(),
@@ -2438,6 +2565,7 @@ async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_con
                 CsvImportOptions::default(),
                 preview.mappings.clone(),
                 0,
+                preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -2475,14 +2603,47 @@ async fn mysql_and_mariadb_import_csv_batches_enforce_read_only_and_rollback_con
         .unwrap();
         sandbox.queue_open(Some("conflict-mysql.csv")).unwrap();
         let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+        assert_eq!(
+            studio
+                .prepare_csv_import_batch(
+                    &session.id,
+                    &conflict_grant.token,
+                    &table,
+                    CsvImportOptions::default(),
+                    preview.mappings.clone(),
+                    0,
+                    preview.preview_token.as_deref().unwrap(),
+                )
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict,
+            "a different file grant must establish its own original target preview"
+        );
+        let conflict_preview = studio
+            .preview_csv_import(
+                &session.id,
+                &conflict_grant.token,
+                &table,
+                CsvImportOptions::default(),
+                preview.mappings,
+            )
+            .await
+            .unwrap();
+        assert!(
+            conflict_preview.can_prepare,
+            "port {port}: {:?}",
+            conflict_preview.issues
+        );
         let conflict_batch = studio
             .prepare_csv_import_batch(
                 &session.id,
                 &conflict_grant.token,
                 &table,
                 CsvImportOptions::default(),
-                preview.mappings,
+                conflict_preview.mappings,
                 0,
+                conflict_preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -4552,6 +4713,163 @@ async fn table_maintenance_executes_reviewed_analyze_optimize_and_check_and_reje
 
 #[tokio::test]
 #[ignore = "requires disposable MySQL and MariaDB services"]
+async fn query_result_commit_preserves_snapshot_and_rerun_reads_server_defaults_and_triggers() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        let table = format!("query_snapshot_{}", new_id().replace('-', "_"));
+        completed(&run(&studio, &session, &format!("CREATE TABLE joinery.{table} (id bigint AUTO_INCREMENT PRIMARY KEY, note varchar(255) NOT NULL DEFAULT 'server default') ENGINE=InnoDB")).await);
+        let sql = format!("SELECT id, note FROM joinery.{table}");
+        let initial = result(&run(&studio, &session, &sql).await);
+        let insert = studio
+            .prepare_table_changes(
+                &session.id,
+                TableChanges {
+                    result_id: Some(initial.id.clone()),
+                    updates: Vec::new(),
+                    deletes: Vec::new(),
+                    inserts: vec![RowInsert { values: Vec::new() }],
+                },
+            )
+            .unwrap();
+        let insert_events = execute(&studio, &insert.plan).await;
+        let retained_insert = studio.results.info(&initial.id).unwrap();
+        let stale_insert_edit = studio.prepare_changes(
+            &session.id,
+            &initial.id,
+            vec![CellChange {
+                row: 0,
+                column: "c1".into(),
+                value: Some("must re-run".into()),
+            }],
+        );
+        let actual = result(&run(&studio, &session, &sql).await);
+        let actual_row = studio.results.row(&actual.id, 0).unwrap();
+        completed(&run(&studio, &session, &format!("CREATE TRIGGER joinery.{table}_upper BEFORE UPDATE ON joinery.{table} FOR EACH ROW SET NEW.note=UPPER(NEW.note)")).await);
+        // Dialect DDL may be conservatively classified Unknown. It must release
+        // retained MDL before submission and invalidate this old source lease.
+        let stale = studio
+            .prepare_changes(
+                &session.id,
+                &actual.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: Some("stale trigger source".into()),
+                }],
+            )
+            .unwrap();
+        let stale_events = execute(&studio, &stale.plan).await;
+        assert!(stale_events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{stale_events:?}");
+        assert!(
+            stale_events.iter().any(|event| matches!(
+                event,
+                QueryEvent::Finished {
+                    status: RunStatus::Failed,
+                    ..
+                }
+            )),
+            "{stale_events:?}"
+        );
+        let actual = result(&run(&studio, &session, &sql).await);
+        let update = studio
+            .prepare_changes(
+                &session.id,
+                &actual.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: Some("mixed case".into()),
+                }],
+            )
+            .unwrap();
+        let update_events = execute(&studio, &update.plan).await;
+        let retained_update = studio.results.row(&actual.id, 0).unwrap();
+        let updated_info = studio.results.info(&actual.id).unwrap();
+        let after_trigger = result(&run(&studio, &session, &sql).await);
+        let after_trigger_row = studio.results.row(&after_trigger.id, 0).unwrap();
+        completed(&run(&studio, &session, &format!("DROP TABLE joinery.{table}")).await);
+        completed(&insert_events);
+        completed(&update_events);
+        assert_eq!(
+            retained_insert.retained_rows, 0,
+            "commit invented a retained default row on {port}"
+        );
+        assert!(matches!(
+            retained_insert.editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(
+            stale_insert_edit.unwrap_err().code,
+            ErrorCode::PolicyBlocked
+        );
+        assert!(actual_row[0].is_some());
+        assert_eq!(actual_row[1].as_deref(), Some("server default"));
+        assert_eq!(retained_update, actual_row);
+        assert!(matches!(
+            updated_info.editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(after_trigger_row[1].as_deref(), Some("MIXED CASE"));
+        assert!(matches!(
+            after_trigger.editability,
+            Some(ResultEditability::Editable { .. })
+        ));
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn query_result_temporary_shadow_is_read_only() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+        completed(&run(&studio, &session, "CREATE TEMPORARY TABLE sample AS SELECT id, note FROM joinery.sample WHERE id = 9007199254740995").await);
+        // MySQL temporary tables shadow even explicitly database-qualified names.
+        for sql in [
+            "SELECT id, note FROM sample",
+            "SELECT id, note FROM joinery.sample",
+        ] {
+            let shadow = result(&run(&studio, &session, sql).await);
+            assert!(
+                matches!(shadow.editability, Some(ResultEditability::ReadOnly { .. })),
+                "temporary shadow was editable on {port}: {:?}",
+                shadow.editability
+            );
+            assert_eq!(
+                studio
+                    .prepare_changes(
+                        &session.id,
+                        &shadow.id,
+                        vec![CellChange {
+                            row: 0,
+                            column: "c1".into(),
+                            value: Some("must_not_write_permanent".into())
+                        }]
+                    )
+                    .unwrap_err()
+                    .code,
+                ErrorCode::PolicyBlocked
+            );
+        }
+        completed(&run(&studio, &session, "DROP TEMPORARY TABLE sample").await);
+        let permanent = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM joinery.sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
+        assert!(matches!(
+            permanent.editability,
+            Some(ResultEditability::Editable { .. })
+        ));
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
 async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rejects_missing_pk() {
     for port in [53306, 53307] {
         let (_root, studio, session) = setup(port, SafeMode::Silent).await;
@@ -4599,9 +4917,28 @@ async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rej
         completed(&execute(&studio, &preview.plan).await);
 
         assert_eq!(
-            studio.results.row(&editable_res.id, 0).unwrap()[1].as_deref(),
-            Some(next_note.as_str()),
+            studio.results.row(&editable_res.id, 0).unwrap()[1],
+            original_note,
             "port {port}"
+        );
+        assert!(matches!(
+            studio.results.info(&editable_res.id).unwrap().editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ));
+        assert_eq!(
+            studio
+                .prepare_changes(
+                    &session.id,
+                    &editable_res.id,
+                    vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: original_note.clone(),
+                    }]
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
         );
 
         let missing_pk = result(
@@ -4626,13 +4963,21 @@ async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rej
         );
 
         // Restore original value
+        let refreshed = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT id, note FROM sample WHERE id = 9007199254740995",
+            )
+            .await,
+        );
         let restore = studio
             .prepare_table_changes(
                 &session.id,
                 TableChanges {
-                    result_id: Some(editable_res.id.clone()),
+                    result_id: Some(refreshed.id.clone()),
                     updates: vec![ResultChanges {
-                        result_id: editable_res.id,
+                        result_id: refreshed.id,
                         changes: vec![CellChange {
                             row: 0,
                             column: "c1".into(),

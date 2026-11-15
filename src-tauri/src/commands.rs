@@ -13,6 +13,8 @@ pub use recovery::*;
 pub struct WindowGuard {
     pub requested: std::sync::atomic::AtomicU64,
     pub acknowledged: std::sync::atomic::AtomicU64,
+    pub draining: std::sync::atomic::AtomicBool,
+    pub exit_allowed: std::sync::atomic::AtomicBool,
 }
 
 #[tauri::command]
@@ -68,26 +70,59 @@ pub async fn delete_profile(studio: State<'_, Arc<Studio>>, id: String) -> AppRe
 }
 
 #[tauri::command]
+pub async fn prepare_connection(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<String> {
+    studio.prepare_connection(&id)
+}
+
+#[tauri::command]
+pub async fn connect_prepared(
+    studio: State<'_, Arc<Studio>>,
+    attempt_id: String,
+    secrets: ConnectionSecrets,
+) -> AppResult<SessionInfo> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_CONNECT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    studio.connect_prepared(&attempt_id, secrets).await
+}
+
+#[tauri::command]
+pub async fn cancel_connection_attempt(
+    studio: State<'_, Arc<Studio>>,
+    attempt_id: String,
+) -> AppResult<()> {
+    studio.cancel_connection_attempt_and_wait(&attempt_id).await
+}
+
+#[tauri::command]
+pub async fn app_shutdown(studio: State<'_, Arc<Studio>>) -> AppResult<()> {
+    studio.shutdown_and_wait().await
+}
+
+#[tauri::command]
 pub async fn connect(
     studio: State<'_, Arc<Studio>>,
     id: String,
     secrets: ConnectionSecrets,
 ) -> AppResult<SessionInfo> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_CONNECT_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.connect(&id, secrets).await
 }
 
 #[tauri::command]
 pub async fn disconnect(studio: State<'_, Arc<Studio>>, session_id: String) -> AppResult<()> {
-    studio.disconnect(&session_id);
-    Ok(())
+    studio.disconnect_and_wait(&session_id).await
 }
 
 #[tauri::command]
 pub async fn probe_ssh(
     studio: State<'_, Arc<Studio>>,
     profile_id: String,
+    attempt_id: Option<String>,
 ) -> AppResult<SshHostKey> {
-    studio.probe_ssh(&profile_id).await
+    studio
+        .probe_ssh_with_attempt(&profile_id, attempt_id.as_deref())
+        .await
 }
 
 #[tauri::command]
@@ -130,6 +165,8 @@ pub async fn prepare_execution(
     sql: String,
     params: Option<Vec<QueryParamInput>>,
 ) -> AppResult<PreparedPlan> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_PREPARE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.prepare_execution_with_params(&session_id, &sql, params)
 }
 
@@ -165,12 +202,97 @@ pub async fn authorize_plan(
 }
 
 #[tauri::command]
+pub async fn prepare_snowflake_console(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SnowflakeConsoleRequest,
+) -> AppResult<SnowflakeConsolePlan> {
+    studio.prepare_snowflake_console(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn start_snowflake_console(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleStart,
+    on_event: Channel<QueryEvent>,
+) -> AppResult<SnowflakeConsoleStartResult> {
+    studio.inner().start_snowflake_console(
+        &request,
+        Arc::new(move |event| on_event.send(event).is_ok()),
+    )
+}
+
+#[tauri::command]
+pub async fn snowflake_console_run(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleRunView>> {
+    studio.snowflake_console_run(&client_request_id)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_request(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleRequestLookup>> {
+    studio.snowflake_console_request(&client_request_id)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_receipts(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleReceiptPageRequest,
+) -> AppResult<SnowflakeConsoleReceiptPage> {
+    studio.snowflake_console_receipts(&request)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_receipt_summary(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<Option<SnowflakeConsoleReceiptSummary>> {
+    studio.snowflake_console_receipt_summary(&client_request_id)
+}
+
+#[tauri::command]
+pub async fn set_snowflake_console_receipt_archive(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeConsoleReceiptArchiveRequest,
+) -> AppResult<SnowflakeConsoleReceiptArchiveResult> {
+    studio.set_snowflake_console_receipt_archive(&request)
+}
+
+#[tauri::command]
+pub async fn snowflake_console_pending(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<SnowflakeConsolePending> {
+    studio.snowflake_console_pending()
+}
+
+#[tauri::command]
+pub async fn snowflake_console_storage(
+    studio: State<'_, Arc<Studio>>,
+) -> AppResult<SnowflakeConsoleStorage> {
+    studio.snowflake_console_storage()
+}
+
+#[tauri::command]
+pub async fn release_snowflake_console_results(
+    studio: State<'_, Arc<Studio>>,
+    client_request_id: String,
+) -> AppResult<()> {
+    studio.release_snowflake_console_results(&client_request_id)
+}
+
+#[tauri::command]
 pub async fn execute_plan(
     studio: State<'_, Arc<Studio>>,
     plan_id: String,
     approval: Option<String>,
     on_event: Channel<QueryEvent>,
 ) -> AppResult<String> {
+    #[cfg(feature = "native-smoke")]
+    NATIVE_SMOKE_EXECUTE_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     studio.inner().execute(
         &plan_id,
         approval.as_deref(),
@@ -181,6 +303,74 @@ pub async fn execute_plan(
 #[tauri::command]
 pub async fn cancel_run(studio: State<'_, Arc<Studio>>, run_id: String) -> AppResult<()> {
     studio.cancel(&run_id).await
+}
+
+#[tauri::command]
+pub async fn relation_catalog(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<BrowseCatalog> {
+    studio.relation_catalog(&session_id).await
+}
+
+#[tauri::command]
+pub async fn inspect_relation(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationRequest,
+) -> AppResult<RelationInspection> {
+    studio.inspect_relation(&session_id, &request).await
+}
+
+#[tauri::command]
+pub async fn define_relation(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: DefineRelationRequest,
+) -> AppResult<RelationDefinition> {
+    studio.define_relation(&session_id, &request).await
+}
+
+#[tauri::command]
+pub async fn inspect_relation_constraints(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationConstraintsRequest,
+) -> AppResult<RelationConstraints> {
+    studio
+        .inspect_relation_constraints(&session_id, &request)
+        .await
+}
+
+#[tauri::command]
+pub async fn inspect_relation_check_constraints(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationCheckConstraintsRequest,
+) -> AppResult<RelationCheckConstraints> {
+    studio
+        .inspect_relation_check_constraints(&session_id, &request)
+        .await
+}
+
+#[tauri::command]
+pub async fn inspect_relation_constraint_mappings(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: InspectRelationConstraintMappingsRequest,
+) -> AppResult<RelationConstraintMappings> {
+    studio
+        .inspect_relation_constraint_mappings(&session_id, &request)
+        .await
+}
+
+#[tauri::command]
+pub async fn preview_relation(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: PreviewRelationRequest,
+) -> AppResult<RelationPreview> {
+    studio.preview_relation(&session_id, &request).await
 }
 
 #[tauri::command]
@@ -459,8 +649,33 @@ pub async fn history(
 }
 
 #[tauri::command]
+pub async fn history_page(
+    studio: State<'_, Arc<Studio>>,
+    request: HistoryPageRequest,
+) -> AppResult<HistoryPage> {
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.history_page(&request))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn history_entry(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<Option<HistoryEntry>> {
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.history_entry(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
 pub async fn clear_history(studio: State<'_, Arc<Studio>>) -> AppResult<()> {
-    studio.clear_history()
+    let studio = Arc::clone(studio.inner());
+    tokio::task::spawn_blocking(move || studio.clear_history())
+        .await
+        .map_err(join_error)?
 }
 
 #[tauri::command]
@@ -478,6 +693,18 @@ pub struct NativeSmokeState {
     pub root: std::path::PathBuf,
     pub options: crate::native_smoke_config::SmokeOptions,
 }
+
+// Process-lifetime invocation counts prove restart did not briefly reconnect or
+// replay SQL and then discard its session/results before recovery inspected it.
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_CONNECT_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_PREPARE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "native-smoke")]
+static NATIVE_SMOKE_EXECUTE_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(feature = "native-smoke")]
 #[tauri::command]
@@ -531,20 +758,45 @@ pub async fn native_smoke_checkpoint(
 ) -> AppResult<serde_json::Value> {
     if !matches!(
         phase.as_str(),
-        "shell" | "loading" | "loaded" | "cycling" | "released" | "idle"
+        "options" | "shell" | "loading" | "loaded" | "cycling" | "released" | "idle"
     ) {
         return Err(AppError::invalid("Unknown native test phase"));
     }
     if cycle.is_some_and(|cycle| phase != "cycling" || cycle > state.options.cleanup_cycles) {
         return Err(AppError::invalid("Invalid native test cycle"));
     }
-    let checkpoint = serde_json::json!({
+    let mut checkpoint = serde_json::json!({
         "phase": phase,
         "cycle": cycle,
         "options": state.options,
         "nativeElapsedMs": state.started.elapsed().as_millis() as u64,
         "usage": studio.usage(),
+        "snowflakeRuntimeAvailable": studio.snowflake_runtime_available(),
+        "invocations": {
+            "connect": NATIVE_SMOKE_CONNECT_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            "prepareExecution": NATIVE_SMOKE_PREPARE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+            "execute": NATIVE_SMOKE_EXECUTE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        },
     });
+    if let Some(setup_name) = match state.options.recovery_stage {
+        Some(crate::native_smoke_config::RecoveryStage::Verify) => Some("report-setup.json"),
+        Some(crate::native_smoke_config::RecoveryStage::EncryptedVerify) => {
+            Some("report-encrypted-setup.json")
+        }
+        _ => None,
+    } {
+        let path = state.root.join(setup_name);
+        let bytes = crate::files::read_bounded(
+            path.to_str()
+                .ok_or_else(|| AppError::invalid("Invalid native recovery path"))?,
+            16 * 1024,
+        )?;
+        checkpoint["recoverySetup"] = serde_json::from_slice(&bytes)
+            .map_err(|_| AppError::invalid("Invalid native recovery setup report"))?;
+    }
+    if phase == "options" {
+        return Ok(checkpoint);
+    }
     std::fs::write(
         state.root.join("checkpoint.json"),
         serde_json::to_vec(&checkpoint)
@@ -573,6 +825,27 @@ pub async fn native_smoke_report(
             .map_err(|_| AppError::internal("Could not encode native test report"))?,
     )
     .map_err(|_| AppError::internal("Could not write native test report"))?;
+    if let Some(setup_name) = if passed {
+        match state.options.recovery_stage {
+            Some(crate::native_smoke_config::RecoveryStage::Setup) => Some("report-setup.json"),
+            Some(crate::native_smoke_config::RecoveryStage::EncryptedSetup) => {
+                Some("report-encrypted-setup.json")
+            }
+            _ => None,
+        }
+    } else {
+        None
+    } {
+        std::fs::write(
+            state.root.join(setup_name),
+            serde_json::to_vec_pretty(&report)
+                .map_err(|_| AppError::internal("Could not encode native recovery setup report"))?,
+        )
+        .map_err(|_| AppError::internal("Could not write native recovery setup report"))?;
+        // Recovery setup must close through App's real close-request handler.
+        // Only failures and the verification stage use the ordinary test exit.
+        return Ok(());
+    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         app.exit(if passed { 0 } else { 1 });
@@ -684,6 +957,18 @@ pub async fn preview_csv_import(
 }
 
 #[tauri::command]
+pub fn release_csv_import_preview(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    source_token: String,
+    preview_token: String,
+) {
+    studio.release_csv_import_preview(&session_id, &source_token, &preview_token);
+}
+
+#[tauri::command]
+// Named IPC arguments bind every batch to its exact reviewed preview.
+#[allow(clippy::too_many_arguments)]
 pub async fn prepare_csv_import_batch(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
@@ -692,6 +977,7 @@ pub async fn prepare_csv_import_batch(
     options: CsvImportOptions,
     mappings: Vec<CsvColumnMapping>,
     batch_index: usize,
+    preview_token: String,
 ) -> AppResult<ChangePreview> {
     studio
         .prepare_csv_import_batch(
@@ -701,6 +987,7 @@ pub async fn prepare_csv_import_batch(
             options,
             mappings,
             batch_index,
+            &preview_token,
         )
         .await
 }
@@ -717,8 +1004,11 @@ pub async fn compare_data(
 pub async fn session_contexts(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
+    resume_metadata: Option<bool>,
 ) -> AppResult<SessionContextOptions> {
-    studio.session_contexts(&session_id).await
+    studio
+        .session_contexts_with_refresh(&session_id, resume_metadata.unwrap_or(false))
+        .await
 }
 
 #[tauri::command]
@@ -731,12 +1021,179 @@ pub async fn switch_session_context(
 }
 
 #[tauri::command]
+pub async fn switch_session_schema(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SwitchSchemaRequest,
+) -> AppResult<SessionContextOptions> {
+    studio.switch_session_schema(&session_id, &request).await
+}
+
+#[tauri::command]
+pub async fn snowflake_session_contexts(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    resume_metadata: Option<bool>,
+) -> AppResult<SnowflakeContextCatalog> {
+    studio
+        .snowflake_session_contexts(&session_id, resume_metadata.unwrap_or(false))
+        .await
+}
+
+#[tauri::command]
+pub async fn switch_snowflake_context(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SwitchSnowflakeContextRequest,
+) -> AppResult<SnowflakeContextCatalog> {
+    studio.switch_snowflake_context(&session_id, &request).await
+}
+
+#[tauri::command]
 pub async fn set_transaction_mode(
     studio: State<'_, Arc<Studio>>,
     session_id: String,
     mode: TransactionMode,
 ) -> AppResult<SessionRuntimeState> {
     studio.set_transaction_mode(&session_id, mode).await
+}
+
+#[tauri::command]
+pub fn prepare_transaction_control(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: TransactionControlRequest,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_transaction_control(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn execute_transaction_control(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<TransactionControlResult> {
+    studio
+        .execute_transaction_control(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_dml(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeDmlResult> {
+    studio
+        .execute_snowflake_dml(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn preflight_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeDdlPreflightRequest,
+) -> AppResult<SnowflakeDdlPreflightResponse> {
+    studio.preflight_snowflake_ddl(&request).await
+}
+
+#[tauri::command]
+pub async fn prepare_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+    request: SnowflakeDdlRequest,
+) -> AppResult<PreparedPlan> {
+    studio.prepare_snowflake_ddl(&session_id, &request)
+}
+
+#[tauri::command]
+pub async fn authorize_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    passphrase: Option<String>,
+    confirmation: Option<String>,
+    target_confirmation: Option<String>,
+) -> AppResult<String> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let passphrase = passphrase.map(Zeroizing::new);
+        studio.authorize_snowflake_ddl(
+            &plan_id,
+            passphrase.as_deref().map(String::as_str),
+            confirmation.as_deref(),
+            target_confirmation.as_deref(),
+        )
+    })
+    .await
+    .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_ddl(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeDdlResult> {
+    studio
+        .execute_snowflake_ddl(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn refresh_snowflake_ddl_metadata(
+    studio: State<'_, Arc<Studio>>,
+    session_id: String,
+) -> AppResult<SessionContextOptions> {
+    studio.refresh_snowflake_ddl_metadata(&session_id).await
+}
+
+#[tauri::command]
+pub async fn prepare_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    request: PrepareSnowflakeGridEditsRequest,
+) -> AppResult<ChangePreview> {
+    studio.prepare_snowflake_grid_plan(&request).await
+}
+
+#[tauri::command]
+pub async fn execute_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+    approval: Option<String>,
+) -> AppResult<SnowflakeGridResult> {
+    studio
+        .execute_snowflake_grid_plan(&plan_id, approval.as_deref())
+        .await
+}
+
+#[tauri::command]
+pub async fn cancel_snowflake_grid_plan(
+    studio: State<'_, Arc<Studio>>,
+    plan_id: String,
+) -> AppResult<Option<String>> {
+    studio.cancel_snowflake_grid_plan(&plan_id).await
+}
+
+#[tauri::command]
+pub async fn preview_snowflake_grid_transaction_relation(
+    studio: State<'_, Arc<Studio>>,
+    transaction_id: String,
+    request: PreviewRelationRequest,
+) -> AppResult<RelationPreview> {
+    studio
+        .preview_snowflake_grid_transaction_relation(&transaction_id, &request)
+        .await
+}
+
+#[tauri::command]
+pub async fn finish_snowflake_grid_transaction(
+    studio: State<'_, Arc<Studio>>,
+    transaction_id: String,
+    action: SnowflakeGridFinishAction,
+) -> AppResult<SnowflakeGridResult> {
+    studio
+        .execute_snowflake_grid_finish(&transaction_id, action)
+        .await
 }
 
 #[tauri::command]
@@ -816,6 +1273,17 @@ pub async fn save_bookmark(
 pub async fn delete_bookmark(studio: State<'_, Arc<Studio>>, id: String) -> AppResult<()> {
     let studio = studio.inner().clone();
     tokio::task::spawn_blocking(move || studio.delete_bookmark(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn set_temporary_result_storage(
+    studio: State<'_, Arc<Studio>>,
+    enabled: bool,
+) -> AppResult<bool> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.set_temporary_result_storage(enabled))
         .await
         .map_err(join_error)?
 }

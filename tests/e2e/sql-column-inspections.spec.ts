@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { tableFromIPC } from "apache-arrow";
 
 async function connect(page: Page, engine: string, port: number) {

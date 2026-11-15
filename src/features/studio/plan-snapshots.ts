@@ -42,6 +42,33 @@ export function planSourceForExecution(
   if (session.engine === "snowflake") {
     const prefix = "EXPLAIN USING JSON\n";
     if (!executedSql.startsWith(prefix)) return;
+    if (
+      runtime &&
+      runtime.sessionId === session.id &&
+      runtime.transactionObservation?.status === "observed" &&
+      runtime.warehouse &&
+      runtime.contextFingerprint
+    ) {
+      return {
+        engine: "snowflake",
+        bindingDigest: plan.bindingDigest,
+        serverVersion: session.serverVersion,
+        connectionId: session.connectionId,
+        sessionId: session.id,
+        context: JSON.stringify({
+          database: runtime.database,
+          role: runtime.role,
+          warehouse: runtime.warehouse,
+          activeContext: runtime.activeContext,
+          searchPath: runtime.searchPath,
+          contextFingerprint: runtime.contextFingerprint,
+          transactionMode: runtime.transactionMode,
+          transactionState: runtime.transactionState,
+        }),
+        query: executedSql.slice(prefix.length),
+        executedSql,
+      };
+    }
     return {
       engine: "snowflake",
       bindingDigest: plan.bindingDigest,
@@ -116,7 +143,10 @@ export class PlanSnapshotStore {
     this.listeners.forEach((listener) => listener());
   }
   capture(ownerTabId: string, resultId: string, source: PlanSource, raw: string) {
-    if (source.engine === "snowflake" || source.comparisonUnavailable)
+    if (
+      source.comparisonUnavailable ||
+      (source.engine === "snowflake" && !source.context.startsWith("{"))
+    )
       throw new Error(
         source.comparisonUnavailable ??
           "Snowflake snapshots require observed warehouse and session context.",
@@ -129,7 +159,11 @@ export class PlanSnapshotStore {
     if (bytes > PLAN_SNAPSHOT_BUDGET)
       throw new Error("Plan snapshot exceeds the shared 2 MiB budget.");
     const parsed = parseQueryPlan(raw);
-    const engines = { postgres: "PostgreSQL", mysql: "MySQL/MariaDB" };
+    const engines = {
+      postgres: "PostgreSQL",
+      mysql: "MySQL/MariaDB",
+      snowflake: "Snowflake",
+    } as const;
     if (engines[source.engine] !== parsed.engine)
       throw new Error("Plan format does not match its execution engine.");
     const saved: PlanSnapshot = Object.freeze({

@@ -1,4 +1,5 @@
 import { ExecutionTiming } from "../features/studio/ExecutionTiming";
+import { ExecutionSummary } from "../features/studio/ExecutionSummary";
 import {
   lazy,
   Suspense,
@@ -45,6 +46,7 @@ import type {
   SessionInfo,
   TableInfo,
   TransactionMode,
+  ExplicitTransactionAction,
 } from "../ipc/generated";
 import type { StudioTab } from "../state/studio";
 import {
@@ -55,6 +57,9 @@ import {
   isTabFileDirty,
   bookmarkTargetForTab,
   findBookmarkForTarget,
+  isSnowflakeConsoleSession,
+  assertOrdinarySession,
+  isConsoleOwnedResult,
 } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
@@ -71,12 +76,20 @@ import {
   ObjectKindGlyph,
 } from "../features/studio/ObjectInspectorView";
 import { SessionStructureView } from "../features/studio/SessionStructureView";
+import { RelationBrowser } from "../features/studio/RelationBrowser";
+import { SnowflakeDdlNotice } from "../features/studio/SnowflakeDdlNotice";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
 import { resultCache } from "../data/result-cache";
 import { tabNavigation } from "../components/ui/tabs";
 import { QueryPlanView, isQueryPlanResult } from "../features/studio/QueryPlanView";
+import {
+  SnowflakeDmlNotice,
+  SnowflakeDmlPendingControl,
+} from "../features/studio/SnowflakeDmlNotice";
+
+import { consoleReceiptBlocksSession } from "../features/studio/SnowflakeConsole";
 
 const SqlEditor = lazy(() =>
   import("../features/studio/SqlEditor").then((module) => ({ default: module.SqlEditor })),
@@ -90,10 +103,13 @@ interface Props {
   editorRef: RefObject<EditorHandle>;
   gridRef: RefObject<DatabaseGridHandle>;
   onRun(sql?: string, fromUtf16?: number): void;
+  onRunConsoleScript?(): void;
+  onRunConsoleSelected?(): void;
   onExplain(): void;
   onAnalyze(): void;
   onOpenParameters(slots: QueryParamSlot[]): void;
   onReview(): void;
+  onTransactionControl(action: ExplicitTransactionAction): Promise<void>;
   onConfirm(title: string, description: string, action: () => void): void;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
@@ -116,10 +132,13 @@ export function Workbench({
   editorRef,
   gridRef,
   onRun,
+  onRunConsoleScript,
+  onRunConsoleSelected,
   onExplain,
   onAnalyze,
   onOpenParameters,
   onReview,
+  onTransactionControl,
   onConfirm,
   onSelect,
   onOpenValue,
@@ -152,9 +171,15 @@ export function Workbench({
     [renamingSessionId, setRenamingSessionId] = useState<string | null>(null),
     [renameDraft, setRenameDraft] = useState(""),
     [txBusy, setTxBusy] = useState(false),
+    [relationBrowserSession, setRelationBrowserSession] = useState<string | null>(null),
+    [relationBrowserRevision, setRelationBrowserRevision] = useState<number | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
-  const objectExplorerSupported = Boolean(session?.capabilities.objectExplorer);
+  const consoleMode = !!session && isSnowflakeConsoleSession(state, session.id);
+  const heldReceipt = Object.values(state.snowflakeConsoleReceipts).find(
+    (receipt) => !!session && consoleReceiptBlocksSession(receipt, session.id),
+  );
+  const objectExplorerSupported = !consoleMode && Boolean(session?.capabilities.objectExplorer);
   const tableCatalogMatch =
     tab.kind === "table" && tab.table && tab.connectionId
       ? state.catalog[tab.connectionId]?.find(
@@ -178,10 +203,25 @@ export function Workbench({
   const activeTableDetailsLoading = Boolean(
     tableObjectKey && tableDetailsLoadingKey === tableObjectKey,
   );
-  const running = tab.status === "running" || tab.status === "queued";
+  const controlPending = !!session && !!state.sessionTransactionPending[session.id];
+  const sessionQueryPending =
+    !!session &&
+    state.tabs.some(
+      (item) =>
+        querySessionForTab(item, state.sessions)?.id === session.id &&
+        (item.status === "queued" || item.status === "running"),
+    );
+  const rollbackOnly =
+    session &&
+    state.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly";
+  const running =
+    tab.status === "running" || tab.status === "queued" || controlPending || !!heldReceipt;
+  const dmlPending =
+    tab.kind === "query" && tab.status === "running" && !tab.runId && controlPending;
   const result = tab.results.find((r) => r.id === tab.activeResultId) ?? tab.results[0];
   const queryResultEditable =
     tab.kind === "query" &&
+    !consoleMode &&
     !!result &&
     result.editability?.status === "editable" &&
     profile?.safeMode !== "readOnly" &&
@@ -206,6 +246,7 @@ export function Workbench({
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
   const tableEditable =
     tab.kind === "table" &&
+    !consoleMode &&
     tab.view === "data" &&
     !!tab.schema?.editable &&
     !!session &&
@@ -302,8 +343,11 @@ export function Workbench({
     : undefined;
   const sessionLabel = activePoolEntry?.label ?? null;
   const runtimeState = session ? state.sessionStates[session.id] : undefined;
-  const txMode: TransactionMode = runtimeState?.transactionMode ?? "autoCommit";
-  const txState = runtimeState?.transactionState ?? "idle";
+  useEffect(() => {
+    if (controlPending) setRelationBrowserSession(null);
+  }, [controlPending]);
+  const txMode: TransactionMode = runtimeState?.transactionMode ?? "unknown";
+  const txState = runtimeState?.transactionState ?? "unknown";
   const fileDirty = isTabFileDirty(tab);
   const bookmarkCandidate = bookmarkTargetForTab(tab, state.catalog);
   const activeBookmark = bookmarkCandidate
@@ -319,7 +363,8 @@ export function Workbench({
       for (const result of tab.results) {
         resultCache.release(result.id);
         dirtyStore.clearTab(result.id, [result.id]);
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
       }
       state.updateTab(tab.id, {
         connectionId: connectionId || null,
@@ -328,6 +373,7 @@ export function Workbench({
         status: "idle",
         error: null,
         metrics: {},
+        executionSummary: undefined,
         dataSessionId: null,
         querySession: null,
         querySessionClosed: false,
@@ -338,7 +384,7 @@ export function Workbench({
     if (lastOwner)
       onConfirm(
         "Change query connection?",
-        "This closes the isolated SQL session and rolls back its open transactions.",
+        "This closes the isolated SQL session. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
         apply,
       );
     else apply();
@@ -371,6 +417,7 @@ export function Workbench({
     let active = true;
     setTableDetailsLoadingKey(tableObjectKey);
     setTableDetailsErrorState((prev) => (prev?.key === tableObjectKey ? null : prev));
+    assertOrdinarySession(session.id);
     void client
       .call<ObjectDetails>("object_details", { sessionId: session.id, object: objectRef })
       .then((data) => {
@@ -416,6 +463,13 @@ export function Workbench({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
   }
+  if (consoleMode && tab.kind !== "query")
+    return (
+      <p role="status">
+        Metadata is disabled on this reviewed SQL console session. Open a separate profile with
+        reviewed console off; temporary objects and transactions are not shared.
+      </p>
+    );
   return (
     <>
       <div className="query-toolbar">
@@ -565,7 +619,7 @@ export function Workbench({
                         if (sessionHasOpenTransaction(state.sessionStates, targetSessionId))
                           onConfirm(
                             "Disconnect console session?",
-                            "Disconnecting this session rolls back its open transaction.",
+                            "Disconnecting closes this session. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
                             runDisconnect,
                           );
                         else runDisconnect();
@@ -590,70 +644,133 @@ export function Workbench({
               )}
             </>
           )}
-          {tab.kind === "query" && session?.capabilities.transactions && (
-            <>
-              <select
-                aria-label="Transaction mode"
-                value={txMode}
-                disabled={running || txBusy}
-                onChange={(event) => {
-                  const nextMode = event.target.value as TransactionMode;
-                  setTxBusy(true);
-                  void state
-                    .setTransactionMode(session.id, nextMode)
-                    .catch((error) => state.notify(messageOf(error)))
-                    .finally(() => setTxBusy(false));
-                }}
-              >
-                <option value="autoCommit">Auto-commit</option>
-                <option value="manual">Manual commit</option>
-              </select>
-              {txState !== "idle" && (
-                <span className={`tx-badge ${txState}`} aria-live="polite">
-                  {txState === "failed" ? "Failed transaction" : "In transaction"}
-                </span>
-              )}
-              {(txMode === "manual" || txState !== "idle") && (
-                <>
-                  <button
-                    className="button ghost small"
-                    aria-label="Commit transaction"
-                    disabled={
-                      running ||
-                      txBusy ||
-                      txState !== "inTransaction" ||
-                      profile?.safeMode === "readOnly"
-                    }
-                    onClick={() => {
-                      setTxBusy(true);
-                      void state
-                        .commitTransaction(session.id)
-                        .catch((error) => state.notify(messageOf(error)))
-                        .finally(() => setTxBusy(false));
-                    }}
-                  >
-                    <Check size={12} />
-                    Commit
-                  </button>
-                  <button
-                    className="button ghost small"
-                    aria-label="Rollback transaction"
-                    disabled={running || txBusy || txState === "idle"}
-                    onClick={() => {
-                      setTxBusy(true);
-                      void state
-                        .rollbackTransaction(session.id)
-                        .catch((error) => state.notify(messageOf(error)))
-                        .finally(() => setTxBusy(false));
-                    }}
-                  >
-                    <RotateCcw size={12} />
-                    Rollback
-                  </button>
-                </>
-              )}
-            </>
-          )}
+          {tab.kind === "query" &&
+            session &&
+            !consoleMode &&
+            (session.capabilities.transactions || session.engine === "snowflake") && (
+              <>
+                <select
+                  aria-label="Transaction mode"
+                  value={txMode}
+                  disabled={
+                    running || txBusy || !session.capabilities.transactions || txMode === "unknown"
+                  }
+                  onChange={(event) => {
+                    const nextMode = event.target.value as TransactionMode;
+                    if (nextMode === "unknown") return;
+                    setTxBusy(true);
+                    void state
+                      .setTransactionMode(session.id, nextMode)
+                      .catch((error) => state.notify(messageOf(error)))
+                      .finally(() => setTxBusy(false));
+                  }}
+                >
+                  {txMode === "unknown" && (
+                    <option value="unknown" disabled>
+                      Mode unknown
+                    </option>
+                  )}
+                  <option value="autoCommit">Auto-commit</option>
+                  <option value="manual">Manual commit</option>
+                </select>
+                {txState !== "idle" && (
+                  <span className={`tx-badge ${txState}`} aria-live="polite">
+                    {txState === "unknown"
+                      ? "Transaction state unknown"
+                      : txState === "failed"
+                        ? "Failed transaction"
+                        : runtimeState?.transactionObservation?.status === "observed"
+                          ? "Open transaction · usability unknown"
+                          : "In transaction"}
+                  </span>
+                )}
+                {session.capabilities.explicitTransactionControls && (
+                  <>
+                    {runtimeState?.transactionControlAuthority?.status === "rollbackOnly" && (
+                      <span role="status">Only rollback recovery is available</span>
+                    )}
+                    {(["begin", "commit", "rollback"] as const).map((action) => {
+                      const authority = runtimeState?.transactionControlAuthority;
+                      const allowed =
+                        authority?.status === "rollbackOnly"
+                          ? action === "rollback"
+                          : authority?.allowedActions.includes(action) === true;
+                      const label =
+                        action === "begin" ? "Begin" : action === "commit" ? "Commit" : "Rollback";
+                      return (
+                        <button
+                          key={action}
+                          className="button ghost small"
+                          aria-label={`${label} transaction`}
+                          disabled={
+                            running ||
+                            sessionQueryPending ||
+                            txBusy ||
+                            !allowed ||
+                            (action !== "rollback" && profile?.safeMode === "readOnly")
+                          }
+                          onClick={() => {
+                            setTxBusy(true);
+                            void onTransactionControl(action)
+                              .catch((error) => state.notify(messageOf(error)))
+                              .finally(() => setTxBusy(false));
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </>
+                )}
+                {session.capabilities.transactions &&
+                  (txMode === "manual" || txState !== "idle") && (
+                    <>
+                      <button
+                        className="button ghost small"
+                        aria-label="Commit transaction"
+                        disabled={
+                          running ||
+                          txBusy ||
+                          !session.capabilities.transactions ||
+                          txState !== "inTransaction" ||
+                          profile?.safeMode === "readOnly"
+                        }
+                        onClick={() => {
+                          setTxBusy(true);
+                          void state
+                            .commitTransaction(session.id)
+                            .catch((error) => state.notify(messageOf(error)))
+                            .finally(() => setTxBusy(false));
+                        }}
+                      >
+                        <Check size={12} />
+                        Commit
+                      </button>
+                      <button
+                        className="button ghost small"
+                        aria-label="Rollback transaction"
+                        disabled={
+                          running ||
+                          txBusy ||
+                          !session.capabilities.transactions ||
+                          txState === "idle" ||
+                          txState === "unknown"
+                        }
+                        onClick={() => {
+                          setTxBusy(true);
+                          void state
+                            .rollbackTransaction(session.id)
+                            .catch((error) => state.notify(messageOf(error)))
+                            .finally(() => setTxBusy(false));
+                        }}
+                      >
+                        <RotateCcw size={12} />
+                        Rollback
+                      </button>
+                    </>
+                  )}
+              </>
+            )}
         </div>
         <div className="query-actions">
           {bookmarkCandidate && (
@@ -669,6 +786,24 @@ export function Workbench({
           )}
           {tab.kind === "query" && (
             <>
+              {!consoleMode && session?.capabilities.relationBrowsing && (
+                <button
+                  className="button ghost small"
+                  disabled={running || !!state.sessionMetadataRefreshRequired[session.id]}
+                  title={
+                    state.sessionMetadataRefreshRequired[session.id]
+                      ? "Refresh completion context before browsing relations"
+                      : undefined
+                  }
+                  onClick={() => {
+                    assertOrdinarySession(session.id);
+                    setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
+                    setRelationBrowserSession(session.id);
+                  }}
+                >
+                  <Table2 size={13} /> Browse relations
+                </button>
+              )}
               <button
                 className="button ghost small"
                 aria-label="Open SQL file"
@@ -717,15 +852,24 @@ export function Workbench({
                 <Code2 size={13} />
                 Format
               </button>
-              {running ? (
-                <button
-                  className="button cancel-query"
-                  onClick={() =>
-                    tab.runId &&
-                    void client
-                      .call("cancel_run", { runId: tab.runId })
+              {dmlPending && session ? (
+                <SnowflakeDmlPendingControl
+                  onDisconnect={() =>
+                    void state
+                      .disconnectQuerySession(session.id)
                       .catch((error) => state.notify(messageOf(error)))
                   }
+                />
+              ) : running && !controlPending ? (
+                <button
+                  className="button cancel-query"
+                  onClick={() => {
+                    if (heldReceipt) void state.cancelSnowflakeConsole(heldReceipt.clientRequestId);
+                    else if (tab.runId)
+                      void client
+                        .call("cancel_run", { runId: tab.runId })
+                        .catch((error) => state.notify(messageOf(error)));
+                  }}
                 >
                   <Square size={11} />
                   Cancel<kbd>⌘ .</kbd>
@@ -734,47 +878,60 @@ export function Workbench({
                 <button
                   className="button primary run-button"
                   onClick={() => onRun()}
-                  disabled={!session}
+                  disabled={!session || controlPending || rollbackOnly}
                 >
                   <Play size={12} fill="currentColor" />
-                  Run<kbd>⌘ ↵</kbd>
+                  {consoleMode ? "Review and run" : "Run"}
+                  <kbd>⌘ ↵</kbd>
                 </button>
               )}
-              {profile && ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+              {!consoleMode &&
+                profile &&
+                ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !session || rollbackOnly}
+                    title="Estimate the selected query or current statement without ANALYZE"
+                    onClick={onExplain}
+                  >
+                    <Gauge size={13} />
+                    Explain
+                  </button>
+                )}
+              {!consoleMode &&
+                Boolean(
+                  session
+                    ? (session.capabilities.explainAnalyze ??
+                        (profile?.engine === "postgres" ||
+                          session.capabilities.actualPlan === "mariaDbJson" ||
+                          session.capabilities.actualPlan === "mysqlTree"))
+                    : profile?.engine === "postgres",
+                ) && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !session || rollbackOnly}
+                    title="Executes the selected query or current statement after review to collect actual measurements"
+                    onClick={onAnalyze}
+                  >
+                    <Gauge size={13} />
+                    Analyze
+                  </button>
+                )}
+              {consoleMode && (
                 <button
                   className="button ghost small"
                   disabled={running || !session}
-                  title="Estimate the selected query or current statement without ANALYZE"
-                  onClick={onExplain}
+                  onClick={onRunConsoleSelected}
                 >
-                  <Gauge size={13} />
-                  Explain
-                </button>
-              )}
-              {Boolean(
-                session
-                  ? (session.capabilities.explainAnalyze ??
-                      (profile?.engine === "postgres" ||
-                        session.capabilities.actualPlan === "mariaDbJson" ||
-                        session.capabilities.actualPlan === "mysqlTree"))
-                  : profile?.engine === "postgres",
-              ) && (
-                <button
-                  className="button ghost small"
-                  disabled={running || !session}
-                  title="Executes the selected query or current statement after review to collect actual measurements"
-                  onClick={onAnalyze}
-                >
-                  <Gauge size={13} />
-                  Analyze
+                  Review selected server unit
                 </button>
               )}
               <button
                 className="icon-button run-all"
                 title="Run all statements · ⇧⌘↵"
                 aria-label="Run all statements"
-                disabled={running || !session}
-                onClick={() => onRun(tab.sql, 0)}
+                disabled={running || !session || rollbackOnly}
+                onClick={() => (consoleMode ? onRunConsoleScript?.() : onRun(tab.sql, 0))}
               >
                 <ChevronDown size={13} />
               </button>
@@ -830,17 +987,62 @@ export function Workbench({
             </>
           )}
           {tab.kind === "object" && (
-            <button
-              className="button ghost small"
-              disabled={!session}
-              onClick={() => state.updateTab(tab.id, { revision: tab.revision + 1 })}
-            >
-              <RefreshCw size={13} />
-              Refresh
-            </button>
+            <>
+              {!consoleMode &&
+                session?.capabilities.relationBrowsing &&
+                tab.object &&
+                (tab.object.kind === "table" ||
+                  tab.object.kind === "view" ||
+                  tab.object.kind === "materializedView") && (
+                  <button
+                    className="button ghost small"
+                    disabled={!!state.sessionMetadataRefreshRequired[session.id]}
+                    onClick={() => {
+                      assertOrdinarySession(session.id);
+                      setRelationBrowserRevision(state.sessionContextRevision[session.id] ?? 0);
+                      setRelationBrowserSession(session.id);
+                    }}
+                  >
+                    <Table2 size={13} /> Browse relations
+                  </button>
+                )}
+              <button
+                className="button ghost small"
+                disabled={!session}
+                onClick={() => state.updateTab(tab.id, { revision: tab.revision + 1 })}
+              >
+                <RefreshCw size={13} />
+                Refresh
+              </button>
+            </>
           )}
         </div>
       </div>
+      {consoleMode && tab.kind === "query" && (
+        <div className="query-notice" role="note">
+          Reviewed Snowflake console · One retained physical session across runs. Write explicit
+          BEGIN, COMMIT or ROLLBACK in reviewed SQL. Automatic metadata and context probes are
+          disabled. For metadata, explicitly open a separate profile with reviewed console off; it
+          cannot share temporary objects or transactions. Each review shows the execution and
+          result-delivery limit per unit; profile changes apply to fresh sessions. Expiration closes
+          the console connection. Safe outcome recording and settlement may take longer; closing
+          does not prove server cancellation or transaction effects. SQL is never replayed
+          automatically.
+        </div>
+      )}
+      {!consoleMode &&
+        relationBrowserSession &&
+        session?.id === relationBrowserSession &&
+        relationBrowserRevision === (state.sessionContextRevision[session.id] ?? 0) &&
+        !state.sessionMetadataRefreshRequired[session.id] &&
+        !running && (
+          <RelationBrowser
+            key={`${tab.id}:${session.id}:${state.sessionContextRevision[session.id] ?? 0}:${tab.revision}`}
+            sessionId={session.id}
+            ownerTabId={tab.id}
+            onClose={() => setRelationBrowserSession(null)}
+          />
+        )}
       {tab.kind === "query" && profile?.engine === "redis" && (
         <RedisTools
           sessionId={session?.id ?? null}
@@ -864,7 +1066,7 @@ export function Workbench({
                 onRun={onRun}
                 onOpenParameters={onOpenParameters}
                 onOpenObject={
-                  session && tab.connectionId
+                  !consoleMode && session && tab.connectionId
                     ? (object, highlightedColumn, catalogRevision) =>
                         state.openSessionObject(tab.id, object, highlightedColumn, catalogRevision)
                     : undefined
@@ -1249,6 +1451,13 @@ export function Workbench({
       {tab.kind === "query" && tab.clientStartedAt !== undefined && (
         <ExecutionTiming metrics={tab.runMetrics} clientElapsedMs={tab.clientElapsedMs} />
       )}
+      {tab.kind === "query" &&
+        tab.clientStartedAt !== undefined &&
+        !["idle", "queued", "running"].includes(tab.status) &&
+        !tab.snowflakeDmlResult &&
+        !tab.snowflakeDdlResult && (
+          <ExecutionSummary summary={tab.executionSummary} status={tab.status} />
+        )}
       {filtering && tab.view === "data" && (
         <TableFilterBar
           query={tab.query}
@@ -1258,6 +1467,18 @@ export function Workbench({
             profile?.engine === "postgres" ? "case-insensitive text" : "follows column collation"
           }
           onChange={applyQuery}
+        />
+      )}
+      {tab.kind === "query" && tab.snowflakeDmlResult && (
+        <SnowflakeDmlNotice
+          result={tab.snowflakeDmlResult}
+          hasPriorResults={tab.results.length > 0}
+        />
+      )}
+      {tab.kind === "query" && tab.snowflakeDdlResult && (
+        <SnowflakeDdlNotice
+          result={tab.snowflakeDdlResult}
+          hasPriorResults={tab.results.length > 0}
         />
       )}
       {tab.error &&

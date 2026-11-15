@@ -4,6 +4,19 @@ import type {
   Bootstrap,
   BrowseApproval,
   BrowseQuery,
+  BrowseCatalog,
+  DefineRelationRequest,
+  InspectRelationRequest,
+  InspectRelationConstraintsRequest,
+  InspectRelationCheckConstraintsRequest,
+  InspectRelationConstraintMappingsRequest,
+  PreviewRelationRequest,
+  RelationInspection,
+  RelationDefinition,
+  RelationConstraints,
+  RelationCheckConstraints,
+  RelationConstraintMappings,
+  RelationPreview,
   CellChange,
   ChangePreview,
   CompareRequest,
@@ -23,11 +36,15 @@ import type {
   ExportRequest,
   FileSelection,
   HistoryEntry,
+  HistoryPage,
+  HistoryPageRequest,
   InboundForeignKey,
   IndexConstraintAction,
   IndexConstraintPreview,
   LockWaitSnapshot,
-  MetadataBackup,
+  RecoveryBackup,
+  RecoveryOperation,
+  RecoveryRequest,
   ObjectDetails,
   OpenedSqlFile,
   PreparedPlan,
@@ -51,6 +68,9 @@ import type {
   SessionContextOptions,
   SessionInfo,
   SessionRuntimeState,
+  SnowflakeContextCatalog,
+  SwitchSchemaRequest,
+  SwitchSnowflakeContextRequest,
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
@@ -65,6 +85,29 @@ import type {
   TableRef,
   TableSchema,
   TransactionMode,
+  TransactionControlRequest,
+  TransactionControlResult,
+  SnowflakeDmlResult,
+  SnowflakeDdlPreflightRequest,
+  SnowflakeDdlPreflightResponse,
+  SnowflakeDdlRequest,
+  SnowflakeDdlResult,
+  PrepareSnowflakeGridEditsRequest,
+  SnowflakeGridFinishAction,
+  SnowflakeGridResult,
+  SnowflakeConsoleRequest,
+  SnowflakeConsolePlan,
+  SnowflakeConsoleStart,
+  SnowflakeConsoleStartResult,
+  SnowflakeConsoleRunView,
+  SnowflakeConsoleRequestLookup,
+  SnowflakeConsoleReceiptPageRequest,
+  SnowflakeConsoleReceiptPage,
+  SnowflakeConsoleReceiptSummary,
+  SnowflakeConsoleReceiptArchiveRequest,
+  SnowflakeConsoleReceiptArchiveResult,
+  SnowflakeConsolePending,
+  SnowflakeConsoleStorage,
 } from "./generated";
 
 /**
@@ -72,6 +115,82 @@ import type {
  * command with its exact argument payload and result DTO.
  */
 export interface JoineryCommandMap {
+  prepare_snowflake_console: {
+    args: { sessionId: string; request: SnowflakeConsoleRequest };
+    result: SnowflakeConsolePlan;
+  };
+  start_snowflake_console: {
+    args: { request: SnowflakeConsoleStart; onEvent?: unknown; streamId?: string };
+    result: SnowflakeConsoleStartResult;
+  };
+  snowflake_console_request: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleRequestLookup | null;
+  };
+  snowflake_console_run: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleRunView | null;
+  };
+  snowflake_console_receipts: {
+    args: { request: SnowflakeConsoleReceiptPageRequest };
+    result: SnowflakeConsoleReceiptPage;
+  };
+  snowflake_console_receipt_summary: {
+    args: { clientRequestId: string };
+    result: SnowflakeConsoleReceiptSummary | null;
+  };
+  set_snowflake_console_receipt_archive: {
+    args: { request: SnowflakeConsoleReceiptArchiveRequest };
+    result: SnowflakeConsoleReceiptArchiveResult;
+  };
+  snowflake_console_pending: { args: undefined; result: SnowflakeConsolePending };
+  snowflake_console_storage: { args: undefined; result: SnowflakeConsoleStorage };
+  release_snowflake_console_results: {
+    args: { clientRequestId: string };
+    result: null;
+  };
+  relation_catalog: { args: { sessionId: string }; result: BrowseCatalog };
+  define_relation: {
+    args: { sessionId: string; request: DefineRelationRequest };
+    result: RelationDefinition;
+  };
+  inspect_relation: {
+    args: { sessionId: string; request: InspectRelationRequest };
+    result: RelationInspection;
+  };
+  inspect_relation_constraints: {
+    args: { sessionId: string; request: InspectRelationConstraintsRequest };
+    result: RelationConstraints;
+  };
+  inspect_relation_check_constraints: {
+    args: { sessionId: string; request: InspectRelationCheckConstraintsRequest };
+    result: RelationCheckConstraints;
+  };
+  inspect_relation_constraint_mappings: {
+    args: { sessionId: string; request: InspectRelationConstraintMappingsRequest };
+    result: RelationConstraintMappings;
+  };
+  preview_relation: {
+    args: { sessionId: string; request: PreviewRelationRequest };
+    result: RelationPreview;
+  };
+  prepare_connection: {
+    args: { id: string };
+    result: string;
+  };
+  connect_prepared: {
+    args: { attemptId: string; secrets: ConnectionSecrets };
+    result: SessionInfo;
+  };
+  cancel_connection_attempt: {
+    args: { attemptId: string };
+    result: void;
+  };
+  app_shutdown: { args: undefined; result: void };
+  set_temporary_result_storage: {
+    args: { enabled: boolean };
+    result: boolean;
+  };
   app_info: {
     args?: Record<string, unknown>;
     result: { name: string; version: string; identifier: string };
@@ -88,26 +207,43 @@ export interface JoineryCommandMap {
     args: { workspace: SavedWorkspace };
     result: void;
   };
-  metadata_backups: {
+  recovery_backups: {
     args?: Record<string, unknown>;
-    result: MetadataBackup[];
+    result: RecoveryBackup[];
   };
-  create_metadata_backup: {
-    args?: Record<string, unknown>;
-    result: MetadataBackup;
-  };
-  delete_metadata_backup: {
-    args: { id: string; digest: string };
-    result: void;
-  };
-  restore_metadata_backup: {
+  start_metadata_recovery: {
     args: {
       id: string;
-      digest: string;
-      confirmation: string;
-      passphrase?: string | null;
+      request: RecoveryRequest;
+      backupPassphrase: string;
+      backupConfirmation: string;
+      writePassphrase?: string | null;
     };
-    result: MetadataBackup;
+    result: RecoveryOperation;
+  };
+  delete_recovery_backup: {
+    args: { id: string; digest: string; confirmation: string };
+    result: void;
+  };
+  metadata_recovery_operation: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  cancel_metadata_recovery: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  reconcile_metadata_recovery: {
+    args: { id: string };
+    result: RecoveryOperation;
+  };
+  reconcile_unknown_metadata_recovery: {
+    args?: Record<string, unknown>;
+    result: RecoveryOperation;
+  };
+  metadata_recovery_admission_closed: {
+    args?: Record<string, unknown>;
+    result: boolean;
   };
   save_group: {
     args: { group: ConnectionGroup };
@@ -138,7 +274,7 @@ export interface JoineryCommandMap {
     result: void;
   };
   probe_ssh: {
-    args: { profileId: string };
+    args: { profileId: string; attemptId?: string | null };
     result: SshHostKey;
   };
   trust_ssh_key: {
@@ -326,6 +462,14 @@ export interface JoineryCommandMap {
     args: { search: string };
     result: HistoryEntry[];
   };
+  history_page: {
+    args: { request: HistoryPageRequest };
+    result: HistoryPage;
+  };
+  history_entry: {
+    args: { id: string };
+    result: HistoryEntry | null;
+  };
   clear_history: {
     args?: Record<string, unknown>;
     result: void;
@@ -384,6 +528,10 @@ export interface JoineryCommandMap {
     };
     result: CsvImportPreview;
   };
+  release_csv_import_preview: {
+    args: { sessionId: string; sourceToken: string; previewToken: string };
+    result: void;
+  };
   prepare_csv_import_batch: {
     args: {
       sessionId: string;
@@ -392,6 +540,7 @@ export interface JoineryCommandMap {
       options: CsvImportOptions;
       mappings: CsvColumnMapping[];
       batchIndex: number;
+      previewToken: string;
     };
     result: ChangePreview;
   };
@@ -400,12 +549,81 @@ export interface JoineryCommandMap {
     result: DataCompareReport;
   };
   session_contexts: {
-    args: { sessionId: string };
+    args: { sessionId: string; resumeMetadata?: boolean };
     result: SessionContextOptions;
   };
   switch_session_context: {
     args: { sessionId: string; target: string };
     result: SessionContextOptions;
+  };
+  switch_session_schema: {
+    args: { sessionId: string; request: SwitchSchemaRequest };
+    result: SessionContextOptions;
+  };
+  snowflake_session_contexts: {
+    args: { sessionId: string; resumeMetadata?: boolean };
+    result: SnowflakeContextCatalog;
+  };
+  switch_snowflake_context: {
+    args: { sessionId: string; request: SwitchSnowflakeContextRequest };
+    result: SnowflakeContextCatalog;
+  };
+  prepare_transaction_control: {
+    args: { sessionId: string; request: TransactionControlRequest };
+    result: PreparedPlan;
+  };
+  execute_transaction_control: {
+    args: { planId: string; approval?: string | null };
+    result: TransactionControlResult;
+  };
+  execute_snowflake_dml: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeDmlResult;
+  };
+  preflight_snowflake_ddl: {
+    args: { request: SnowflakeDdlPreflightRequest };
+    result: SnowflakeDdlPreflightResponse;
+  };
+  prepare_snowflake_ddl: {
+    args: { sessionId: string; request: SnowflakeDdlRequest };
+    result: PreparedPlan;
+  };
+  authorize_snowflake_ddl: {
+    args: {
+      planId: string;
+      passphrase?: string | null;
+      confirmation?: string | null;
+      targetConfirmation?: string | null;
+    };
+    result: string;
+  };
+  execute_snowflake_ddl: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeDdlResult;
+  };
+  refresh_snowflake_ddl_metadata: {
+    args: { sessionId: string };
+    result: SessionContextOptions;
+  };
+  prepare_snowflake_grid_plan: {
+    args: { request: PrepareSnowflakeGridEditsRequest };
+    result: ChangePreview;
+  };
+  execute_snowflake_grid_plan: {
+    args: { planId: string; approval?: string | null };
+    result: SnowflakeGridResult;
+  };
+  cancel_snowflake_grid_plan: {
+    args: { planId: string };
+    result: string | null;
+  };
+  preview_snowflake_grid_transaction_relation: {
+    args: { transactionId: string; request: PreviewRelationRequest };
+    result: RelationPreview;
+  };
+  finish_snowflake_grid_transaction: {
+    args: { transactionId: string; action: SnowflakeGridFinishAction };
+    result: SnowflakeGridResult;
   };
   set_transaction_mode: {
     args: { sessionId: string; mode: TransactionMode };

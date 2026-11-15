@@ -28,8 +28,36 @@ import type {
   TableRef,
   TableSchema,
   TransactionMode,
+  TransactionControlResult,
+  SnowflakeDmlResult,
+  SnowflakeDdlResult,
+  SnowflakeContextCatalog,
+  SnowflakeContextTarget,
+  SnowflakeGridFinishAction,
+  SnowflakeGridResult,
+  TransactionControlAuthority,
+  SnowflakeConsolePlan,
+  SnowflakeConsoleReceiptSummary,
 } from "../ipc/generated";
 import { client, messageOf } from "../ipc/client";
+import { sealConsoleSession } from "../ipc/console-session-guard";
+import {
+  adoptConsoleNotAdmitted,
+  consoleDecisionConflicts,
+  consoleReceiptHeld,
+  consoleReceiptBlocksSession,
+  consoleRunStatus,
+  rememberConsoleReceipts,
+  consoleReceiptStorageProblem,
+  validateConsoleHandoff,
+  validateConsoleSummary,
+  compactConsoleReceipts,
+  consoleReceiptAccess,
+  restoredConsoleReceipts,
+  validateConsolePlan,
+  validateConsoleReceipt,
+  type SnowflakeConsoleReceipt,
+} from "../features/studio/SnowflakeConsole";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
@@ -66,7 +94,14 @@ import {
 export type TabKind =
   "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
 export type TabStatus =
-  "idle" | "queued" | "running" | "completed" | "failed" | "cancelled" | "outcomeUnknown";
+  | "idle"
+  | "queued"
+  | "running"
+  | "completed"
+  | "stopped"
+  | "failed"
+  | "cancelled"
+  | "outcomeUnknown";
 export interface TablePageState {
   start: number;
   result: ResultInfo;
@@ -81,6 +116,8 @@ export interface MetadataOrigin {
 export interface StudioTab {
   metadataOrigin?: MetadataOrigin;
   errorOrigin?: SqlExecutionOrigin;
+  snowflakeDmlResult?: SnowflakeDmlResult;
+  snowflakeDdlResult?: SnowflakeDdlResult;
   id: string;
   kind: TabKind;
   title: string;
@@ -93,6 +130,7 @@ export interface StudioTab {
   runId: string | null;
   elapsedMs: number;
   runMetrics?: Extract<QueryEvent, { type: "runMetrics" }>;
+  executionSummary?: Extract<QueryEvent, { type: "finished" }>["executionSummary"];
   clientStartedAt?: number;
   clientElapsedMs?: number;
   error: AppError | null;
@@ -175,15 +213,54 @@ let sqlFormatSaveTail: Promise<void> = Promise.resolve();
 let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
+const contextRequests = new Map<string, symbol>();
+const pendingContextRequests = new Map<string, Set<symbol>>();
+const schemaSwitchRequests = new Map<string, symbol>();
+
+function beginContextRequest(sessionId: string): symbol {
+  const request = Symbol();
+  contextRequests.set(sessionId, request);
+  const pending = pendingContextRequests.get(sessionId) ?? new Set<symbol>();
+  pending.add(request);
+  pendingContextRequests.set(sessionId, pending);
+  return request;
+}
+function finishContextRequest(sessionId: string, request: symbol) {
+  const pending = pendingContextRequests.get(sessionId);
+  pending?.delete(request);
+  if (pending?.size === 0) pendingContextRequests.delete(sessionId);
+}
 
 interface StudioState {
   bootstrap: Bootstrap | null;
   error: string | null;
   sessions: Record<string, SessionInfo>;
+  consoleSessions: Record<string, true>;
+  snowflakeConsoleReceipts: Record<string, SnowflakeConsoleReceipt>;
+  snowflakeConsoleResultOwners: Record<string, string>;
+  startSnowflakeConsole(tabId: string, plan: SnowflakeConsolePlan, approval: string): Promise<void>;
+  refreshSnowflakeConsole(clientRequestId: string): Promise<void>;
+  openSnowflakeConsoleResults(clientRequestId: string): Promise<void>;
+  cancelSnowflakeConsole(clientRequestId: string): Promise<void>;
+  discoverSnowflakeConsoleReceipt(summary: SnowflakeConsoleReceiptSummary): Promise<void>;
+  handoffSnowflakeConsoleReceipt(clientRequestId: string): Promise<void>;
+  releaseSnowflakeConsoleResults(clientRequestId: string): Promise<void>;
   sessionPool: Record<string, NamedSession[]>;
   sessionStates: Record<string, SessionRuntimeState>;
   sessionContexts: Record<string, string[]>;
   sessionContextRevision: Record<string, number>;
+  sessionContextAuthorities: Record<string, SessionContextOptions>;
+  snowflakeContextAuthorities: Record<string, SnowflakeContextCatalog>;
+  snowflakeContextExpanded: Record<string, boolean>;
+  sessionContextSwitching: Record<string, boolean>;
+  sessionTransactionPending: Record<string, boolean>;
+  sessionMetadataRefreshRequired: Record<string, boolean>;
+  sessionDdlCatalogRefreshRequired: Record<string, boolean>;
+  sessionSnowflakeGridPending: Record<string, boolean>;
+  sessionSnowflakeGridTransactions: Record<
+    string,
+    { transactionId: string; recordingError: string | null }
+  >;
   catalog: Record<string, TableInfo[]>;
   objects: Record<string, DatabaseObjectSummary[]>;
   selectedConnectionId: string | null;
@@ -218,15 +295,42 @@ interface StudioState {
   renameQuerySession(sessionId: string, label: string): void;
   disconnectQuerySession(sessionId: string): Promise<void>;
   updateSessionLatency(sessionId: string, latencyMs: number): void;
-  refreshSessionContexts(sessionId: string): Promise<void>;
+  refreshSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
+  refreshSnowflakeSessionContexts(sessionId: string, throwOnError?: boolean): Promise<boolean>;
+  invalidateSessionContextAuthority(sessionId: string): void;
+  isSessionContextPending(sessionId: string): boolean;
   switchSessionContext(sessionId: string, target: string): Promise<void>;
+  switchSnowflakeSessionContext(sessionId: string, target: SnowflakeContextTarget): Promise<void>;
   setTransactionMode(sessionId: string, mode: TransactionMode): Promise<void>;
   commitTransaction(sessionId: string): Promise<void>;
   rollbackTransaction(sessionId: string): Promise<void>;
+  executeTransactionControl(
+    plan: PreparedPlan,
+    approval?: string | null,
+  ): Promise<TransactionControlResult>;
+  executeSnowflakeDml(
+    plan: PreparedPlan,
+    approval?: string | null,
+    ownerTabId?: string,
+  ): Promise<SnowflakeDmlResult>;
+  executeSnowflakeDdl(
+    plan: PreparedPlan,
+    approval?: string | null,
+    ownerTabId?: string,
+  ): Promise<SnowflakeDdlResult>;
+  executeSnowflakeGridPlan(
+    plan: PreparedPlan,
+    approval?: string | null,
+  ): Promise<SnowflakeGridResult>;
+  finishSnowflakeGridTransaction(
+    sessionId: string,
+    transactionId: string,
+    action: SnowflakeGridFinishAction,
+  ): Promise<SnowflakeGridResult>;
   retireSession(sessionId: string): void;
   updateProfile(profile: ConnectionProfile): void;
   selectConnection(id: string): void;
-  refreshCatalog(id: string): Promise<void>;
+  refreshCatalog(id: string, explicit?: boolean): Promise<void>;
   openQuery(connectionId?: string | null, sql?: string): string;
   openSqlFile(connectionId?: string | null): Promise<string | null>;
   saveSqlFile(tabId: string, options?: { saveAs?: boolean }): Promise<boolean>;
@@ -302,6 +406,7 @@ function tab(kind: TabKind, title: string, connectionId: string | null): StudioT
     runId: null,
     elapsedMs: 0,
     runMetrics: undefined,
+    executionSummary: undefined,
     clientStartedAt: undefined,
     clientElapsedMs: undefined,
     error: null,
@@ -446,7 +551,8 @@ export function metadataSessionForTab(
   if (!origin) return undefined;
   const console = state.tabs.find((entry) => entry.id === origin.tabId && entry.kind === "query");
   const session = console && querySessionForTab(console, state.sessions);
-  return session?.id === origin.sessionId &&
+  return !session?.consoleMode &&
+    session?.id === origin.sessionId &&
     session.connectionId === tab.connectionId &&
     (state.sessionContextRevision[session.id] ?? 0) === origin.contextRevision
     ? session
@@ -466,7 +572,97 @@ export function sessionHasOpenTransaction(
 ): boolean {
   if (!sessionId) return false;
   const txState = sessionStates[sessionId]?.transactionState;
-  return txState === "inTransaction" || txState === "failed";
+  return (
+    txState === undefined ||
+    txState === "unknown" ||
+    txState === "inTransaction" ||
+    txState === "failed"
+  );
+}
+function sessionInfoById(
+  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
+  sessionId: string,
+): SessionInfo | undefined {
+  return (
+    Object.values(state.sessions).find((session) => session.id === sessionId) ??
+    Object.values(state.sessionPool)
+      .flat()
+      .find((entry) => entry.info.id === sessionId)?.info ??
+    state.tabs.find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
+      ?.querySession ??
+    undefined
+  );
+}
+/** Retired console IDs remain sealed so stale mounted handlers cannot probe. */
+export function isSnowflakeConsoleSession(
+  state: Pick<StudioState, "consoleSessions" | "sessions" | "sessionPool" | "tabs">,
+  sessionId: string | null | undefined,
+): boolean {
+  return (
+    !!sessionId &&
+    (state.consoleSessions[sessionId] === true ||
+      sessionInfoById(state, sessionId)?.consoleMode === true)
+  );
+}
+export function assertOrdinarySession(sessionId: string): void {
+  if (isSnowflakeConsoleSession(useStudio.getState(), sessionId))
+    throw new Error(
+      "This session belongs to the reviewed SQL console. Use a separate metadata connection; automatic SQL is disabled.",
+    );
+}
+/** Receipt ownership outlives editor tabs and local Arrow caches. */
+export function isConsoleOwnedResult(result: ResultInfo): boolean {
+  const state = useStudio.getState();
+  return (
+    state.snowflakeConsoleResultOwners[result.id] === result.runId ||
+    Object.values(state.snowflakeConsoleReceipts).some(
+      (receipt) =>
+        receipt.runId === result.runId || receipt.view?.run.metadata.runId === result.runId,
+    )
+  );
+}
+
+const receiptLookups = new Set<string>();
+
+function unknownSdkRuntime(
+  sessionId: string,
+  authority?: TransactionControlAuthority,
+): SessionRuntimeState {
+  return {
+    sessionId,
+    transactionMode: "unknown",
+    transactionState: "unknown",
+    contextKind: "schema",
+    activeContext: null,
+    database: "",
+    role: null,
+    searchPath: [],
+    transactionObservation: { status: "unavailable" },
+    ...(authority?.status === "rollbackOnly" ? { transactionControlAuthority: authority } : {}),
+  };
+}
+function hasSdkObservation(
+  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs" | "sessionStates">,
+  sessionId: string,
+): boolean {
+  return (
+    state.sessionStates[sessionId]?.transactionObservation !== undefined ||
+    sessionInfoById(state, sessionId)?.capabilities.relationBrowsing === true
+  );
+}
+function sessionRuntimeContextChanged(
+  previous: SessionRuntimeState | undefined,
+  next: SessionRuntimeState,
+): boolean {
+  return (
+    !!previous &&
+    (previous.activeContext !== next.activeContext ||
+      previous.database !== next.database ||
+      previous.role !== next.role ||
+      (previous.warehouse ?? null) !== (next.warehouse ?? null) ||
+      JSON.stringify(previous.searchPath) !== JSON.stringify(next.searchPath) ||
+      (previous.contextFingerprint ?? null) !== (next.contextFingerprint ?? null))
+  );
 }
 function isSessionActive(
   state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
@@ -495,18 +691,66 @@ function defaultSecondarySessionLabel(existing: readonly NamedSession[]): string
   return `Isolated session ${index}`;
 }
 function purgeSessionRuntimeMaps(
-  state: Pick<StudioState, "sessionStates" | "sessionContexts" | "sessionContextRevision">,
+  state: Pick<
+    StudioState,
+    | "sessionStates"
+    | "sessionContexts"
+    | "sessionContextRevision"
+    | "sessionContextAuthorities"
+    | "snowflakeContextAuthorities"
+    | "snowflakeContextExpanded"
+    | "sessionContextSwitching"
+    | "sessionTransactionPending"
+    | "sessionMetadataRefreshRequired"
+    | "sessionDdlCatalogRefreshRequired"
+    | "sessionSnowflakeGridPending"
+    | "sessionSnowflakeGridTransactions"
+  >,
   sessionIds: Iterable<string>,
 ) {
   const sessionStates = { ...state.sessionStates };
   const sessionContexts = { ...state.sessionContexts };
   const sessionContextRevision = { ...state.sessionContextRevision };
+  const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+  const snowflakeContextAuthorities = { ...state.snowflakeContextAuthorities };
+  const snowflakeContextExpanded = { ...state.snowflakeContextExpanded };
+  const sessionContextSwitching = { ...state.sessionContextSwitching };
+  const sessionTransactionPending = { ...state.sessionTransactionPending };
+  const sessionMetadataRefreshRequired = { ...state.sessionMetadataRefreshRequired };
+  const sessionDdlCatalogRefreshRequired = { ...state.sessionDdlCatalogRefreshRequired };
+  const sessionSnowflakeGridPending = { ...state.sessionSnowflakeGridPending };
+  const sessionSnowflakeGridTransactions = { ...state.sessionSnowflakeGridTransactions };
   for (const id of sessionIds) {
+    contextRequests.delete(id);
+    pendingContextRequests.delete(id);
+    schemaSwitchRequests.delete(id);
+    delete sessionContextSwitching[id];
+    delete sessionTransactionPending[id];
+    delete sessionMetadataRefreshRequired[id];
+    delete sessionDdlCatalogRefreshRequired[id];
+    delete sessionSnowflakeGridPending[id];
+    delete sessionSnowflakeGridTransactions[id];
+    delete sessionContextAuthorities[id];
+    delete snowflakeContextAuthorities[id];
+    delete snowflakeContextExpanded[id];
     delete sessionStates[id];
     delete sessionContexts[id];
     delete sessionContextRevision[id];
   }
-  return { sessionStates, sessionContexts, sessionContextRevision };
+  return {
+    sessionStates,
+    sessionContexts,
+    sessionContextRevision,
+    sessionContextAuthorities,
+    snowflakeContextAuthorities,
+    snowflakeContextExpanded,
+    sessionContextSwitching,
+    sessionTransactionPending,
+    sessionMetadataRefreshRequired,
+    sessionDdlCatalogRefreshRequired,
+    sessionSnowflakeGridPending,
+    sessionSnowflakeGridTransactions,
+  };
 }
 const storedTheme = localStorage.getItem("joinery.theme");
 
@@ -522,10 +766,97 @@ function asAppError(error: unknown): AppError {
     return error as AppError;
   return { code: "database", message: messageOf(error) };
 }
+function retireAfterBrowseFailure(sessionId: string, error: AppError) {
+  if (error.code === "connectionClosed" || error.code === "outcomeUnknown")
+    useStudio.getState().retireSession(sessionId);
+}
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
-  if (!schema || JSON.stringify(schema.columns) !== JSON.stringify(result.columns)) {
+  if (schema && JSON.stringify(schema.columns) === JSON.stringify(result.columns))
+    return result.editability?.status === "readOnly" ? { ...schema, editable: false } : schema;
+  // A completed page may lose its edit lease while rows are fetched. Preserve
+  // that known result, but narrow the whole table view until explicit refresh.
+  // Every structural field must still match; this never promotes capabilities.
+  if (
+    schema &&
+    result.editability?.status === "readOnly" &&
+    JSON.stringify(schema.table) === JSON.stringify(result.table) &&
+    schema.columns.length === result.columns.length &&
+    result.columns.every((column, index) => {
+      const { editable: _actualEdit, insertable: _actualInsert, ...actual } = column;
+      const {
+        editable: _expectedEdit,
+        insertable: _expectedInsert,
+        ...expected
+      } = schema.columns[index];
+      return (
+        !column.editable &&
+        !column.insertable &&
+        JSON.stringify(actual) === JSON.stringify(expected)
+      );
+    })
+  )
+    return { ...schema, editable: false, columns: result.columns };
+  if (!isConsoleOwnedResult(result))
     void client.call("release_result", { resultId: result.id }).catch(() => {});
-    throw new Error("The table schema changed. Refresh the table before continuing.");
+  throw new Error("The table schema changed. Refresh the table before continuing.");
+}
+
+/** Frontend scheduling only; the driver independently validates one-use authority. */
+export function revokeSchemaSelectionBeforeWork(
+  sessionId: string,
+  transactionControl = false,
+  allowGridTransaction = false,
+) {
+  const state = useStudio.getState();
+  assertOrdinarySession(sessionId);
+  if (state.sessionContextSwitching[sessionId])
+    throw new Error("Wait for the schema change to finish first");
+  if (state.sessionTransactionPending[sessionId])
+    throw new Error("Wait for the transaction action to finish first");
+  if (
+    !allowGridTransaction &&
+    (state.sessionSnowflakeGridPending[sessionId] ||
+      state.sessionSnowflakeGridTransactions[sessionId])
+  )
+    throw new Error("Finish or roll back the open Snowflake grid transaction first");
+  if (
+    !transactionControl &&
+    state.sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly"
+  )
+    throw new Error("Only rollback recovery is available. Roll back or disconnect this session.");
+  state.invalidateSessionContextAuthority(sessionId);
+  const runtime = useStudio.getState().sessionStates[sessionId];
+  if (runtime?.transactionControlAuthority?.status === "observed") {
+    const { transactionControlAuthority: _authority, ...observed } = runtime;
+    useStudio.setState((current) => ({
+      sessionStates: { ...current.sessionStates, [sessionId]: observed },
+    }));
+  }
+}
+
+/** Guard a template's observation without changing the editor being validated. */
+export async function observeTemplateSessionContext(
+  sessionId: string,
+): Promise<SessionRuntimeState> {
+  revokeSchemaSelectionBeforeWork(sessionId);
+  if (!isSessionActive(useStudio.getState(), sessionId))
+    throw new Error("This database session is disconnected");
+  const request = beginContextRequest(sessionId);
+  try {
+    const options = await client.call("session_contexts", { sessionId });
+    if (
+      contextRequests.get(sessionId) !== request ||
+      !isSessionActive(useStudio.getState(), sessionId)
+    )
+      throw new Error("The console context changed. Insert the template again.");
+    if (!options?.state || options.state.sessionId !== sessionId)
+      throw new Error("Session observation is unavailable");
+    // Publishing here can advance the editor context revision, dismissing the
+    // template dialog before its own current-context checks and errors finish.
+    // This read never grants schema-switch authority to the UI.
+    return options.state;
+  } finally {
+    finishContextRequest(sessionId, request);
   }
 }
 
@@ -533,10 +864,22 @@ export const useStudio = create<StudioState>((set, get) => ({
   bootstrap: null,
   error: null,
   sessions: {},
+  consoleSessions: {},
+  snowflakeConsoleReceipts: restoredConsoleReceipts(),
+  snowflakeConsoleResultOwners: {},
   sessionPool: {},
   sessionStates: {},
   sessionContexts: {},
   sessionContextRevision: {},
+  sessionContextAuthorities: {},
+  snowflakeContextAuthorities: {},
+  snowflakeContextExpanded: {},
+  sessionContextSwitching: {},
+  sessionTransactionPending: {},
+  sessionMetadataRefreshRequired: {},
+  sessionDdlCatalogRefreshRequired: {},
+  sessionSnowflakeGridPending: {},
+  sessionSnowflakeGridTransactions: {},
   catalog: {},
   objects: {},
   selectedConnectionId: null,
@@ -678,13 +1021,521 @@ export const useStudio = create<StudioState>((set, get) => ({
   resetTableLayout(connectionId, table) {
     get().setTableLayout(connectionId, table, null);
   },
+  async startSnowflakeConsole(tabId, plan, approval) {
+    const storageProblem = consoleReceiptStorageProblem();
+    if (storageProblem) throw new Error(storageProblem);
+    const active = get().tabs.find((entry) => entry.id === tabId);
+    const session = active && querySessionForTab(active, get().sessions);
+    if (!active || !session?.consoleMode || session.id !== plan.review.sessionId)
+      throw new Error("The reviewed console session changed. Review again in the current session.");
+    validateConsolePlan(plan, session.id);
+    if (
+      Object.values(get().snowflakeConsoleReceipts).some((entry) =>
+        consoleReceiptBlocksSession(entry, session.id),
+      )
+    )
+      throw new Error("Reconcile the previous console receipt before starting another run.");
+    const clientRequestId = crypto.randomUUID();
+    const revision = active.revision + 1;
+    const receipt: SnowflakeConsoleReceipt = {
+      clientRequestId,
+      sessionId: session.id,
+      connectionId: session.connectionId,
+      planDigest: plan.digest,
+      stepCount: plan.review.statements.length,
+      tabId,
+      tabRevision: revision,
+      lookupPending: true,
+      startPending: true,
+    };
+    const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: receipt };
+    rememberConsoleReceipts(receipts); // Fails before any remote admission.
+    set({ snowflakeConsoleReceipts: receipts });
+    for (const result of active.results) {
+      resultCache.release(result.id);
+      dirtyStore.clearTab(result.id, [result.id]);
+      if (!isConsoleOwnedResult(result))
+        void client.call("release_result", { resultId: result.id }).catch(() => {});
+    }
+    get().updateTab(tabId, {
+      results: [],
+      activeResultId: null,
+      status: "queued",
+      runId: null,
+      revision,
+      dataSessionId: session.id,
+      error: null,
+      elapsedMs: 0,
+      metrics: {},
+      executionSummary: undefined,
+      snowflakeDmlResult: undefined,
+      snowflakeDdlResult: undefined,
+      planSource: undefined,
+      clientStartedAt: performance.now(),
+    });
+    const acceptsConsoleEvent = (event: QueryEvent) => {
+      const resultId =
+        event.type === "result"
+          ? event.result.id
+          : event.type === "progress"
+            ? event.resultId
+            : null;
+      if (resultId === null) return true;
+      const current = get().snowflakeConsoleReceipts[clientRequestId];
+      if (!current) return false;
+      if (!current.view) return !current.settledProof && !current.notAdmitted;
+      return (
+        current.view.run.state !== "terminal" ||
+        current.view.pendingRecording ||
+        current.view.results.some((result) => result.id === resultId)
+      );
+    };
+    const publish = beginEventBatch(tabId, acceptsConsoleEvent);
+    const batch = (event: QueryEvent) => {
+      // Register ownership before a queued Result can meet stale-tab cleanup.
+      const eventRunId =
+        event.type === "started"
+          ? event.runId
+          : event.type === "result"
+            ? event.result.runId
+            : null;
+      if (eventRunId) {
+        const current = get().snowflakeConsoleReceipts[clientRequestId];
+        if (!current) {
+          if (acceptsConsoleEvent(event)) publish(event);
+          return;
+        }
+        if (current.notAdmitted) {
+          set((state) => ({
+            snowflakeConsoleReceipts: {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: {
+                ...current,
+                runId: current.runId ?? eventRunId,
+                decisionConflict: true,
+                lookupPending: true,
+                error:
+                  "An original run event contradicts the retained refusal; execution remains held.",
+              },
+            },
+          }));
+          return;
+        }
+        if (current.runId && current.runId !== eventRunId) {
+          set((state) => ({
+            snowflakeConsoleReceipts: {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: {
+                ...current,
+                lookupPending: true,
+                error: "Console event identity changed; reconcile the original receipt.",
+              },
+            },
+          }));
+          return;
+        }
+        if (!acceptsConsoleEvent(event)) return;
+        if (event.type === "result")
+          set((state) => ({
+            snowflakeConsoleResultOwners: {
+              ...state.snowflakeConsoleResultOwners,
+              [event.result.id]: eventRunId,
+            },
+          }));
+        set((state) => ({
+          snowflakeConsoleReceipts: {
+            ...state.snowflakeConsoleReceipts,
+            [clientRequestId]: { ...current, runId: eventRunId },
+          },
+        }));
+      }
+      if (acceptsConsoleEvent(event)) publish(event);
+    };
+    try {
+      const result = await client.startSnowflakeConsole(
+        {
+          sessionId: session.id,
+          planId: plan.review.id,
+          planDigest: plan.digest,
+          clientRequestId,
+          approval,
+        },
+        batch,
+      );
+      const recovered = get().snowflakeConsoleReceipts[clientRequestId];
+      if (result.kind === "notAdmitted") {
+        if (consoleDecisionConflicts(recovered, result))
+          set((state) => ({
+            snowflakeConsoleReceipts: {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: { ...recovered, decisionConflict: true },
+            },
+          }));
+        const settled = adoptConsoleNotAdmitted(recovered, result);
+        const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: settled };
+        // Keep the opaque ID so this durable decision can be recovered after reload.
+        rememberConsoleReceipts(receipts);
+        set({ snowflakeConsoleReceipts: receipts });
+        const tab = get().tabs.find((entry) => entry.id === tabId && entry.revision === revision);
+        if (tab)
+          get().updateTab(tabId, {
+            status: "failed",
+            runId: null,
+            error: {
+              code: result.code,
+              message: "No SQL was admitted. Review again to create a new request.",
+            },
+          });
+        return;
+      }
+      const runId = result.runId;
+      if (recovered.notAdmitted) {
+        set((state) => ({
+          snowflakeConsoleReceipts: {
+            ...state.snowflakeConsoleReceipts,
+            [clientRequestId]: { ...recovered, decisionConflict: true },
+          },
+        }));
+        throw new Error(
+          "The original start response contradicts the retained refusal; execution remains held.",
+        );
+      }
+      if (recovered.runId && recovered.runId !== runId)
+        throw new Error(
+          "Start response conflicts with the original recovered run; reconcile preserved evidence.",
+        );
+      set((state) => ({
+        snowflakeConsoleReceipts: {
+          ...state.snowflakeConsoleReceipts,
+          [clientRequestId]: {
+            ...state.snowflakeConsoleReceipts[clientRequestId],
+            runId,
+            startPending: false,
+          },
+        },
+      }));
+    } catch (error) {
+      // A lost start response never permits another start. Lookup the same ID.
+      set((state) => ({
+        snowflakeConsoleReceipts: {
+          ...state.snowflakeConsoleReceipts,
+          [clientRequestId]: {
+            ...state.snowflakeConsoleReceipts[clientRequestId],
+            startPending: false,
+            error: `Start response unavailable: ${messageOf(error)}. Recovering the original receipt; SQL will not be resent.`,
+          },
+        },
+      }));
+    }
+    await get().refreshSnowflakeConsole(clientRequestId);
+  },
+  async refreshSnowflakeConsole(clientRequestId) {
+    if (receiptLookups.has(clientRequestId)) return;
+    const before = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!before) return;
+    receiptLookups.add(clientRequestId);
+    try {
+      const decision = await client.snowflakeConsoleRequest(clientRequestId);
+      if (!decision)
+        throw new Error(
+          "No durable receipt found yet. Submission is not disproved; do not rerun to recover it.",
+        );
+      const current = get().snowflakeConsoleReceipts[clientRequestId];
+      if (!current) return;
+      if (consoleDecisionConflicts(current, decision)) {
+        set((state) => ({
+          snowflakeConsoleReceipts: {
+            ...state.snowflakeConsoleReceipts,
+            [clientRequestId]: { ...current, decisionConflict: true },
+          },
+        }));
+        throw new Error(
+          "Opposite native decisions were observed for this request; execution remains held and the original evidence was preserved.",
+        );
+      }
+      if (decision.kind === "notAdmitted") {
+        const settled = adoptConsoleNotAdmitted(current, decision);
+        const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: settled };
+        rememberConsoleReceipts(receipts);
+        set({ snowflakeConsoleReceipts: receipts });
+        const tab = get().tabs.find(
+          (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
+        );
+        if (tab && querySessionForTab(tab, get().sessions)?.id === settled.sessionId)
+          get().updateTab(tab.id, {
+            status: "failed",
+            runId: null,
+            error: {
+              code: decision.code,
+              message: "No SQL was admitted. Review again to create a new request.",
+            },
+          });
+        return;
+      }
+      const view = decision.view;
+      validateConsoleReceipt(current, view);
+      const authoritativeResults = view.run.state === "terminal" && !view.pendingRecording;
+      const retained = new Map(view.results.map((result) => [result.id, result]));
+      if (!authoritativeResults) {
+        // A running lookup may have been serialized before a newer Result
+        // event. Absence in that snapshot cannot mean explicit row release.
+        for (const result of [
+          ...(current.view?.results ?? []),
+          ...get().tabs.flatMap((tab) => tab.results),
+        ]) {
+          if (result.runId !== view.run.metadata.runId) continue;
+          const prior = retained.get(result.id);
+          if (
+            !prior ||
+            result.retainedRows > prior.retainedRows ||
+            (result.retainedRows === prior.retainedRows && prior.status === "streaming")
+          )
+            retained.set(result.id, result);
+        }
+      }
+      const results = [...retained.values()].sort((a, b) => a.statementIndex - b.statementIndex);
+      const liveIds = new Set(results.map((result) => result.id));
+      const releasedIds = new Set(
+        Object.entries(get().snowflakeConsoleResultOwners)
+          .filter(
+            ([id, run]) =>
+              authoritativeResults && run === view.run.metadata.runId && !liveIds.has(id),
+          )
+          .map(([id]) => id),
+      );
+      for (const tab of get().tabs)
+        for (const result of tab.results)
+          if (
+            authoritativeResults &&
+            result.runId === view.run.metadata.runId &&
+            !liveIds.has(result.id)
+          )
+            releasedIds.add(result.id);
+      for (const id of releasedIds) {
+        resultCache.release(id);
+        dirtyStore.clearTab(id, [id]);
+      }
+      const next: SnowflakeConsoleReceipt = {
+        ...current,
+        view: { ...view, results },
+        runId: view.run.metadata.runId,
+        sessionId: view.run.metadata.sessionId,
+        connectionId: view.run.metadata.connectionId,
+        planDigest: view.run.metadata.planDigest,
+        stepCount: view.run.metadata.stepCount,
+        lookupPending: false,
+        lastAccessed: consoleReceiptAccess(),
+        error: undefined,
+      };
+      set((state) => ({
+        snowflakeConsoleReceipts: { ...state.snowflakeConsoleReceipts, [clientRequestId]: next },
+        snowflakeConsoleResultOwners: {
+          ...Object.fromEntries(
+            Object.entries(state.snowflakeConsoleResultOwners).filter(
+              ([, run]) => !authoritativeResults || run !== view.run.metadata.runId,
+            ),
+          ),
+          ...Object.fromEntries(results.map((result) => [result.id, result.runId])),
+        },
+        ...(releasedIds.size
+          ? {
+              tabs: state.tabs.map((tab) => ({
+                ...tab,
+                results: tab.results.filter((result) => !releasedIds.has(result.id)),
+                activeResultId:
+                  tab.activeResultId && releasedIds.has(tab.activeResultId)
+                    ? null
+                    : tab.activeResultId,
+              })),
+            }
+          : {}),
+      }));
+      const tab = get().tabs.find(
+        (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
+      );
+      if (tab && querySessionForTab(tab, get().sessions)?.id === next.sessionId) {
+        get().updateTab(tab.id, {
+          status: consoleRunStatus(view),
+          runId: consoleReceiptHeld(next) ? next.runId! : null,
+          results,
+          activeResultId: results.some((r) => r.id === tab.activeResultId)
+            ? tab.activeResultId
+            : (results[0]?.id ?? null),
+        });
+      }
+      if (current.cancellationRequested && !view.run.terminal)
+        await client.call("cancel_run", { runId: next.runId! });
+      if (view.run.observations.retired) get().retireSession(view.run.metadata.sessionId);
+    } catch (error) {
+      set((state) => ({
+        snowflakeConsoleReceipts: {
+          ...state.snowflakeConsoleReceipts,
+          [clientRequestId]: {
+            ...state.snowflakeConsoleReceipts[clientRequestId],
+            error: messageOf(error),
+            lookupPending: true,
+          },
+        },
+      }));
+    } finally {
+      receiptLookups.delete(clientRequestId);
+      set((state) => ({
+        snowflakeConsoleReceipts: compactConsoleReceipts(state.snowflakeConsoleReceipts),
+      }));
+    }
+  },
+  async openSnowflakeConsoleResults(clientRequestId) {
+    if (receiptLookups.has(clientRequestId))
+      throw new Error("Wait for receipt reconciliation, then open retained results.");
+    await get().refreshSnowflakeConsole(clientRequestId);
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    const view = receipt?.view;
+    if (!view || receipt.lookupPending)
+      throw new Error("Reconcile this receipt before opening its retained results.");
+    if (!view.results.length)
+      throw new Error(
+        "Retained result rows are unavailable. This does not mean zero rows were returned.",
+      );
+    const primary = get().sessions[view.run.metadata.connectionId];
+    const originalSession = primary?.id === view.run.metadata.sessionId ? primary : undefined;
+    // An absent original session stays unbound. Opening rows never logs in,
+    // borrows a replacement physical session, or restores SQL/parameters.
+    const tabId = get().openQuery(originalSession?.connectionId ?? null, "");
+    const revision = get().tabs.find((tab) => tab.id === tabId)!.revision;
+    get().updateTab(tabId, {
+      title: "Console retained results",
+      results: view.results,
+      activeResultId: view.results[0].id,
+      dataSessionId: view.run.metadata.sessionId,
+      status: consoleRunStatus(view),
+      runId: consoleReceiptHeld(receipt) ? view.run.metadata.runId : null,
+    });
+    set((state) => ({
+      snowflakeConsoleReceipts: {
+        ...state.snowflakeConsoleReceipts,
+        [clientRequestId]: { ...receipt, tabId, tabRevision: revision },
+      },
+    }));
+  },
+  async discoverSnowflakeConsoleReceipt(summary) {
+    validateConsoleSummary(summary);
+    const current = get().snowflakeConsoleReceipts[summary.clientRequestId];
+    if (!current)
+      set((state) => ({
+        snowflakeConsoleReceipts: {
+          ...state.snowflakeConsoleReceipts,
+          [summary.clientRequestId]: {
+            clientRequestId: summary.clientRequestId,
+            sessionId: summary.sessionId,
+            planDigest: summary.planDigest,
+            ...(summary.connectionId ? { connectionId: summary.connectionId } : {}),
+            ...(summary.runId ? { runId: summary.runId } : {}),
+            inventoried: true,
+            nativeSettled: summary.archiveEligible,
+            lastAccessed: consoleReceiptAccess(),
+            lookupPending: true,
+          },
+        },
+      }));
+    await get().refreshSnowflakeConsole(summary.clientRequestId);
+    await get().handoffSnowflakeConsoleReceipt(summary.clientRequestId);
+  },
+  async handoffSnowflakeConsoleReceipt(clientRequestId) {
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!receipt || consoleReceiptHeld(receipt)) return;
+    const summary = await client.call("snowflake_console_receipt_summary", { clientRequestId });
+    if (!summary)
+      throw new Error(
+        "Native inventory has not confirmed the receipt; its browser correlation remains preserved.",
+      );
+    const current = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!current) return;
+    validateConsoleHandoff(current, summary);
+    const receipts = {
+      ...get().snowflakeConsoleReceipts,
+      [clientRequestId]: {
+        ...current,
+        inventoried: true,
+        nativeSettled: true,
+        lastAccessed: consoleReceiptAccess(),
+      },
+    };
+    rememberConsoleReceipts(receipts);
+    set({ snowflakeConsoleReceipts: compactConsoleReceipts(receipts) });
+  },
+  async releaseSnowflakeConsoleResults(clientRequestId) {
+    if (receiptLookups.has(clientRequestId))
+      throw new Error("Wait for receipt reconciliation, then release retained result rows.");
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!receipt?.view || consoleReceiptHeld(receipt))
+      throw new Error("Reconcile this settled receipt before releasing retained result rows.");
+    receiptLookups.add(clientRequestId);
+    try {
+      await client.call("release_snowflake_console_results", { clientRequestId });
+      // Native release is authoritative. A failed/lost response leaves local state
+      // intact for SQL-free reconciliation; rows are never resubmitted.
+      const ids = new Set([
+        ...receipt.view.results.map((result) => result.id),
+        ...Object.entries(get().snowflakeConsoleResultOwners)
+          .filter(([, run]) => run === receipt.runId)
+          .map(([id]) => id),
+        ...get().tabs.flatMap((tab) =>
+          tab.results.filter((result) => result.runId === receipt.runId).map((result) => result.id),
+        ),
+      ]);
+      for (const id of ids) {
+        resultCache.release(id);
+        dirtyStore.clearTab(id, [id]);
+      }
+      set((state) => ({
+        snowflakeConsoleReceipts: state.snowflakeConsoleReceipts[clientRequestId]
+          ? {
+              ...state.snowflakeConsoleReceipts,
+              [clientRequestId]: {
+                ...state.snowflakeConsoleReceipts[clientRequestId],
+                view: { ...receipt.view!, results: [] },
+              },
+            }
+          : state.snowflakeConsoleReceipts,
+        snowflakeConsoleResultOwners: Object.fromEntries(
+          Object.entries(state.snowflakeConsoleResultOwners).filter(([id]) => !ids.has(id)),
+        ),
+        tabs: state.tabs.map((tab) => ({
+          ...tab,
+          results: tab.results.filter((result) => !ids.has(result.id)),
+          activeResultId:
+            tab.activeResultId && ids.has(tab.activeResultId) ? null : tab.activeResultId,
+        })),
+      }));
+    } finally {
+      receiptLookups.delete(clientRequestId);
+    }
+    await get().refreshSnowflakeConsole(clientRequestId);
+  },
+  async cancelSnowflakeConsole(clientRequestId) {
+    const receipt = get().snowflakeConsoleReceipts[clientRequestId];
+    if (!receipt || receipt.notAdmitted) return;
+    set((state) => ({
+      snowflakeConsoleReceipts: {
+        ...state.snowflakeConsoleReceipts,
+        [clientRequestId]: { ...receipt, cancellationRequested: true },
+      },
+    }));
+    if (receipt.runId) await client.call("cancel_run", { runId: receipt.runId });
+    else await get().refreshSnowflakeConsole(clientRequestId);
+  },
   setSession(session) {
+    sealConsoleSession(session);
     set((state) => ({
       sessions: { ...state.sessions, [session.connectionId]: session },
+      ...(session.consoleMode
+        ? { consoleSessions: { ...state.consoleSessions, [session.id]: true } }
+        : {}),
       selectedConnectionId: session.connectionId,
     }));
   },
   bindQuerySession(tabId, session, preferredLabel) {
+    sealConsoleSession(session);
     const current = get().tabs.find((t) => t.id === tabId);
     if (
       !current ||
@@ -702,7 +1553,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     for (const result of current.results) {
       resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isConsoleOwnedResult(result))
+        void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
     set((state) => {
       const existing = (state.sessionPool[session.connectionId] ?? []).filter(
@@ -731,6 +1583,7 @@ export const useStudio = create<StudioState>((set, get) => ({
                 metrics: {},
                 elapsedMs: 0,
                 runMetrics: undefined,
+                executionSummary: undefined,
                 clientStartedAt: undefined,
                 clientElapsedMs: undefined,
                 revision: current.revision + 1,
@@ -762,14 +1615,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     } else if (!current.querySession && !current.querySessionClosed) {
       return true;
     }
+    if (targetInfo) sealConsoleSession(targetInfo);
     for (const result of current.results) {
       resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isConsoleOwnedResult(result))
+        void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
     get().updateTab(tabId, {
       querySession: targetInfo,
       querySessionClosed: false,
+      snowflakeDdlResult: undefined,
+      snowflakeDmlResult: undefined,
       results: [],
       planSource: undefined,
       activeResultId: null,
@@ -780,6 +1637,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       metrics: {},
       elapsedMs: 0,
       runMetrics: undefined,
+      executionSummary: undefined,
       clientStartedAt: undefined,
       clientElapsedMs: undefined,
       revision: current.revision + 1,
@@ -826,39 +1684,979 @@ export const useStudio = create<StudioState>((set, get) => ({
       return { sessions, sessionPool, tabs };
     });
   },
-  async refreshSessionContexts(sessionId) {
-    const options = await client
-      .call<SessionContextOptions | null>("session_contexts", {
-        sessionId,
-      })
-      .catch(() => null);
-    if (!options?.state) return;
+  invalidateSessionContextAuthority(sessionId) {
+    if (!hasSdkObservation(get(), sessionId)) return;
+    contextRequests.delete(sessionId);
     set((state) => {
-      if (!isSessionActive(state, sessionId)) return {};
+      const sessionContextAuthorities = { ...state.sessionContextAuthorities };
+      const snowflakeContextAuthorities = { ...state.snowflakeContextAuthorities };
+      delete sessionContextAuthorities[sessionId];
+      delete snowflakeContextAuthorities[sessionId];
       return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+        sessionContextAuthorities,
+        snowflakeContextAuthorities,
+        sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
       };
     });
+  },
+  isSessionContextPending(sessionId) {
+    return (
+      get().sessionTransactionPending[sessionId] === true ||
+      get().sessionSnowflakeGridPending[sessionId] === true ||
+      Boolean(get().sessionSnowflakeGridTransactions[sessionId]) ||
+      (pendingContextRequests.get(sessionId)?.size ?? 0) > 0
+    );
+  },
+  async refreshSessionContexts(sessionId, throwOnError = false) {
+    if (isSnowflakeConsoleSession(get(), sessionId)) {
+      if (throwOnError) assertOrdinarySession(sessionId);
+      return false;
+    }
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    ) {
+      if (throwOnError)
+        throw new Error("Finish or roll back the open Snowflake grid transaction first");
+      return false;
+    }
+    if (get().sessionMetadataRefreshRequired[sessionId] && !throwOnError) return false;
+    if (get().sessionTransactionPending[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the transaction action to finish first");
+      return false;
+    }
+    if (get().sessionContextSwitching[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the schema change to finish first");
+      return false;
+    }
+    const sdk = hasSdkObservation(get(), sessionId);
+    if (
+      sdk &&
+      get().snowflakeContextExpanded[sessionId] &&
+      !(throwOnError && get().sessionDdlCatalogRefreshRequired[sessionId])
+    ) {
+      return get().refreshSnowflakeSessionContexts(sessionId, throwOnError);
+    }
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    const previous = get().sessionStates[sessionId];
+    try {
+      if (sdk && isSessionActive(get(), sessionId)) {
+        set((state) => ({
+          sessionStates: {
+            ...state.sessionStates,
+            [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+          },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+        }));
+      }
+      let options: SessionContextOptions | null;
+      try {
+        options =
+          throwOnError && get().sessionDdlCatalogRefreshRequired[sessionId]
+            ? await client.call("refresh_snowflake_ddl_metadata", { sessionId })
+            : await client.call<SessionContextOptions | null>("session_contexts", {
+                sessionId,
+                ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
+                  ? { resumeMetadata: true }
+                  : {}),
+              });
+        if (!options?.state || options.state.sessionId !== sessionId)
+          throw new Error("Session observation is unavailable");
+      } catch (error) {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+          return false;
+        set((state) => ({
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+          ...(sdk
+            ? {
+                sessionStates: {
+                  ...state.sessionStates,
+                  [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+                },
+                ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
+                  ? {
+                      sessionContextRevision: {
+                        ...state.sessionContextRevision,
+                        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                      },
+                    }
+                  : {}),
+              }
+            : {}),
+        }));
+        if (throwOnError) throw error;
+        return false;
+      }
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+        return false;
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        const runtime = options.state;
+        const contextChanged = sessionRuntimeContextChanged(previous, runtime);
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+          ...(throwOnError
+            ? {
+                sessionMetadataRefreshRequired: {
+                  ...state.sessionMetadataRefreshRequired,
+                  [sessionId]: false,
+                },
+                sessionDdlCatalogRefreshRequired: {
+                  ...state.sessionDdlCatalogRefreshRequired,
+                  [sessionId]: false,
+                },
+              }
+            : {}),
+          ...(sdk && options.revision
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: options,
+                },
+              }
+            : {}),
+          ...(contextChanged
+            ? {
+                sessionContextRevision: {
+                  ...state.sessionContextRevision,
+                  [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                },
+              }
+            : {}),
+        };
+      });
+      return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
+    } finally {
+      finishContextRequest(sessionId, request);
+    }
+  },
+  async refreshSnowflakeSessionContexts(sessionId, throwOnError = false) {
+    if (isSnowflakeConsoleSession(get(), sessionId)) {
+      if (throwOnError) assertOrdinarySession(sessionId);
+      return false;
+    }
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    ) {
+      if (throwOnError)
+        throw new Error("Finish or roll back the open Snowflake grid transaction first");
+      return false;
+    }
+    if (get().sessionMetadataRefreshRequired[sessionId] && !throwOnError) return false;
+    if (get().sessionTransactionPending[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the transaction action to finish first");
+      return false;
+    }
+    if (get().sessionContextSwitching[sessionId]) {
+      if (throwOnError) throw new Error("Wait for the schema change to finish first");
+      return false;
+    }
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    const previous = get().sessionStates[sessionId];
+    try {
+      if (isSessionActive(get(), sessionId)) {
+        set((state) => ({
+          snowflakeContextExpanded: { ...state.snowflakeContextExpanded, [sessionId]: true },
+          sessionStates: {
+            ...state.sessionStates,
+            [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+          },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+        }));
+      }
+      let catalog: SnowflakeContextCatalog;
+      try {
+        catalog = await client.call("snowflake_session_contexts", {
+          sessionId,
+          ...(throwOnError && get().sessionMetadataRefreshRequired[sessionId]
+            ? { resumeMetadata: true }
+            : {}),
+        });
+        if (!catalog?.state || catalog.state.sessionId !== sessionId || !catalog.revision)
+          throw new Error("Session observation is unavailable");
+      } catch (error) {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+          return false;
+        const { code } = asAppError(error);
+        if (code === "connectionClosed" || code === "outcomeUnknown") {
+          get().retireSession(sessionId);
+        } else {
+          set((state) => ({
+            sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+            sessionStates: {
+              ...state.sessionStates,
+              [sessionId]: unknownSdkRuntime(sessionId, previous?.transactionControlAuthority),
+            },
+            ...(sessionRuntimeContextChanged(previous, unknownSdkRuntime(sessionId))
+              ? {
+                  sessionContextRevision: {
+                    ...state.sessionContextRevision,
+                    [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                  },
+                }
+              : {}),
+          }));
+        }
+        if (throwOnError) throw error;
+        return false;
+      }
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId))
+        return false;
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        const runtime = catalog.state;
+        const contextChanged = sessionRuntimeContextChanged(previous, runtime);
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: runtime },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: catalog.availableSchemas },
+          snowflakeContextAuthorities: {
+            ...state.snowflakeContextAuthorities,
+            [sessionId]: catalog,
+          },
+          ...(runtime.database
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: {
+                    state: runtime,
+                    available: catalog.availableSchemas,
+                    revision: catalog.revision,
+                  },
+                },
+              }
+            : {}),
+          ...(throwOnError
+            ? {
+                sessionMetadataRefreshRequired: {
+                  ...state.sessionMetadataRefreshRequired,
+                  [sessionId]: false,
+                },
+                sessionDdlCatalogRefreshRequired: {
+                  ...state.sessionDdlCatalogRefreshRequired,
+                  [sessionId]: false,
+                },
+              }
+            : {}),
+          ...(contextChanged
+            ? {
+                sessionContextRevision: {
+                  ...state.sessionContextRevision,
+                  [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                },
+              }
+            : {}),
+        };
+      });
+      return contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId);
+    } finally {
+      finishContextRequest(sessionId, request);
+    }
   },
   async switchSessionContext(sessionId, target) {
-    const options = await client.call<SessionContextOptions>("switch_session_context", {
-      sessionId,
-      target,
-    });
-    set((state) => {
-      if (!isSessionActive(state, sessionId)) return {};
-      return {
-        sessionStates: { ...state.sessionStates, [sessionId]: options.state },
-        sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
-        sessionContextRevision: {
-          ...state.sessionContextRevision,
-          [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+    assertOrdinarySession(sessionId);
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    )
+      throw new Error("Finish or roll back the open Snowflake grid transaction first");
+    const sdk = hasSdkObservation(get(), sessionId);
+    const authority = get().sessionContextAuthorities[sessionId];
+    const runtime = get().sessionStates[sessionId];
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionContextSwitching[sessionId])
+      throw new Error("Wait for the schema change to finish first");
+    if (
+      sdk &&
+      (!authority?.revision ||
+        !authority.state.contextFingerprint ||
+        authority.state !== runtime ||
+        runtime.transactionState !== "idle" ||
+        runtime.transactionObservation?.status !== "observed" ||
+        runtime.transactionObservation.transactionId !== null ||
+        !authority.available.includes(target))
+    )
+      throw new Error("Refresh session context before selecting an available schema");
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    schemaSwitchRequests.set(sessionId, request);
+    set((state) => ({
+      sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: true },
+      ...(sdk
+        ? {
+            sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+            sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+            sessionContextRevision: {
+              ...state.sessionContextRevision,
+              [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+            },
+          }
+        : {}),
+    }));
+    try {
+      const options = sdk
+        ? await client.call("switch_session_schema", {
+            sessionId,
+            request: {
+              revision: authority!.revision!,
+              database: authority!.state.database,
+              schema: target,
+              contextFingerprint: authority!.state.contextFingerprint!,
+            },
+          })
+        : await client.call("switch_session_context", { sessionId, target });
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      if (options.state.sessionId !== sessionId || (sdk && !options.revision))
+        throw new Error("Schema switch observation is unavailable");
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: options.state },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: options.available },
+          ...(sdk
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: options,
+                },
+              }
+            : {}),
+          sessionContextRevision: {
+            ...state.sessionContextRevision,
+            [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+          },
+        };
+      });
+    } catch (error) {
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      const { code } = asAppError(error);
+      if (sdk && (code === "connectionClosed" || code === "outcomeUnknown"))
+        get().retireSession(sessionId);
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      if (schemaSwitchRequests.get(sessionId) === request) {
+        schemaSwitchRequests.delete(sessionId);
+        set((state) => ({
+          sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: false },
+        }));
+      }
+    }
+  },
+  async switchSnowflakeSessionContext(sessionId, target) {
+    assertOrdinarySession(sessionId);
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().sessionSnowflakeGridPending[sessionId] ||
+      get().sessionSnowflakeGridTransactions[sessionId]
+    )
+      throw new Error("Finish or roll back the open Snowflake grid transaction first");
+    const authority = get().snowflakeContextAuthorities[sessionId];
+    const runtime = get().sessionStates[sessionId];
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionContextSwitching[sessionId])
+      throw new Error("Wait for the schema change to finish first");
+    const targetAllowed =
+      authority !== undefined &&
+      (target.kind === "role"
+        ? authority.availableRoles.includes(target.role)
+        : target.kind === "warehouse"
+          ? authority.availableWarehouses.includes(target.warehouse)
+          : target.kind === "database"
+            ? authority.availableDatabases.includes(target.database)
+            : Boolean(target.database) &&
+              authority.state.database === target.database &&
+              authority.availableSchemas.includes(target.schema));
+    if (
+      !authority?.revision ||
+      !authority.state.contextFingerprint ||
+      authority.state !== runtime ||
+      runtime.transactionState !== "idle" ||
+      runtime.transactionObservation?.status !== "observed" ||
+      runtime.transactionObservation.transactionId !== null ||
+      !targetAllowed
+    ) {
+      throw new Error("Refresh session context before selecting an available Snowflake context");
+    }
+    get().invalidateSessionContextAuthority(sessionId);
+    const request = beginContextRequest(sessionId);
+    schemaSwitchRequests.set(sessionId, request);
+    set((state) => ({
+      snowflakeContextExpanded: { ...state.snowflakeContextExpanded, [sessionId]: true },
+      sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: true },
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContexts: { ...state.sessionContexts, [sessionId]: [] },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    try {
+      const catalog = await client.call("switch_snowflake_context", {
+        sessionId,
+        request: {
+          revision: authority.revision,
+          contextFingerprint: authority.state.contextFingerprint,
+          target,
         },
-      };
-    });
+      });
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      if (catalog.state.sessionId !== sessionId || !catalog.revision)
+        throw new Error("Snowflake context switch observation is unavailable");
+      set((state) => {
+        if (contextRequests.get(sessionId) !== request || !isSessionActive(state, sessionId))
+          return {};
+        return {
+          sessionStates: { ...state.sessionStates, [sessionId]: catalog.state },
+          sessionContexts: { ...state.sessionContexts, [sessionId]: catalog.availableSchemas },
+          snowflakeContextAuthorities: {
+            ...state.snowflakeContextAuthorities,
+            [sessionId]: catalog,
+          },
+          ...(catalog.state.database
+            ? {
+                sessionContextAuthorities: {
+                  ...state.sessionContextAuthorities,
+                  [sessionId]: {
+                    state: catalog.state,
+                    available: catalog.availableSchemas,
+                    revision: catalog.revision,
+                  },
+                },
+              }
+            : {}),
+          sessionContextRevision: {
+            ...state.sessionContextRevision,
+            [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+          },
+        };
+      });
+    } catch (error) {
+      if (contextRequests.get(sessionId) !== request || !isSessionActive(get(), sessionId)) return;
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      if (schemaSwitchRequests.get(sessionId) === request) {
+        schemaSwitchRequests.delete(sessionId);
+        set((state) => ({
+          sessionContextSwitching: { ...state.sessionContextSwitching, [sessionId]: false },
+        }));
+      }
+    }
+  },
+  async executeTransactionControl(plan, approval) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events carry the old tab revision. Keep their delayed
+      // runtime observations from replacing this boundary's final authority.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? { ...tab, revision: tab.revision + 1 }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    try {
+      const result = await client.call("execute_transaction_control", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid transaction action response");
+      }
+      if (result.retired || result.boundaryOutcome === "unknown") get().retireSession(sessionId);
+      else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Keep command evidence truthful even when the owning tab has closed.
+      const label =
+        result.action === "begin" ? "BEGIN" : result.action === "commit" ? "COMMIT" : "ROLLBACK";
+      const outcome =
+        result.boundaryOutcome === "acknowledged"
+          ? "acknowledged"
+          : result.boundaryOutcome === "rejected"
+            ? "rejected"
+            : "outcome unknown";
+      get().notify(
+        `${label} ${outcome}${result.retired ? "; session retired" : result.state.transactionControlAuthority?.status === "rollbackOnly" ? "; only rollback recovery is available" : ""}${result.error ? `. ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      // Do not issue an automatic observer or replay a boundary. An owner can
+      // explicitly refresh after an admission failure on a still-live session.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeDml(plan, approval, ownerTabId) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const ownerTab = get().tabs.find((tab) => tab.id === ownerTabId);
+    if (ownerTabId && (!ownerTab || querySessionForTab(ownerTab, get().sessions)?.id !== sessionId))
+      throw new Error("The owning query session changed; prepare this write again");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events must not replace this write's final authority.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? {
+              ...tab,
+              revision: tab.revision + 1,
+              ...(tab.id === ownerTabId
+                ? {
+                    snowflakeDmlResult: undefined,
+                    snowflakeDdlResult: undefined,
+                    status: "running" as const,
+                    error: null,
+                    runId: null,
+                    dataSessionId: sessionId,
+                    executionSummary: undefined,
+                    clientStartedAt: performance.now(),
+                    clientElapsedMs: undefined,
+                  }
+                : {}),
+            }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    const ownerRevision = get().tabs.find((tab) => tab.id === ownerTabId)?.revision;
+    try {
+      const result = await client.call("execute_snowflake_dml", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake DML response");
+      }
+      if (result.retired || result.statementOutcome === "unknown") {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Preserve the statement evidence even when the owning tab has closed.
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                snowflakeDmlResult: result,
+                status:
+                  result.statementOutcome === "succeeded"
+                    ? "completed"
+                    : result.statementOutcome === "unknown"
+                      ? "outcomeUnknown"
+                      : "failed",
+                error: result.error,
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      const count =
+        result.summary.status === "validated" && result.summary.affectedRows !== null
+          ? `; affected rows ${result.summary.affectedRows}`
+          : "; affected-row count unavailable";
+      get().notify(
+        `${result.kind.toUpperCase()} ${result.statementOutcome === "unknown" ? "outcome unknown" : result.statementOutcome}${count}${result.retired ? "; session retired" : result.state.transactionControlAuthority?.status === "rollbackOnly" ? "; only rollback recovery is available" : ""}${result.error ? `. ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                status: "failed",
+                error: asAppError(error),
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      // No automatic observer or replay after a write admission failure.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeDdl(plan, approval, ownerTabId) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const ownerTab = get().tabs.find((tab) => tab.id === ownerTabId);
+    if (ownerTabId && (!ownerTab || querySessionForTab(ownerTab, get().sessions)?.id !== sessionId))
+      throw new Error("The owning query session changed; prepare this write again");
+    revokeSchemaSelectionBeforeWork(sessionId, true);
+    const request = beginContextRequest(sessionId);
+    set((state) => ({
+      sessionTransactionPending: { ...state.sessionTransactionPending, [sessionId]: true },
+      sessionMetadataRefreshRequired: {
+        ...state.sessionMetadataRefreshRequired,
+        [sessionId]: true,
+      },
+      sessionDdlCatalogRefreshRequired: {
+        ...state.sessionDdlCatalogRefreshRequired,
+        [sessionId]: true,
+      },
+      // Earlier query events must not replace this DDL statement's final evidence.
+      tabs: state.tabs.map((tab) =>
+        querySessionForTab(tab, state.sessions)?.id === sessionId
+          ? {
+              ...tab,
+              revision: tab.revision + 1,
+              ...(tab.id === ownerTabId
+                ? {
+                    snowflakeDdlResult: undefined,
+                    snowflakeDmlResult: undefined,
+                    status: "running" as const,
+                    error: null,
+                    runId: null,
+                    dataSessionId: sessionId,
+                    executionSummary: undefined,
+                    clientStartedAt: performance.now(),
+                    clientElapsedMs: undefined,
+                  }
+                : {}),
+            }
+          : tab,
+      ),
+      sessionStates: { ...state.sessionStates, [sessionId]: unknownSdkRuntime(sessionId) },
+      sessionContextRevision: {
+        ...state.sessionContextRevision,
+        [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+      },
+    }));
+    const ownerRevision = get().tabs.find((tab) => tab.id === ownerTabId)?.revision;
+    try {
+      const result = await client.call("execute_snowflake_ddl", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.state.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake DDL response");
+      }
+      if (
+        result.retired ||
+        result.statementOutcome === "unknown" ||
+        !isSessionActive(get(), sessionId)
+      ) {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (contextRequests.get(sessionId) === request && isSessionActive(get(), sessionId)) {
+        set((state) => ({ sessionStates: { ...state.sessionStates, [sessionId]: result.state } }));
+      }
+      // Preserve the statement evidence even when the owning tab has closed.
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                snowflakeDdlResult: result,
+                status:
+                  result.statementOutcome === "succeeded"
+                    ? "completed"
+                    : result.statementOutcome === "unknown"
+                      ? "outcomeUnknown"
+                      : "failed",
+                error: result.error,
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      get().notify(
+        `${result.qualifiedTarget}: ${result.statementOutcome === "unknown" ? "outcome unknown" : result.statementOutcome}. Schema changes cannot be rolled back; explicitly refresh metadata before further work.${result.retired ? " Session retired." : ""}${result.error ? ` ${result.error.message}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      set((state) => ({
+        tabs: state.tabs.map((tab) =>
+          tab.id === ownerTabId && tab.revision === ownerRevision && tab.dataSessionId === sessionId
+            ? {
+                ...tab,
+                status: code === "outcomeUnknown" ? "outcomeUnknown" : "failed",
+                error: asAppError(error),
+                clientElapsedMs: performance.now() - (tab.clientStartedAt ?? performance.now()),
+              }
+            : tab,
+        ),
+      }));
+      // No automatic observer or replay after a write admission failure.
+      throw error;
+    } finally {
+      finishContextRequest(sessionId, request);
+      set((state) => {
+        const pending = { ...state.sessionTransactionPending };
+        delete pending[sessionId];
+        return { sessionTransactionPending: pending };
+      });
+    }
+  },
+  async executeSnowflakeGridPlan(plan, approval) {
+    const sessionId = plan.sessionId;
+    if (!isSessionActive(get(), sessionId))
+      throw new Error("This database session is disconnected");
+    if (get().sessionTransactionPending[sessionId] || get().sessionSnowflakeGridPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    if (
+      get().tabs.some(
+        (tab) =>
+          querySessionForTab(tab, get().sessions)?.id === sessionId &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    if (get().sessionStates[sessionId]?.transactionControlAuthority?.status === "rollbackOnly")
+      throw new Error("Only rollback recovery is available for this session");
+    const hadOpenGridTx = Boolean(get().sessionSnowflakeGridTransactions[sessionId]);
+    revokeSchemaSelectionBeforeWork(sessionId, false, true);
+    set((state) => ({
+      sessionSnowflakeGridPending: { ...state.sessionSnowflakeGridPending, [sessionId]: true },
+    }));
+    try {
+      const result = await client.call("execute_snowflake_grid_plan", {
+        planId: plan.id,
+        approval,
+      });
+      if (result.sessionId !== sessionId) {
+        get().retireSession(sessionId);
+        throw new Error("Invalid Snowflake grid execution response");
+      }
+      if (result.retired || result.outcome === "unknown" || !isSessionActive(get(), sessionId)) {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (
+        (result.outcome === "pending" || (hadOpenGridTx && result.outcome === "rejected")) &&
+        result.transactionId
+      ) {
+        set((state) => ({
+          sessionSnowflakeGridTransactions: {
+            ...state.sessionSnowflakeGridTransactions,
+            [sessionId]: {
+              transactionId: result.transactionId!,
+              recordingError: result.recordingError,
+            },
+          },
+        }));
+      } else {
+        set((state) => {
+          const nextGridTx = { ...state.sessionSnowflakeGridTransactions };
+          delete nextGridTx[sessionId];
+          return {
+            sessionSnowflakeGridTransactions: nextGridTx,
+            sessionMetadataRefreshRequired: {
+              ...state.sessionMetadataRefreshRequired,
+              [sessionId]: true,
+            },
+            sessionStates: {
+              ...state.sessionStates,
+              [sessionId]: unknownSdkRuntime(sessionId),
+            },
+            sessionContextRevision: {
+              ...state.sessionContextRevision,
+              [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+            },
+          };
+        });
+      }
+      const outcomeLabel =
+        result.outcome === "committed"
+          ? "committed"
+          : result.outcome === "pending"
+            ? `manual transaction pending (${result.transactionId ?? "active"})`
+            : result.outcome === "rolledBack"
+              ? "rolled back"
+              : result.outcome === "rejected"
+                ? "rejected"
+                : "outcome unknown";
+      get().notify(
+        `Snowflake grid edits ${outcomeLabel}${result.retired ? "; session retired" : ""}${result.recordingError ? `. Recording blocked: ${result.recordingError}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      throw error;
+    } finally {
+      set((state) => {
+        const pending = { ...state.sessionSnowflakeGridPending };
+        delete pending[sessionId];
+        return { sessionSnowflakeGridPending: pending };
+      });
+    }
+  },
+  async finishSnowflakeGridTransaction(sessionId, transactionId, action) {
+    if (get().sessionTransactionPending[sessionId] || get().sessionSnowflakeGridPending[sessionId])
+      throw new Error("Wait for the reviewed write or transaction action to finish first");
+    set((state) => ({
+      sessionSnowflakeGridPending: { ...state.sessionSnowflakeGridPending, [sessionId]: true },
+    }));
+    try {
+      const result = await client.call("finish_snowflake_grid_transaction", {
+        transactionId,
+        action,
+      });
+      if (result.retired || result.outcome === "unknown") {
+        result.retired = true;
+        get().retireSession(sessionId);
+      } else if (
+        (result.outcome === "pending" || result.outcome === "rejected") &&
+        result.transactionId
+      ) {
+        set((state) => ({
+          sessionSnowflakeGridTransactions: {
+            ...state.sessionSnowflakeGridTransactions,
+            [sessionId]: {
+              transactionId: result.transactionId!,
+              recordingError: result.recordingError,
+            },
+          },
+        }));
+      } else {
+        set((state) => {
+          const nextGridTx = { ...state.sessionSnowflakeGridTransactions };
+          delete nextGridTx[sessionId];
+          return {
+            sessionSnowflakeGridTransactions: nextGridTx,
+            ...(isSessionActive(state, sessionId)
+              ? {
+                  sessionMetadataRefreshRequired: {
+                    ...state.sessionMetadataRefreshRequired,
+                    [sessionId]: true,
+                  },
+                  sessionStates: {
+                    ...state.sessionStates,
+                    [sessionId]: unknownSdkRuntime(sessionId),
+                  },
+                  sessionContextRevision: {
+                    ...state.sessionContextRevision,
+                    [sessionId]: (state.sessionContextRevision[sessionId] ?? 0) + 1,
+                  },
+                }
+              : {}),
+          };
+        });
+      }
+      const label = action === "commit" ? "COMMIT" : "ROLLBACK";
+      const outcomeLabel =
+        result.outcome === "committed"
+          ? "committed"
+          : result.outcome === "rolledBack"
+            ? "rolled back"
+            : result.outcome === "rejected"
+              ? "rejected"
+              : "outcome unknown";
+      get().notify(
+        `Snowflake grid ${label} ${outcomeLabel}${result.retired ? "; session retired" : ""}${result.recordingError ? `. Recording warning: ${result.recordingError}` : ""}`,
+      );
+      return result;
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      throw error;
+    } finally {
+      set((state) => {
+        const pending = { ...state.sessionSnowflakeGridPending };
+        delete pending[sessionId];
+        return { sessionSnowflakeGridPending: pending };
+      });
+    }
   },
   async setTransactionMode(sessionId, mode) {
+    assertOrdinarySession(sessionId);
     const runtime = await client.call<SessionRuntimeState>("set_transaction_mode", {
       sessionId,
       mode,
@@ -866,12 +2664,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       const prev = state.sessionStates[sessionId];
-      const contextChanged =
-        prev &&
-        (prev.activeContext !== runtime.activeContext ||
-          prev.database !== runtime.database ||
-          prev.role !== runtime.role ||
-          JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath));
+      const contextChanged = sessionRuntimeContextChanged(prev, runtime);
       return {
         sessionStates: { ...state.sessionStates, [sessionId]: runtime },
         ...(contextChanged
@@ -886,7 +2679,25 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   async commitTransaction(sessionId) {
-    const runtime = await client.call<SessionRuntimeState>("commit_transaction", { sessionId });
+    assertOrdinarySession(sessionId);
+    let runtime: SessionRuntimeState;
+    try {
+      runtime = await client.call<SessionRuntimeState>("commit_transaction", { sessionId });
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      else if ((code === "database" || code === "conflict") && isSessionActive(get(), sessionId)) {
+        try {
+          await get().refreshSessionContexts(sessionId, true);
+        } catch (refreshError) {
+          const { code: refreshCode } = asAppError(refreshError);
+          if (refreshCode === "connectionClosed" || refreshCode === "outcomeUnknown")
+            get().retireSession(sessionId);
+        }
+      }
+      throw error;
+    }
+    if (!isSessionActive(get(), sessionId)) return;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       return {
@@ -900,7 +2711,25 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().notify("Transaction committed");
   },
   async rollbackTransaction(sessionId) {
-    const runtime = await client.call<SessionRuntimeState>("rollback_transaction", { sessionId });
+    assertOrdinarySession(sessionId);
+    let runtime: SessionRuntimeState;
+    try {
+      runtime = await client.call<SessionRuntimeState>("rollback_transaction", { sessionId });
+    } catch (error) {
+      const { code } = asAppError(error);
+      if (code === "connectionClosed" || code === "outcomeUnknown") get().retireSession(sessionId);
+      else if ((code === "database" || code === "conflict") && isSessionActive(get(), sessionId)) {
+        try {
+          await get().refreshSessionContexts(sessionId, true);
+        } catch (refreshError) {
+          const { code: refreshCode } = asAppError(refreshError);
+          if (refreshCode === "connectionClosed" || refreshCode === "outcomeUnknown")
+            get().retireSession(sessionId);
+        }
+      }
+      throw error;
+    }
+    if (!isSessionActive(get(), sessionId)) return;
     set((state) => {
       if (!isSessionActive(state, sessionId)) return {};
       return {
@@ -954,10 +2783,49 @@ export const useStudio = create<StudioState>((set, get) => ({
   selectConnection(id) {
     set({ selectedConnectionId: id });
   },
-  async refreshCatalog(id) {
+  async refreshCatalog(id, explicit = false) {
     const session = get().sessions[id];
     if (!session) return;
+    if (isSnowflakeConsoleSession(get(), session.id)) {
+      const { catalog, objects } = get();
+      if (catalog[id] !== undefined || objects[id] !== undefined) {
+        const nextCatalog = { ...catalog };
+        const nextObjects = { ...objects };
+        delete nextCatalog[id];
+        delete nextObjects[id];
+        set({ catalog: nextCatalog, objects: nextObjects });
+      }
+      return;
+    }
+    if (!session.capabilities.tableBrowsing) {
+      if (explicit && session.capabilities.objectExplorer) {
+        assertOrdinarySession(session.id);
+        const objects = await client
+          .call<DatabaseObjectSummary[]>("database_objects", { sessionId: session.id })
+          .catch((error) => {
+            if ((error as Partial<AppError> | null)?.code === "unsupported") return [];
+            throw error;
+          });
+        assertOrdinarySession(session.id);
+        if (get().sessions[id]?.id === session.id)
+          set((state) => ({
+            catalog: { ...state.catalog, [id]: [] },
+            objects: { ...state.objects, [id]: objects },
+          }));
+        return;
+      }
+      const { catalog, objects } = get();
+      if (catalog[id] !== undefined || objects[id] !== undefined) {
+        const nextCatalog = { ...catalog };
+        const nextObjects = { ...objects };
+        delete nextCatalog[id];
+        delete nextObjects[id];
+        set({ catalog: nextCatalog, objects: nextObjects });
+      }
+      return;
+    }
     const catalog = await client.call<TableInfo[]>("catalog", { sessionId: session.id });
+    assertOrdinarySession(session.id);
     const objects = session.capabilities.objectExplorer
       ? await client
           .call<DatabaseObjectSummary[]>("database_objects", { sessionId: session.id })
@@ -1324,6 +3192,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
   },
   async openTable(connectionId, table, rawQuery = EMPTY_QUERY, preferredView, highlightedColumn) {
+    const currentSession = get().sessions[connectionId];
+    if (currentSession) assertOrdinarySession(currentSession.id);
     const query = normalizeQuery(rawQuery);
     const profileName =
       get().bootstrap?.profiles.find((p) => p.id === connectionId)?.name ?? connectionId;
@@ -1408,6 +3278,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const source = state.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
     const session = source && querySessionForTab(source, state.sessions);
     if (!source?.connectionId || !session || session.connectionId !== source.connectionId) return;
+    assertOrdinarySession(session.id);
     const origin: MetadataOrigin = {
       tabId,
       sessionId: session.id,
@@ -1452,7 +3323,9 @@ export const useStudio = create<StudioState>((set, get) => ({
     set({ tabs: [...state.tabs, next], activeTabId: next.id });
   },
   async openObject(connectionId, object, preferredView, highlightedColumn) {
-    if (isTabularObjectKind(object.kind)) {
+    const currentSession = get().sessions[connectionId];
+    if (currentSession) assertOrdinarySession(currentSession.id);
+    if (isTabularObjectKind(object.kind) && (currentSession?.capabilities.tableBrowsing ?? true)) {
       await get().openTable(
         connectionId,
         { schema: object.schema, name: object.name },
@@ -1473,9 +3346,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (existing) {
       set((state) => ({
         activeTabId: existing.id,
-        tabs: preferredView
-          ? state.tabs.map((t) => (t.id === existing.id ? { ...t, view: preferredView } : t))
-          : state.tabs,
+        tabs:
+          preferredView || highlightedColumn !== undefined
+            ? state.tabs.map((t) =>
+                t.id === existing.id
+                  ? {
+                      ...t,
+                      ...(preferredView ? { view: preferredView } : {}),
+                      ...(highlightedColumn !== undefined ? { highlightedColumn } : {}),
+                    }
+                  : t,
+              )
+            : state.tabs,
       }));
       get().recordRecentLocation({
         key: `object:${connectionId}:${databaseObjectKey(object)}`,
@@ -1488,6 +3370,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const next = tab("object", objectTabTitle(object), connectionId);
     next.object = object;
     next.view = preferredView ?? "structure";
+    if (highlightedColumn !== undefined) next.highlightedColumn = highlightedColumn;
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     get().recordRecentLocation({
       key: `object:${connectionId}:${databaseObjectKey(object)}`,
@@ -1511,6 +3394,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       };
     const session = current.connectionId ? get().sessions[current.connectionId] : null;
     if (!session) return { kind: "refused", reason: "Connect to change sort or filters" };
+    assertOrdinarySession(session.id);
     const query = normalizeQuery(rawQuery);
     if (!options?.force && !options?.approval && sameQuery(current.query, query))
       return { kind: "applied" };
@@ -1523,7 +3407,10 @@ export const useStudio = create<StudioState>((set, get) => ({
         });
         if (plan) return { kind: "review", plan, query };
       } catch (error) {
-        get().updateTab(id, { error: asAppError(error) });
+        const failure = asAppError(error);
+        if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
+          get().updateTab(id, { error: failure });
+        retireAfterBrowseFailure(session.id, failure);
         return { kind: "applied" };
       }
     }
@@ -1535,11 +3422,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     const current = get().tabs.find((t) => t.id === id),
       session = current?.connectionId ? get().sessions[current.connectionId] : null;
     if (!current?.table || !session) return;
+    assertOrdinarySession(session.id);
     dirtyStore.clearInserts(current.id);
     for (const page of current.pages) {
       resultCache.release(page.result.id);
       dirtyStore.clear(page.result.id);
-      void client.call("release_result", { resultId: page.result.id });
+      if (!isConsoleOwnedResult(page.result))
+        void client.call("release_result", { resultId: page.result.id });
     }
     get().updateTab(id, {
       pages: [],
@@ -1564,12 +3453,14 @@ export const useStudio = create<StudioState>((set, get) => ({
       get().updateTab(id, { schema, loadingPage: false });
       await get().loadNextPage(id, approval);
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision + 1, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: asAppError(error),
+          error: failure,
           loadingPage: false,
           hasMore: false,
         });
+      retireAfterBrowseFailure(session.id, failure);
     }
   },
   async loadNextPage(id, approval) {
@@ -1584,6 +3475,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       current.error
     )
       return;
+    assertOrdinarySession(session.id);
     get().updateTab(id, { loadingPage: true });
     const start = current.loadedRows,
       after = current.nextKey;
@@ -1599,11 +3491,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         !get().tabs.some((t) => t.id === id && t.revision === current.revision) ||
         get().sessions[current.connectionId!]?.id !== session.id
       ) {
-        void client.call("release_result", { resultId: page.result.id });
+        if (!isConsoleOwnedResult(page.result))
+          void client.call("release_result", { resultId: page.result.id });
         return;
       }
       const latest = get().tabs.find((t) => t.id === id)!;
-      verifyPageColumns(latest.schema, page.result);
+      const schema = verifyPageColumns(latest.schema, page.result);
       const pages = [...latest.pages, { start, after, result: page.result }];
       if (pages.length > 8) {
         const evict = pages.findIndex(
@@ -1612,10 +3505,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (evict >= 0) {
           const [old] = pages.splice(evict, 1);
           resultCache.release(old.result.id);
-          void client.call("release_result", { resultId: old.result.id });
+          if (!isConsoleOwnedResult(old.result))
+            void client.call("release_result", { resultId: old.result.id });
         }
       }
       get().updateTab(id, {
+        schema,
         pages,
         pageKeys: { ...latest.pageKeys, [start]: after },
         loadedRows: start + page.result.retainedRows,
@@ -1623,11 +3518,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         hasMore: page.hasMore,
       });
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, {
-          error: asAppError(error),
+          error: failure,
+          loadingPage: false,
           hasMore: false,
         });
+      retireAfterBrowseFailure(session.id, failure);
     } finally {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, { loadingPage: false });
@@ -1650,6 +3548,7 @@ export const useStudio = create<StudioState>((set, get) => ({
       .filter((key) => key <= row)
       .reduce((a, b) => Math.max(a, b), -1);
     if (start < 0) return;
+    assertOrdinarySession(session.id);
     get().updateTab(id, { loadingPage: true });
     try {
       const page = await client.call<import("../ipc/generated").TablePage>("browse_table", {
@@ -1660,10 +3559,11 @@ export const useStudio = create<StudioState>((set, get) => ({
       });
       const latest = get().tabs.find((t) => t.id === id);
       if (!latest || latest.revision !== current.revision) {
-        void client.call("release_result", { resultId: page.result.id });
+        if (!isConsoleOwnedResult(page.result))
+          void client.call("release_result", { resultId: page.result.id });
         return;
       }
-      verifyPageColumns(latest.schema, page.result);
+      const schema = verifyPageColumns(latest.schema, page.result);
       const pages = [
         ...latest.pages,
         { start, after: current.pageKeys[start], result: page.result },
@@ -1675,13 +3575,16 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (evict >= 0) {
           const [old] = pages.splice(evict, 1);
           resultCache.release(old.result.id);
-          void client.call("release_result", { resultId: old.result.id });
+          if (!isConsoleOwnedResult(old.result))
+            void client.call("release_result", { resultId: old.result.id });
         }
       }
-      get().updateTab(id, { pages });
+      get().updateTab(id, { schema, pages });
     } catch (error) {
+      const failure = asAppError(error);
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
-        get().updateTab(id, { error: { code: "database", message: messageOf(error) } });
+        get().updateTab(id, { error: failure, loadingPage: false, hasMore: false });
+      retireAfterBrowseFailure(session.id, failure);
     } finally {
       if (requestIsCurrent(id, current.revision, current.connectionId!, session.id))
         get().updateTab(id, { loadingPage: false });
@@ -1713,6 +3616,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
   closeTab(id) {
+    for (const receipt of Object.values(get().snowflakeConsoleReceipts))
+      if (receipt.tabId === id && consoleReceiptHeld(receipt))
+        void get()
+          .cancelSnowflakeConsole(receipt.clientRequestId)
+          .catch((error) => get().notify(messageOf(error)));
+
     planSnapshots.removeOwner(id);
     const stateSnapshot = get();
     const current = stateSnapshot.tabs.find((t) => t.id === id);
@@ -1737,7 +3646,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
       dirtyStore.clearTab(result.id, [result.id]);
       resultCache.release(result.id);
-      void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isConsoleOwnedResult(result))
+        void client.call("release_result", { resultId: result.id }).catch(() => {});
     }
     set((state) => {
       const index = state.tabs.findIndex((t) => t.id === id),
@@ -2002,10 +3912,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       for (const result of [...tab.results, ...tab.pages.map((p) => p.result)]) {
         resultCache.release(result.id);
         dirtyStore.clearTab(result.id, [result.id]);
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
       }
       get().updateTab(tab.id, {
         results: [],
+        snowflakeDdlResult: undefined,
+        snowflakeDmlResult: undefined,
         planSource: undefined,
         pages: [],
         pageKeys: {},
@@ -2017,6 +3930,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         runId: null,
         activeResultId: null,
         status: "idle",
+        executionSummary: undefined,
         error: null,
         revision: tab.revision + 1,
       });
@@ -2030,37 +3944,44 @@ export const useStudio = create<StudioState>((set, get) => ({
         get().notify(event.reason);
       }
       if (event.type === "notice") get().notify(event.message);
-      if (event.type === "sessionState") runtimeUpdates.push(event.state);
+      if (event.type === "sessionState") {
+        const source = get().tabs.find((tab) => tab.id === tabId && tab.revision === revision);
+        const sourceSession = source && querySessionForTab(source, get().sessions);
+        if (
+          sourceSession?.id === event.state.sessionId &&
+          !get().sessionTransactionPending[event.state.sessionId]
+        ) {
+          get().invalidateSessionContextAuthority(event.state.sessionId);
+          contextRequests.delete(event.state.sessionId);
+          runtimeUpdates.push(event.state);
+        }
+      }
     }
     if (runtimeUpdates.length > 0) {
       set((state) => {
         let changed = false;
         const sessionStates = { ...state.sessionStates };
+        const sessionContexts = { ...state.sessionContexts };
         const sessionContextRevision = { ...state.sessionContextRevision };
         for (const runtime of runtimeUpdates) {
           if (!isSessionActive(state, runtime.sessionId)) continue;
           const prev = sessionStates[runtime.sessionId];
           sessionStates[runtime.sessionId] = runtime;
+          if (runtime.transactionObservation !== undefined) sessionContexts[runtime.sessionId] = [];
           changed = true;
-          if (
-            prev &&
-            (prev.activeContext !== runtime.activeContext ||
-              prev.database !== runtime.database ||
-              prev.role !== runtime.role ||
-              JSON.stringify(prev.searchPath) !== JSON.stringify(runtime.searchPath))
-          ) {
+          if (sessionRuntimeContextChanged(prev, runtime)) {
             sessionContextRevision[runtime.sessionId] =
               (sessionContextRevision[runtime.sessionId] ?? 0) + 1;
           }
         }
-        return changed ? { sessionStates, sessionContextRevision } : {};
+        return changed ? { sessionStates, sessionContexts, sessionContextRevision } : {};
       });
     }
     set((state) => {
       const current = state.tabs.find((t) => t.id === tabId);
       if (!current || current.revision !== revision) {
         for (const event of events)
-          if (event.type === "result")
+          if (event.type === "result" && !isConsoleOwnedResult(event.result))
             void client.call("release_result", { resultId: event.result.id }).catch(() => {});
         return {};
       }
@@ -2069,6 +3990,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (event.type === "started") {
           next.runId = event.runId;
           next.status = "running";
+          next.executionSummary = undefined;
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
@@ -2095,10 +4017,11 @@ export const useStudio = create<StudioState>((set, get) => ({
           };
         }
         if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
-        if (event.type === "finished") {
+        if (event.type === "finished" && event.runId === next.runId) {
           if (next.clientStartedAt !== undefined)
             next.clientElapsedMs = Math.max(0, performance.now() - next.clientStartedAt);
           next.status = event.status;
+          next.executionSummary = event.executionSummary;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
         }
@@ -2108,7 +4031,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 }));
 
-export function beginEventBatch(tabId: string) {
+export function beginEventBatch(
+  tabId: string,
+  acceptsEvent: (event: QueryEvent) => boolean = () => true,
+) {
   const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision ?? -1;
   let events: QueryEvent[] = [],
     frame = 0;
@@ -2117,7 +4043,7 @@ export function beginEventBatch(tabId: string) {
     frame = 0;
     const batch = events;
     events = [];
-    useStudio.getState().applyEvents(tabId, batch, revision);
+    useStudio.getState().applyEvents(tabId, batch.filter(acceptsEvent), revision);
   };
   return (event: QueryEvent) => {
     events.push(event);

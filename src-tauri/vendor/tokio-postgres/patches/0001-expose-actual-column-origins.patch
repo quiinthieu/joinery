@@ -1,0 +1,180 @@
+--- a/src/simple_query.rs
++++ b/src/simple_query.rs
+@@ -18,16 +18,39 @@
+ #[derive(Debug)]
+ pub struct SimpleColumn {
+     name: String,
++    table_oid: Option<u32>,
++    column_id: Option<i16>,
++    type_oid: u32,
+ }
+ 
+ impl SimpleColumn {
+-    pub(crate) fn new(name: String) -> SimpleColumn {
+-        SimpleColumn { name }
++    pub(crate) fn new(name: String, table_oid: u32, column_id: i16, type_oid: u32) -> SimpleColumn {
++        SimpleColumn {
++            name,
++            table_oid: Some(table_oid).filter(|oid| *oid != 0),
++            column_id: Some(column_id).filter(|id| *id != 0),
++            type_oid,
++        }
+     }
+ 
+     /// Returns the name of the column.
+     pub fn name(&self) -> &str {
+         &self.name
++    }
++
++    /// Returns the underlying table OID, if the server reports a direct column origin.
++    pub fn table_oid(&self) -> Option<u32> {
++        self.table_oid
++    }
++
++    /// Returns the column's attribute number, including negative system attributes.
++    pub fn column_id(&self) -> Option<i16> {
++        self.column_id
++    }
++
++    /// Returns the raw PostgreSQL type OID reported by the server.
++    pub fn type_oid(&self) -> u32 {
++        self.type_oid
+     }
+ }
+ 
+@@ -93,7 +116,14 @@
+             Message::RowDescription(body) => {
+                 let columns: Arc<[SimpleColumn]> = body
+                     .fields()
+-                    .map(|f| Ok(SimpleColumn::new(f.name().to_string())))
++                    .map(|f| {
++                        Ok(SimpleColumn::new(
++                            f.name().to_string(),
++                            f.table_oid(),
++                            f.column_id(),
++                            f.type_oid(),
++                        ))
++                    })
+                     .collect::<Vec<_>>()
+                     .map_err(Error::parse)?
+                     .into();
+--- a/src/bind.rs
++++ b/src/bind.rs
+@@ -1,8 +1,10 @@
+ use crate::client::InnerClient;
+ use crate::codec::FrontendMessage;
+ use crate::connection::RequestMessages;
++use crate::prepare::get_type;
+ use crate::types::BorrowToSql;
+-use crate::{Error, Portal, Statement, query};
++use crate::{Column, Error, Portal, Statement, query};
++use fallible_iterator::FallibleIterator;
+ use postgres_protocol::message::backend::Message;
+ use postgres_protocol::message::frontend;
+ use std::sync::Arc;
+@@ -23,10 +25,14 @@
+     let name = format!("p{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+     let buf = client.with_buf(|buf| {
+         query::encode_bind(&statement, params, &name, buf)?;
++        frontend::describe(b'P', &name, buf).map_err(Error::encode)?;
+         frontend::sync(buf);
+         Ok(buf.split().freeze())
+     })?;
+ 
++    // Own the server-side name before awaiting BindComplete, so cancellation
++    // at any response boundary closes the portal without executing it.
++    let mut portal = Portal::new(client, name, statement, Vec::new());
+     let mut responses = client.send(RequestMessages::Single(FrontendMessage::Raw(buf)))?;
+ 
+     match responses.next().await? {
+@@ -34,5 +40,25 @@
+         _ => return Err(Error::unexpected_message()),
+     }
+ 
+-    Ok(Portal::new(client, name, statement))
++    // Describe the bound portal, not the potentially stale prepared statement.
++    // No Execute message has been sent.
++    let mut columns = Vec::new();
++    match responses.next().await? {
++        Message::RowDescription(body) => {
++            let mut fields = body.fields();
++            while let Some(field) = fields.next().map_err(Error::parse)? {
++                columns.push(Column {
++                    name: field.name().to_owned(),
++                    table_oid: Some(field.table_oid()).filter(|oid| *oid != 0),
++                    column_id: Some(field.column_id()).filter(|id| *id != 0),
++                    type_modifier: field.type_modifier(),
++                    r#type: get_type(client, field.type_oid()).await?,
++                });
++            }
++        }
++        Message::NoData => {}
++        _ => return Err(Error::unexpected_message()),
++    }
++    portal.set_columns(columns);
++    Ok(portal)
+ }
+--- a/src/portal.rs
++++ b/src/portal.rs
+@@ -1,14 +1,15 @@
+-use crate::Statement;
+ use crate::client::InnerClient;
+ use crate::codec::FrontendMessage;
+ use crate::connection::RequestMessages;
++use crate::{Column, Statement};
+ use postgres_protocol::message::frontend;
+ use std::sync::{Arc, Weak};
+ 
+ struct Inner {
+     client: Weak<InnerClient>,
+     name: String,
+-    statement: Statement,
++    _statement: Statement,
++    description: Statement,
+ }
+ 
+ impl Drop for Inner {
+@@ -32,19 +33,40 @@
+ pub struct Portal(Arc<Inner>);
+ 
+ impl Portal {
+-    pub(crate) fn new(client: &Arc<InnerClient>, name: String, statement: Statement) -> Portal {
++    pub(crate) fn new(
++        client: &Arc<InnerClient>,
++        name: String,
++        statement: Statement,
++        columns: Vec<Column>,
++    ) -> Portal {
+         Portal(Arc::new(Inner {
+             client: Arc::downgrade(client),
+             name,
+-            statement,
++            _statement: statement,
++            description: Statement::unnamed(Vec::new(), columns),
+         }))
++    }
++
++    pub(crate) fn set_columns(&mut self, columns: Vec<Column>) {
++        // Called only during bind, before the portal can be cloned or returned.
++        Arc::get_mut(&mut self.0)
++            .expect("newly bound portal is uniquely owned")
++            .description = Statement::unnamed(Vec::new(), columns);
+     }
+ 
+     pub(crate) fn name(&self) -> &str {
+         &self.0.name
+     }
+ 
++    /// Returns metadata described from this already-bound portal.
++    ///
++    /// Binding and describing do not execute the portal. Inspect these columns
++    /// before calling `Transaction::query_portal` to execute this same portal.
++    pub fn columns(&self) -> &[Column] {
++        self.0.description.columns()
++    }
++
+     pub(crate) fn statement(&self) -> &Statement {
+-        &self.0.statement
++        &self.0.description
+     }
+ }

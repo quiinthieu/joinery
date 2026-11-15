@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "./fixtures";
+import { tableFromIPC } from "apache-arrow";
 
 test("workspace tabs and editor size are keyboard accessible", async ({ page }) => {
   await page.goto("/");
@@ -87,7 +88,9 @@ test("keyboard palette keeps search focus, traps Tab and restores its trigger", 
   await expect(page.locator(".result-footer")).toContainText("1,000,000 rows");
 });
 
-test("Snowflake form requires browser sign-in and read-only mode", async ({ page }) => {
+test("Snowflake form defaults to read-only and requires separate SDK write consent", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
@@ -97,10 +100,31 @@ test("Snowflake form requires browser sign-in and read-only mode", async ({ page
   await expect(page.getByLabel("Warehouse", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Schema", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
-  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeEnabled();
   await expect(page.getByLabel("Password", { exact: true })).toHaveCount(0);
   await expect(page.getByLabel("Connect through an SSH bastion")).toHaveCount(0);
-  await expect(page.getByText(/system browser for Snowflake sign-in/)).toBeVisible();
+  await expect(page.getByLabel("Snowflake authentication")).toHaveValue("externalBrowser");
+  await expect(page.getByText(/External browser SSO uses the Snowflake SDK/)).toBeVisible();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByLabel("Safe Mode", { exact: true }).selectOption("confirm");
+  await expect(
+    page.getByRole("checkbox", { name: /^Allow separately reviewed single INSERT/ }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByRole("checkbox", { name: /^Allow separately reviewed CREATE TABLE/ }),
+  ).not.toBeChecked();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).not.toBeChecked();
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toHaveValue("readOnly");
+  await expect(page.getByLabel("Safe Mode", { exact: true })).toBeDisabled();
+  await expect(page.getByText(/Local application OAuth uses Snowflake SQL API/)).toBeVisible();
+  await expect(
+    page.getByLabel("Enable reviewed Snowflake SQL console", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("connects and runs SQL with separate binary-backed result tabs", async ({ page }) => {
@@ -171,7 +195,9 @@ test("reviews an inline change and reads the committed value back", async ({ pag
   await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Changes committed");
+  await expect(page.getByRole("status").filter({ hasText: "Changes committed" })).toHaveText(
+    "Changes committed",
+  );
   await expect(page.locator(".dirty-count")).toHaveCount(0);
   await page.getByRole("button", { name: "New query tab" }).click();
   await page
@@ -293,6 +319,52 @@ test("repaints the frozen primary-key column when pages load after scrolling", a
   await expect.poll(unpainted, { timeout: 5000 }).toBe(0);
 });
 
+test("selected cell inspector follows a delayed real result page without another click", async ({
+  page,
+}) => {
+  await connect(page, "Delayed inspector fixture");
+  await page.getByRole("button", { name: "New query tab" }).click();
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+
+  let releasePage = () => {};
+  const held = new Promise<void>((resolve) => {
+    releasePage = resolve;
+  });
+  let pageReceived = (_value: string) => {};
+  const received = new Promise<string>((resolve) => {
+    pageReceived = resolve;
+  });
+  const pattern = "**/result/*?start=0&*";
+  await page.route(pattern, async (route) => {
+    // Delay the actual Rust/PostgreSQL Arrow page; do not synthesize its contents.
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    const table = tableFromIPC(new Uint8Array(await response.body()));
+    pageReceived(String(table.getChildAt(1)!.get(0)));
+    await held;
+    await route.fulfill({ response });
+  });
+  try {
+    await page
+      .getByRole("textbox", { name: "SQL editor" })
+      .fill("SELECT id, status FROM public.orders WHERE id = 3;");
+    await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+    const expected = await received;
+    const grid = page.locator(".grid-host");
+    await expect(grid.locator("canvas").first()).toBeVisible();
+    const box = (await grid.boundingBox())!;
+    await page.mouse.click(box.x + 44 + 110 + 70, box.y + 37 + 18);
+    await expect(page.locator(".inspector h3")).toHaveCount(0);
+    releasePage();
+    await expect(page.locator(".inspector h3")).toHaveText("status");
+    await expect(page.locator(".inspector-value")).toHaveText(expected);
+  } finally {
+    releasePage();
+    await page.unroute(pattern);
+  }
+});
+
 test("edits a single-table SELECT query result with proven provenance and shows read-only reason when PK is omitted", async ({
   page,
 }) => {
@@ -308,7 +380,14 @@ test("edits a single-table SELECT query result with proven provenance and shows 
   );
 
   const grid = page.locator(".grid-host");
+  if (!(await page.locator(".inspector").isVisible()))
+    await page.getByRole("button", { name: "Toggle inspector", exact: true }).click();
+  await expect(grid.locator("canvas").first()).toBeVisible();
   const box = (await grid.boundingBox())!;
+  await page.mouse.click(box.x + 44 + 110 + 70, box.y + 37 + 18);
+  await expect(page.locator(".inspector h3")).toHaveText("status");
+  const originalStatus = await page.locator(".inspector-value").innerText();
+  expect(originalStatus).not.toBe(updatedStatus);
   await expect(async () => {
     await page.mouse.dblclick(box.x + 44 + 110 + 70, box.y + 37 + 18);
     await expect(page.locator("#portal textarea, #portal input").first()).toBeVisible({
@@ -324,7 +403,29 @@ test("edits a single-table SELECT query result with proven provenance and shows 
   await expect(page.locator(".sql-preview")).toContainText('UPDATE "public"."orders"');
   await page.getByRole("button", { name: "Apply changes", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("Changes committed");
+  await expect(page.getByRole("status").filter({ hasText: "Changes committed" })).toHaveText(
+    "Changes committed",
+  );
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    "Read-only result · Result is a snapshot from before these changes. Re-run query to refresh.",
+  );
+  await expect(page.locator(".dirty-count")).toHaveCount(0);
+  const inspectStatus = async (value: string) => {
+    // The longer read-only badge and disappearing edits toolbar can move the grid.
+    await expect(async () => {
+      const currentBox = (await grid.boundingBox())!;
+      await page.mouse.click(currentBox.x + 44 + 110 + 70, currentBox.y + 37 + 18);
+      await expect(page.locator(".inspector-value")).toHaveText(value, { timeout: 500 });
+    }).toPass();
+  };
+  await inspectStatus(originalStatus);
+
+  // Only a fresh database read may display the committed value as editable.
+  await page.getByRole("button", { name: "Run all statements", exact: true }).click();
+  await expect(page.getByTestId("result-provenance-badge")).toHaveText(
+    "Editable result · public.orders (PK: id)",
+  );
+  await inspectStatus(updatedStatus);
 
   // Query omitting the primary key column is declined with an explicit provenance reason
   await editor.fill("SELECT status FROM public.orders WHERE id = 3;");

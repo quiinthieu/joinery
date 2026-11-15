@@ -1,6 +1,8 @@
 use serde::Serialize;
 
 pub mod compare;
+pub mod connection_attempts;
+pub mod console_contract;
 pub mod ddl;
 pub mod domain;
 pub mod drivers;
@@ -14,10 +16,15 @@ mod native_smoke_config;
 pub mod params;
 pub mod persistence;
 mod query_plan;
+mod relation_inspection;
 pub mod results;
 pub mod safety;
 pub mod schema_diff;
 pub mod secrets;
+#[cfg(unix)]
+pub mod snowflake_cleanup;
+#[cfg(unix)]
+pub mod snowflake_runtime;
 pub mod sql_text;
 pub mod ssh;
 
@@ -40,6 +47,37 @@ fn app_info() -> AppInfo {
     }
 }
 
+#[cfg(all(feature = "desktop", unix))]
+fn native_snowflake_runtime(
+    app: &tauri::App,
+    cache: &std::path::Path,
+) -> Option<std::sync::Arc<snowflake_runtime::SnowflakeRuntime>> {
+    use std::os::unix::fs::DirBuilderExt;
+    #[cfg(not(debug_assertions))]
+    use tauri::Manager;
+    let prepare = || -> std::io::Result<snowflake_runtime::SnowflakeRuntime> {
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(cache)?;
+        let state = cache.join("snowflake-state");
+        snowflake_runtime::SnowflakeRuntime::prepare_state_parent(&state)?;
+        #[cfg(debug_assertions)]
+        {
+            let _ = app;
+            snowflake_runtime::SnowflakeRuntime::from_development(&state)
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            let resources = app.path().resource_dir().map_err(std::io::Error::other)?;
+            snowflake_runtime::SnowflakeRuntime::from_packaged(&resources, &state)
+        }
+    };
+    // Other engines and existing OAuth profiles remain usable when the pinned
+    // runtime is unavailable. Explicit SDK connects report that failure.
+    prepare().ok().map(std::sync::Arc::new)
+}
+
 #[cfg(feature = "desktop")]
 pub fn run() {
     use tauri::{Emitter, Manager};
@@ -51,6 +89,15 @@ pub fn run() {
             #[cfg(not(feature = "native-smoke"))]
             {
             let root = app.path().app_data_dir()?;
+            #[cfg(unix)]
+            {
+                let runtime = app.path().app_cache_dir().ok()
+                    .and_then(|cache| native_snowflake_runtime(app, &cache));
+                app.manage(execution::Studio::with_snowflake_runtime(
+                    &root, secrets::OsSecrets::initialize(),
+                    std::sync::Arc::new(file_capability::NativeFileDialog), runtime)?);
+            }
+            #[cfg(not(unix))]
             app.manage(execution::Studio::open(&root)?);
             }
             #[cfg(feature = "native-smoke")]
@@ -65,6 +112,14 @@ pub fn run() {
                 std::fs::write(root.join("startup.json"), serde_json::to_vec(&serde_json::json!({"pid": std::process::id()}))?)?;
                 let sandbox = file_capability::SandboxFileDialog::new(&root.join("sandbox-files"))
                     .map_err(|e| std::io::Error::other(e.message))?;
+                #[cfg(unix)]
+                app.manage(execution::Studio::with_snowflake_runtime(
+                    &root,
+                    std::sync::Arc::new(secrets::MemorySecrets::default()),
+                    sandbox,
+                    native_snowflake_runtime(app, &root.join("cache")),
+                )?);
+                #[cfg(not(unix))]
                 app.manage(execution::Studio::with_secrets_and_dialog(
                     &root,
                     std::sync::Arc::new(secrets::MemorySecrets::default()),
@@ -81,6 +136,12 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // The frontend flushes drafts and awaits backend retirement
+                // before explicitly destroying the window. A missing frontend
+                // handler must not silently bypass that lifecycle.
+                api.prevent_close();
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window
                     .state::<std::sync::Arc<execution::Studio>>()
@@ -91,10 +152,14 @@ pub fn run() {
             app_info,
             commands::bootstrap,
             commands::save_workspace,
-            commands::metadata_backups,
-            commands::create_metadata_backup,
-            commands::restore_metadata_backup,
-            commands::delete_metadata_backup,
+            commands::recovery_backups,
+            commands::delete_recovery_backup,
+            commands::start_metadata_recovery,
+            commands::metadata_recovery_operation,
+            commands::cancel_metadata_recovery,
+            commands::reconcile_metadata_recovery,
+            commands::reconcile_unknown_metadata_recovery,
+            commands::metadata_recovery_admission_closed,
             commands::acknowledge_quit,
             commands::save_group,
             commands::delete_group,
@@ -102,17 +167,38 @@ pub fn run() {
             commands::save_profile,
             commands::delete_profile,
             commands::connect,
+            commands::prepare_connection,
+            commands::connect_prepared,
+            commands::cancel_connection_attempt,
+            commands::app_shutdown,
             commands::disconnect,
             commands::set_passphrase,
             commands::extract_query_params,
             commands::prepare_execution,
             commands::prepare_explain,
             commands::authorize_plan,
+            commands::prepare_snowflake_console,
+            commands::start_snowflake_console,
+            commands::snowflake_console_run,
+            commands::snowflake_console_request,
+            commands::snowflake_console_receipts,
+            commands::snowflake_console_receipt_summary,
+            commands::set_snowflake_console_receipt_archive,
+            commands::snowflake_console_pending,
+            commands::snowflake_console_storage,
+            commands::release_snowflake_console_results,
             commands::execute_plan,
             commands::cancel_run,
             commands::completion_catalog,
             commands::completion_schema,
             commands::inspection_schema,
+            commands::relation_catalog,
+            commands::inspect_relation,
+            commands::define_relation,
+            commands::inspect_relation_constraints,
+            commands::inspect_relation_constraint_mappings,
+            commands::inspect_relation_check_constraints,
+            commands::preview_relation,
             commands::catalog,
             commands::database_objects,
             commands::object_details,
@@ -144,6 +230,8 @@ pub fn run() {
             commands::prepare_process_cancel,
             commands::health,
             commands::history,
+            commands::history_page,
+            commands::history_entry,
             commands::clear_history,
             commands::resource_usage,
             commands::probe_ssh,
@@ -153,10 +241,27 @@ pub fn run() {
             commands::cancel_export,
             commands::pick_import_source,
             commands::preview_csv_import,
+            commands::release_csv_import_preview,
             commands::prepare_csv_import_batch,
             commands::compare_data,
             commands::session_contexts,
             commands::switch_session_context,
+            commands::switch_session_schema,
+            commands::snowflake_session_contexts,
+            commands::switch_snowflake_context,
+            commands::prepare_transaction_control,
+            commands::execute_transaction_control,
+            commands::execute_snowflake_dml,
+            commands::preflight_snowflake_ddl,
+            commands::prepare_snowflake_ddl,
+            commands::authorize_snowflake_ddl,
+            commands::execute_snowflake_ddl,
+            commands::refresh_snowflake_ddl_metadata,
+            commands::prepare_snowflake_grid_plan,
+            commands::execute_snowflake_grid_plan,
+            commands::cancel_snowflake_grid_plan,
+            commands::preview_snowflake_grid_transaction_relation,
+            commands::finish_snowflake_grid_transaction,
             commands::set_transaction_mode,
             commands::commit_transaction,
             commands::rollback_transaction,
@@ -168,6 +273,7 @@ pub fn run() {
             commands::save_bookmark,
             commands::delete_bookmark,
             commands::save_sql_format_settings,
+            commands::set_temporary_result_storage,
             commands::save_sql_snippet,
             commands::delete_sql_snippet,
             #[cfg(feature = "native-smoke")]
@@ -180,17 +286,30 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("could not start Joinery")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { code: None, api, .. } = event {
-                if let Some(window) = app.get_webview_window("main") {
-                    api.prevent_exit();
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                let state = app.state::<commands::WindowGuard>();
+                if state.exit_allowed.load(std::sync::atomic::Ordering::Acquire) {
+                    return;
+                }
+                api.prevent_exit();
+                if code.is_none() && let Some(window) = app.get_webview_window("main") {
                     let state = app.state::<commands::WindowGuard>();
                     let generation = state.requested.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     let _ = window.emit("joinery:quit-requested", generation);
+                    // Wait for the user's pending-work decision. A frontend
+                    // acknowledgement timeout is not consent to discard work.
+                } else if !state.draining.swap(true, std::sync::atomic::Ordering::AcqRel) {
                     let handle = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        if handle.state::<commands::WindowGuard>().acknowledged.load(std::sync::atomic::Ordering::Acquire) < generation {
-                            handle.exit(0);
+                        let studio = handle.state::<std::sync::Arc<execution::Studio>>().inner().clone();
+                        let result = studio.shutdown_and_wait().await;
+                        let guard = handle.state::<commands::WindowGuard>();
+                        if result.is_ok() {
+                            guard.exit_allowed.store(true, std::sync::atomic::Ordering::Release);
+                            handle.exit(code.unwrap_or(0));
+                        } else {
+                            guard.draining.store(false, std::sync::atomic::Ordering::Release);
+                            let _ = handle.emit("joinery:shutdown-failed", "Connection cleanup could not be confirmed. Joinery remains open.");
                         }
                     });
                 }

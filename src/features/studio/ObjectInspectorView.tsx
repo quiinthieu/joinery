@@ -28,7 +28,7 @@ import type {
   TableStorageStats,
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
-import { useStudio, type StudioTab } from "../../state/studio";
+import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
 import { IndexConstraintDialog, type IndexConstraintDialogMode } from "./IndexConstraintDialog";
 import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
@@ -295,8 +295,11 @@ export function ObjectInspectorView({
     let active = true;
     setLoading(true);
     setError(null);
-    void client
-      .call<ObjectDetails>("object_details", { sessionId, object: target })
+    void Promise.resolve()
+      .then(() => {
+        revokeSchemaSelectionBeforeWork(sessionId);
+        return client.call<ObjectDetails>("object_details", { sessionId, object: target });
+      })
       .then((result) => {
         if (active) setDetails(result);
       })
@@ -585,6 +588,52 @@ export function ObjectInspectorView({
           }
           onMaintained={() => setRefreshNonce((n) => n + 1)}
         />
+      )}
+
+      {details.constraints.length > 0 && (
+        <section className="object-section" aria-label="Object constraints">
+          <h3 className="object-section-title">Constraints</h3>
+          <dl className="object-meta-grid">
+            {details.constraints.map((constraint) => (
+              <div key={`${constraint.kind}:${constraint.name}`}>
+                <dt className="mono">{constraint.name}</dt>
+                <dd>
+                  <span className="mono">{constraint.definition}</span>
+                  {constraint.columns.length > 0 && (
+                    <span className="mono">{` (${constraint.columns.join(", ")})`}</span>
+                  )}
+                  {constraint.target && (onOpenObject || tab.connectionId) && (
+                    <>
+                      {" "}
+                      <button
+                        type="button"
+                        className="button ghost small"
+                        onClick={() => {
+                          const ref: DatabaseObjectRef = {
+                            schema: constraint.target!.schema,
+                            name: constraint.target!.name,
+                            kind: "table",
+                            identity: null,
+                          };
+                          if (onOpenObject) onOpenObject(ref);
+                          else if (tab.connectionId)
+                            void useStudio
+                              .getState()
+                              .openObject(tab.connectionId, ref, "structure")
+                              .catch((err) => useStudio.getState().notify(messageOf(err)));
+                        }}
+                      >
+                        <Table2 size={11} />
+                        {`${constraint.target.schema}.${constraint.target.name}`}
+                        <ArrowRight size={10} />
+                      </button>
+                    </>
+                  )}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </section>
       )}
 
       <DependencySection

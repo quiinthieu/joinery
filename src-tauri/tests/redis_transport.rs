@@ -220,6 +220,19 @@ async fn finish(mut rx: mpsc::UnboundedReceiver<QueryEvent>) -> Vec<QueryEvent> 
     .unwrap()
 }
 
+fn peer_closed(result: std::io::Result<usize>) -> bool {
+    matches!(result, Ok(0))
+        || result.is_err_and(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        })
+}
+
 #[tokio::test]
 async fn cancelling_a_sent_read_closes_the_socket_and_retires_the_session() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -234,7 +247,7 @@ async fn cancelling_a_sent_read_closes_the_socket_and_retires_the_session() {
         assert_eq!(command(&mut io).await[0], b"GET");
         sent_tx.send(()).unwrap();
         let mut byte = [0];
-        let closed = io.read(&mut byte).await.unwrap() == 0;
+        let closed = peer_closed(io.read(&mut byte).await);
         closed_tx.send(closed).unwrap();
     });
     let (_root, studio, session) = setup_as(port, "default").await;
@@ -322,7 +335,7 @@ async fn oversized_bulk_and_array_headers_are_rejected_before_result_allocation(
             assert_eq!(command(&mut io).await[0], b"GET");
             io.get_mut().write_all(&header).await.unwrap();
             let mut byte = [0];
-            assert_eq!(io.read(&mut byte).await.unwrap(), 0);
+            assert!(peer_closed(io.read(&mut byte).await));
         });
         let (_root, studio, session) = setup_as(port, "default").await;
         let (_, rx) = start(&studio, &session, "GET oversized");
@@ -373,7 +386,7 @@ async fn cancelling_a_sent_write_reports_unknown_instead_of_claiming_rollback() 
         assert_eq!(command(&mut io).await[0], b"SET");
         sent_tx.send(()).unwrap();
         let mut byte = [0];
-        assert_eq!(io.read(&mut byte).await.unwrap(), 0);
+        assert!(peer_closed(io.read(&mut byte).await));
     });
     let (_root, studio, session) = setup_as(port, "default").await;
     let (run, rx) = start(&studio, &session, "SET pending value");

@@ -1,5 +1,1693 @@
 # Joinery implementation roadmap
 
+## Current work: Snowflake grid editing and import
+
+The next daily-workflow increment is the
+[Snowflake grid/import contract](snowflake-grid-editing-design.md): a closed
+lossless mutation compiler, then a dedicated owned-batch runtime with actual
+per-statement cardinality checks, truthful transaction outcomes and no SQL replay,
+then staging/review/submit/commit/rollback and CSV integration. Standard-table
+declared keys are not enforced; keyless distinct rows remain required. Duplicate
+indistinguishable rows must conflict for a single-row edit. The generic grid
+success contract preserves original rows and invalidates editability after commit;
+it cannot express pending manual Snowflake work. Keep SDK grid/import disabled
+until the complete workflow is integrated and qualified. Account effects require
+a fresh concrete plan and billing/write approval; earlier approvals are consumed
+or expired.
+
+This prioritizes a missing daily workflow while retaining all outstanding
+history reclamation, capacity, migration and normal-app acceptance gates below.
+No compiler-only result establishes replacement readiness or reduces full scope.
+
+The pure compiler and twelve focused regressions are implemented. Full validation
+passes 1,038 frontend / 732 standard Rust tests and strict checks; independent
+review has no material finding. See its
+[current boundary](snowflake-grid-editing-design.md#current-compiler-implementation)
+and [verification](replacement-verification.md#snowflake-mutation-compiler-13-november-2026).
+The dedicated owned-batch helper and typed supervisor are now implemented with
+checked cardinality, separate ACK/count/drain/disposition, retained prefixes,
+manual ownership and reserved finish capacity. All 427 helper cases, including
+ten actual-SDK HTTP/TLS batch cases, and thirteen focused Rust protocol/process
+tests pass. Full validation passes 1,038 frontend / 745 standard Rust cases and
+strict checks, with 145 intentional default fixture ignores. Resource/startup
+checks also pass; exact source scopes are in the
+[batch ledger](replacement-verification.md#snowflake-owned-batch-protocol-13-november-2026).
+The new durable storage foundation retains bounded per-unit proof after
+settlement, preserves immutable pending originals, binds separate finish records
+to explicit transaction membership, and reserves rollback recording even when
+ordinary quota is exhausted. Tests exercise the entire encoded envelope limit,
+real SQLite faults, restore and owned-child crashes.
+The [schema8 storage contract](snowflake-batch-outcomes-design.md) bounds that
+increment, including historical-only restore, live idle-group exclusion and
+pre-reserved rollback credit. Full application validation, real SQLite/owned-child
+recovery, two actual schema7-to-8 migrations, isolated PostgreSQL scripts and
+seven browser workflows pass; see the [evidence ledger](replacement-verification.md#snowflake-batch-storage-13-november-2026-local-foundation).
+Provisional capacities are not accepted workflow limits: full-capacity/RSS,
+lifetime retention and the exact delayed pre-owner-claim migration race remain
+open. Keep those gates distinct from the passing logical quota and idle-owner
+fence checks.
+Trusted helper-generation retirement while the Studio remains alive now has an
+internal pin/proof/release API. Seven real-child/SQLite and 45 feature-enabled
+process cases pass, including a reproduced/corrected shared capture-admission
+gap; see the [retirement ledger](replacement-verification.md#snowflake-helper-retirement-13-november-2026-local-foundation).
+Full validation passes 1,038 frontend and 788 standard Rust cases, desktop
+compilation and strict checks on unchanged source inputs.
+The follow-up native retirement observer now preserves exact proof after the
+last supervisor drops without retaining process/root authority. All 51 process
+and eight child/SQLite retirement cases pass, and full validation passes 1,038
+frontend / 789 standard Rust cases plus desktop/strict checks. See the
+[observer ledger](replacement-verification.md#snowflake-retirement-observer-13-november-2026-local-foundation).
+The [reviewed next native integration contract](snowflake-grid-editing-design.md#next-native-integration-contract)
+now has a native snapshot/codec implementation: external-browser previews retain
+exact originals with full native context/metadata/helper binding on writable
+reviewed-DML profiles. One-use native preparation resolves row indices and submits
+no SQL; it does not enable grid editing. Attempt generations prevent abandoned
+replacement previews from letting older work republish authority. The typed
+adapter and Studio/UI callers remain incomplete. Every retained original must
+settle; a recording failure must never select the no-original path to discard
+known evidence. The retirement/group API has no application dispatch caller.
+All 35 focused snapshot/codec, actual-helper adapter and existing relation cases
+pass; see the [native snapshot ledger](replacement-verification.md#snowflake-native-edit-snapshots-13-november-2026-local-foundation).
+The new [owned edit integration](snowflake-owned-edit-integration.md) adds the
+closed single-read pending-owner metadata primitive and Studio-owned recording
+cells. Its atomic native handoff retains the real terminal, binds exact physical
+helper/private operation/request identity, excludes abandonment and preserves a
+conservative hold across dispatch unwind. Idle groups retain rollback safety
+memory and exact retirement observers. Shutdown/restore account for these local
+obligations. The typed native adapter and complete eleven-observation freshness
+bracket are now implemented, with a private same-helper manual owner and
+six-observation commit context check. Protected rollback remains available after
+local original recording fails; authentic nonadmission and queued refusal take
+separate recovery paths. A refused rollback retires its helper even if the proof
+recorder panics. See the [native dispatch contract](snowflake-owned-edit-integration.md#typed-native-dispatch-and-protected-rollback).
+The `TaskTracker`-owned Studio run owner (`execution/snowflake_grid.rs`,
+`60eebcf`, hardened in `f74ac0d`) connects initial pin, retained compact
+originals, the native manual owner, standby safety-slot rollback credit,
+serialized `flush_lock` predecessor settlement, non-adjacent ordinal tolerance
+across `NoDispatch` witnesses, and post-reap release, including exact helper
+retirement on initial pinned `NoDispatch` and ordinary-route browse-state
+protection while `Pending`.
+Owner-scoped pending relation preview (`408c275`) extends closed `mutationRead`
+with `"preview"` (`501` rows / `2 MiB`) inside a 12-read freshness bracket and
+replaces test-only continuation hooks with production
+`preview_snowflake_grid_transaction_relation` and exact `HelperGeneration`
+snapshot revocation.
+Public Tauri IPC, desktop ACL capabilities, and reviewed `RelationBrowser` UI
+controls (`c033d00`) now wire inline cell edits, whole-row deletes, new-row
+inserts, RFC-4180 CSV row staging, `<ReviewDialog>` approval, `"Resume session
+metadata"`, and manual `Pending` -> `Reload pending preview` -> continuation ->
+`Commit` / `Rollback` controls (`1,044` frontend and `829` standard Rust cases,
+`11` Studio grid cases, `439` helper cases, and `pnpm test:snowflake:process`
+pass; see the
+[reviewed grid ledger](replacement-verification.md#reviewed-snowflake-relation-grid-pending-preview-and-rollback-hardening-14-november-2026-local-foundation)).
+Next, extend lossless Snowflake edit codecs beyond `TEXT` / `VARCHAR`, `BOOLEAN`
+and exact `NUMBER(p, s)` (`<= 128` columns) to cover `FLOAT`, `BINARY`,
+temporal and semi-structured types plus ordered pagination beyond 500 rows,
+qualify the workflow against Snowflake (`SANDBOX.BILLIE_TESTING` under a fresh
+approved plan), and rebuild/qualify the schema-8 normal `Joinery.app` alongside
+million-row and hands-on owner acceptance. Broader codecs remain required, not
+optional follow-up work.
+
+## Durable original outcomes (13 November 2026, local verification)
+
+Schema-7 reserve/capture/settle authority, separate emergency rollback capacity,
+bounded compact retry cells and current-only recovery now pass full validation
+(1,038 frontend / 720 standard Rust cases), actual PostgreSQL script/crash tests,
+seven browser workflows and preserved-v6 migration checks. Independent review
+found no remaining material issue in its scope. All 73 synthetic SDK and 27
+offline runner cases pass; two optimized performance cases remain ignored.
+The reviewed increment is committed as `d6cfb2a`; its normal SDK-bearing ARM64
+app passes resource/signature/license and guarded SDK startup checks with zero
+authentication/SQL. It remains local and uninstalled. The prior schema-6 app is
+separately preserved unchanged. See the
+[ledger](replacement-verification.md#durable-original-outcomes-13-november-2026-local-verification)
+for exact results, initial failures and source-pin qualifications.
+
+Next required increments: safe lifetime marker/owner/ticket/privacy reclamation,
+full-capacity memory/recovery measurements, the exact delayed-preclaim migration
+race and complete imported historical boundary details. Then demonstrate normal
+packaged/account/hands-on workflows; all applicable DataGrip requirements remain
+open until individually accepted. The [contract](history-durable-outcomes-design.md)
+records bounds and limitations. The following schema-6 checkpoint is historical.
+
+## Process-owned history recovery (13 November 2026, locally verified)
+
+The schema-6 increment binds generic/typed admission to an OS-held owner lease.
+It recovers only proven dead local owners, preserves durable original completion,
+and never reconnects or replays SQL. Clear/opt-out/deletion suppression survives
+recovery. Restore excludes admission/privacy changes through replacement and
+imports no execution authority. Physical metadata renaming fences cached v5
+privacy writers; existing console/lifecycle tables retain their v5 names.
+
+Ten real SQLite cases and the actual isolated PostgreSQL child-process crash
+case pass. Full validation passes 1,038 frontend / 687 standard Rust cases,
+including strict checks. Ten actual PostgreSQL script, six browser, 73 synthetic
+Snowflake execution and 27 offline runner cases pass. Independent review finds
+no material issue. The normal SDK-bearing ARM64 app packages from clean `f39dce3`
+in 263.887 seconds. Resources, strict ad-hoc signature, original license bytes and
+guarded SDK startup pass with zero authentication/SQL; see the
+[ledger](replacement-verification.md#process-owned-history-recovery-13-november-2026).
+At this preceding checkpoint the local app includes schema 6. All 562 source hashes match
+the six final check receipts. The previous `952758b` schema-5 app is separately
+preserved with its inventory unchanged. Keep evaluation metadata separate from
+older builds. Normal packaged UI/SSO/restart and owner acceptance remain open.
+
+Next required work: durable failed generic/typed completion payloads, bounded
+ticket/privacy/owner lifetime resource policy and reservations, then full-capacity
+and normal packaged owner/Snowflake acceptance. Lease-file cleanup is not yet
+implemented. Keep both count gates and `retentionEnabled=false`; all applicable
+DataGrip replacement requirements remain open until individually demonstrated.
+The [next durable-outcome design](history-durable-outcomes-design.md) records
+capture/settlement crash boundaries, rollback exceptions, privacy and resource
+decisions, and the real-process acceptance required before implementation claims.
+
+## Atomic history and privacy integration (13 November 2026, locally verified)
+
+This preceding checkpoint is pinned to schema 5 and clean `952758b`; its source
+status and remaining crash-owner work describe that historical point. Follow the
+schema8 batch-storage work above for current source and open acceptance gates.
+
+The coordinated schema-5 increment is local to the feature branch and is not
+release-qualified. It admits history before dispatch, retains exact
+permitted SQL only in the history row, and completes via SQL-free tickets.
+Console Prepare/Complete/Seal transactions bind receipt, history and audit
+evidence; clear epochs and per-profile privacy generations prevent late writers
+or compatible metadata restores from reviving removed text. Generic and typed
+execution paths use the same history authority.
+
+The original console crash window was reproduced: at `Started`, opted-in SQL
+was absent from SQLite. The exact regression now passes. All 616 standard library
+cases and all eight history integration cases pass in recorded runs, including
+nine real encrypted history restore cases and physical older-writer fencing.
+All ten actual isolated PostgreSQL script cases pass, covering exact admission/
+restart, privacy changes during a running query, failed completion retry,
+cancellation, connection loss and rollback. Review corrections for legacy
+restore, immutable-row validation and recovery admission have passing regressions.
+A legacy integration fixture failure was corrected to exercise real version-one
+migration; validators were not weakened. Final full validation passes 1,038
+frontend / 676 standard Rust cases, with strict checks. All six browser,
+73 feature-specific Snowflake execution and 27 offline qualification-runner
+cases pass. Review also caught a public event-order regression; its direct
+red/green test and complete offline runner suite pass after correction. The
+normal SDK-bearing ARM64 package from clean `952758b` passes resources, strict
+ad-hoc signature, original license bytes and guarded SDK startup with zero
+authentication/SQL. All 559 package hashes match final validation, PostgreSQL
+and browser checks; native suites differ only by the verified diagnostic wording.
+See the
+[current ledger](replacement-verification.md#atomic-history-and-privacy-integration-13-november-2026).
+
+Generic process-crash owner recovery, durable failed generic/typed completion
+payloads and durable byte reservations remain open.
+Lifetime SQL-free tickets, clear eras and profile-generation ancestry currently
+have no complete resource budget or reclamation policy. Preserve their privacy
+authority; do not claim that console count gates bound these new tables. Keep
+both count gates and `retentionEnabled=false`. The runnable normal app at this
+checkpoint was the clean-`952758b` schema-5 package, now separately preserved.
+The previous `adabd44` schema-4 app is separately preserved with all 15,120 inventory entries
+unchanged. Do not point that older writer at schema-5 evaluation metadata.
+Full DataGrip scope, actual Snowflake qualification and owner acceptance remain required.
+
+## History completion evidence (13 November 2026, locally verified)
+
+The [history lifecycle model and UI](query-history.md#completion-and-recovery-evidence)
+now preserve unknown completion and unavailable measured duration. History-only
+provenance distinguishes recorded, admitted, interrupted and restore-recovered
+metadata without changing execution events or claiming server outcomes. Legacy
+rows retain their original status and duration. Shared write/read/backup checks
+reject inconsistent states and non-string provenance. The console publication-panic
+fallback preserves its known status and reports unavailable duration instead of
+estimating it from wall-clock time.
+
+Full validation passes 1,038 frontend and 653 standard Rust cases, including all
+eight new integration cases and four inline lifecycle cases. All 54 focused UI
+cases, 68 feature-specific Snowflake producer cases and five actual browser cases
+pass. The latter exercise real SQLite and an isolated PostgreSQL database.
+Independent review has no remaining material
+findings; attempts, corrections and source scopes are in the
+[ledger](replacement-verification.md#history-completion-evidence-13-november-2026).
+
+The normal SDK-bearing ARM64 app from clean `adabd44` passes package resources,
+strict ad-hoc signature, original license bytes and guarded SDK startup with zero
+authentication/SQL. All 554 source hashes match full validation and browser/
+producer checks. The preceding `99a3ca3` app is preserved with its full inventory
+unchanged. The new app remains local and uninstalled; normal owner UI/SSO/restart
+acceptance is open.
+
+This was a prerequisite for the atomic workflow. Production admission, restart
+and metadata restore did not yet create pending/recovered history at that
+checkpoint. The schema-5 increment above implements those console persistence
+and privacy prerequisites. Continue generic crash-owner proof, durable failed
+completion payloads, reservations and resource acceptance. Keep both count gates and
+`retentionEnabled=false`. Actual Snowflake, full-capacity and owner acceptance
+remain required; the complete DataGrip target is unchanged.
+
+## Paged query history (13 November 2026, locally verified)
+
+The [history workflow](query-history.md) replaces newest-prefix/full-SQL reads
+with bounded summaries, full-retained-store search and explicit exact detail.
+History uses 50-row keyset pages; the palette shows up to 80 matches with a route
+to the complete browser. Shared clear invalidation prevents stale page/detail
+responses from reopening SQL. Twelve real SQLite and 38 focused UI cases pass;
+four actual browser cases and hidden main-WebView command checks also pass within
+the source scopes in the [ledger](replacement-verification.md#paged-query-history-13-november-2026).
+Independent review corrected metadata-search omissions and has no remaining
+material findings in this increment.
+The normal SDK-bearing ARM64 app from clean `99a3ca3` passes packaging,
+resources/signature/license and guarded SDK-startup checks without authentication
+or SQL. The preceding `f9c1ce2` app is preserved with its full inventory unchanged.
+The new app remains local and uninstalled; normal owner UI/SSO/restart acceptance
+is open.
+
+Continue the atomic admitted/completed history, durable side-write obligations,
+publisher sealing and reservation workflow below. Configurable retention,
+large-payload search/writer-contention measurements, full-capacity recovery,
+Snowflake/account and normal owner acceptance remain required. Keep existing
+count gates and `retentionEnabled=false`; complete DataGrip parity is not proven.
+
+## Checked receipt accounting (13 November 2026, locally verified)
+
+Startup, migration and restore now independently recompute journal charges with
+a checked, bounded-memory row fold. Existing schema-4 trigger definitions and
+logical charges remain unchanged. Eight arithmetic/real-SQLite cases and two
+lifecycle cases cover UTF-8, escaping, shrinkage, late observations, restart,
+legacy migration and disjoint restore. Full validation passes 997 frontend /
+629 standard Rust cases; source-pinned count-boundary profiles pass. See the
+[ledger](replacement-verification.md#checked-receipt-accounting-13-november-2026-local-source-verified).
+
+This is the accounting prerequisite for durable reservations. Continue the
+complete reservation, atomic history/audit, publisher-settlement and crash
+recovery workflow below, then full-capacity/resource acceptance. Keep both count
+gates and `retentionEnabled=false`. At this checkpoint the normal local package
+was the verified `f9c1ce2` recovery app. The newer history package above includes
+this prerequisite; no separate accounting-only package was made.
+
+The dependent [atomic history lifecycle](snowflake-console-retention-design.md#atomic-history-lifecycle-and-privacy-contract)
+must preserve opted-in SQL in one pending history row before dispatch, make
+terminal/history/audit writes atomic, respect clear/prune/opt-out suppression,
+and seal publishers before reservation settlement. The
+[history browsing increment](query-history.md) implements bounded summary/detail
+pages and searches across retained rows. Its verification is recorded in the
+ledger; it does not close the dependent atomic history lifecycle or retention
+policy requirements.
+
+## Encrypted metadata recovery (12 November 2026, locally verified)
+
+The [complete local recovery workflow](encrypted-metadata-recovery.md) is implemented and locally
+verified on the existing feature branch. It connects streaming encrypted
+snapshots, native import/export pickers, mandatory encrypted undo, exact receipt
+union, activity admission, tracked status/cancellation and workspace-save
+reconciliation. It passes browser and hidden native acceptance, and the normal
+SDK-bearing ARM64 package from clean `f9c1ce2` passes resources, strict ad-hoc
+signature and guarded helper startup. The preceding
+inventory increment below records its own source and historical limits.
+
+Focused checks pass 72 native and 61 App/workspace/close/recovery cases, including real SQLite/crash/undo
+and cancellation cases. The production KDF round trip passes on a small fixture.
+Initial integer/header defects are corrected; failures remain in the
+[ledger](replacement-verification.md). Full validation then exposed a Tauri
+command signature error; independent review found missing native ACL enrollment.
+Both are corrected, with enrollment regression coverage. Final full validation
+passes 997 frontend / 619 standard Rust cases, and all 124 real database/SSH/
+transport cases pass. Browser encryption/import/export/restore/undo passes on the
+preceding source. Startup edit/close protection and transient-storage recovery
+were then reproduced, corrected and independently reviewed. The actual browser
+startup gate/fresh-reload case also passes after correcting StrictMode initial
+load duplication. All 27 actual encrypted macOS WebView checks pass across two
+fresh processes; both real PostgreSQL/native pending-close/reopen pairs also
+pass. The first encrypted reopen failure was a reproduced test-oracle key-order
+defect, corrected without weakening full-field or ciphertext checks.
+The [ledger](replacement-verification.md) records its exact source/hash and
+unchanged preserved predecessor. No account activity occurred in this increment.
+
+Keep receipt count gates and `retentionEnabled=false`. Remaining required work
+includes byte reservations/admission, full-capacity and memory measurements,
+actual Snowflake effects and all applicable DataGrip workflows in the
+[matrix](datagrip-feature-matrix.md), plus owner acceptance. Publication and
+installation remain unauthorized.
+
+The next [reservation implementation](snowflake-console-retention-design.md#settlement-prerequisite-durable-side-write-obligations)
+must also persist exact audit/history obligations and recover terminal-but-unsettled
+owners. Source review found those outboxes are currently process-local, so a
+terminal receipt cannot safely release a durable disk reservation after a crash.
+This prerequisite is recorded as design work; runtime budgets remain incomplete.
+
+## Paged receipt inventory and bounded hot state (12 November 2026)
+
+The first [retention slice](snowflake-console-retention-design.md) implements
+schema-4 physical writer fencing, SQL-free keyset inventory/exact lookup,
+compare-and-set browsing preferences and exact restore merging with fresh epochs.
+Native working/publisher/dirty ownership and result lifetimes are separate from
+16-entry / 16 MiB detail caches. The browser has bounded history pages and
+background concurrency, exact native handoff before removing opaque browser IDs,
+and explicit result-row release that preserves original decisions. Refusal detail
+selection and delayed lookup/row-event races have regression coverage. See the
+[verification ledger](replacement-verification.md) for commands, failed attempts,
+review corrections and final results.
+
+Current local checks pass 948 frontend / 572 standard Rust cases, 98 focused
+native cases, the actual browser full-restart workflow and independent review.
+These are source-scoped local results with a synthetic SDK.
+
+Keep the original lifetime count gates and `retentionEnabled=false`. Next required
+work is verification of the encrypted metadata recovery increment above, byte
+reservations and admission budgets, full-capacity/resource measurements and
+crash/storage-failure acceptance. The inventory-only predecessor used plaintext
+snapshots limited to 64 MiB / 20 copies.
+Archive is a browsing preference, never evidence deletion or journal reclamation.
+Actual Snowflake and normal packaged/macOS/owner acceptance remain open. The
+then-current release bundle came from clean `72ee3e4`; it is now separately
+preserved. The current package above includes inventory and encrypted recovery.
+No installation or account activity is authorized.
+
+The private project hub has not been updated: publication is not authorized.
+
+## Query limits and retention investigation (12 November 2026)
+
+The [configured console query limit](snowflake-console-query-limits.md) is locally
+verified: immutable native review, independent transport/settlement bounds,
+delayed-result/cancellation cases and actual browser settings/full restart.
+Current evidence includes 80 focused native, 121 focused frontend, 194 affected
+SDK cases and full validation with 921 frontend / 561 standard Rust cases (137
+default ignores). The ledger records fixture corrections and affected reruns.
+Normal SDK-bearing ARM64 packaging from clean `72ee3e4` passes resource, strict
+ad-hoc signature and guarded helper startup with zero authentication/SQL. The
+app remains local and uninstalled. Continue the remaining receipt-retention
+workflow; actual Snowflake long-query/cancellation and native owner
+acceptance remain open.
+
+The bounded retention inventory at `b86ac44` found separate 10,000-positive and
+10,000-negative native limits, a combined 10,000-ID browser limit, retained full
+in-memory snapshots, whole-ledger startup validation and 64 MiB whole-database
+backup/restore limits. Simply increasing a count would leave daily-use failures.
+The complete retention target keeps full immutable evidence in one
+authoritative database, adds paged SQL-free inventory/detail, compacts only settled
+hot state, and supports bounded-memory backup/restore. Archiving evidence must not
+erase deduplication or imply reclaimed journal disk. Keep explicit result-row
+release separate. The source-pinned inventory is retained locally at
+`.cache/verification/reviewed-console/retention-inventory.json`; this is design
+evidence, not implemented or measured lifetime retention.
+
+The [paged receipt retention design](snowflake-console-retention-design.md)
+specifies the next complete workflow, including immutable recovery identities,
+bounded hot state, SQL-free paging, backup/restore and capacity failure behavior.
+Independent review resolved cross-branch restore sequence collisions with a fresh
+inventory epoch. The inventory/compaction slice above is now implemented.
+Encrypted recovery, reservations, performance and full-capacity acceptance must pass before the
+existing retention limits change.
+
+## Durable console admission decisions (12 November 2026)
+
+This increment implements SQL-free durable admission refusals and request lookup,
+schema-3 migration with old-writer exclusion, exact restore merging and frontend
+response-loss/restart recovery. Local verification passes 205 focused frontend,
+nine IPC and 71 focused native cases (one internal child ignored by default).
+Full validation passes 893 frontend / 559 standard Rust cases (137 default
+ignores), and the actual browser-to-Rust/helper/SQLite/Arrow workflow passes with
+a synthetic SDK. At 1024 × 720, bounded receipt history supports ordinary clicks
+and keyboard scrolling while pending notices remain visible. The
+[contract](snowflake-console-negative-receipts-design.md) and
+[ledger](replacement-verification.md) track this source separately. Earlier
+sections describe their recorded predecessor, not verification of new source.
+
+Normal SDK-bearing ARM64 packaging from clean `9b20aa2` now passes resources,
+strict ad-hoc signature and guarded helper startup with zero authentication/SQL.
+The app remains local and uninstalled; packaged native UI acceptance is open.
+Continue practical receipt retention without losing recovery identities,
+configurable qualified long-running queries, then the fresh approved disposable
+Snowflake/native/owner acceptance plan. Every applicable
+DataGrip capability remains required. No account, installation or publication
+authority is granted by local tests.
+
+## Retained console application integration (12 November 2026)
+
+The retained owner and UI are locally implemented and verified with synthetic SDKs:
+immutable review, one-use admission, same-client SQL-free recovery, revocation,
+intent/ACK outbox holds, history/audit and receipt-owned retained results. Follow
+the [workflow](snowflake-sdk-console-workflow.md) and source-scoped
+[ledger](replacement-verification.md); earlier private-foundation evidence below
+does not qualify this new integration.
+
+Full validation passes 872 frontend and 546 standard Rust tests (137 default
+fixture ignores); 18 owner cases and one actual browser-to-Studio/helper workflow
+also pass. Independent bounded review has no remaining material finding.
+The normal SDK-bearing ARM64 app builds from clean `12fef9a`; strict ad-hoc
+signature/resources and network-guarded helper startup pass with no sign-in or
+SQL. It remains local and uninstalled; packaged UI startup is not established.
+
+At this predecessor, the next work included
+[durable negative admission receipts](snowflake-console-negative-receipts-design.md)
+for a lost refusal response; the increment above now verifies that local recovery.
+Remaining work includes practical journal retention that
+preserves deduplication/recovery, and qualified configurable long-running query
+behavior. Then execute a fresh approved disposable account plan for real
+Snowflake writes/DDL/transactions/interruption and million-row interaction/export.
+Normal macOS external-browser SSO/restart and hands-on acceptance remain open,
+alongside every other required DataGrip capability in the matrix.
+
+## Retained console adapter and local evidence (12 November 2026)
+
+The [retained adapter/journal contract](snowflake-sdk-console-journal.md) is
+implemented with focused local coverage (35 passing cases; one internal child
+fixture invoked by its parent). Separate profile consent, permanent physical
+session ownership, hidden-SQL suppression, ACK-before-publication ordering and
+SQL-free durable intent/original outcomes are available as private foundations.
+The SQLite journal distinguishes proven non-dispatch from crash uncertainty,
+deduplicates client correlation and preserves live evidence through old/v1
+metadata restore. Independent source review has no remaining material finding;
+full validation passes 823 frontend / 545 standard Rust cases (137 default
+ignores), build/compiler checks and strict Clippy on the recorded unchanged
+sources in the [ledger](replacement-verification.md).
+
+The broader adapter scope passes 117 cases and the Studio rerun passes 36.
+One initial Studio helper-start failure remains unexplained despite isolated
+and full rerun success. Add closed test-only startup diagnostics before making
+reliability claims; preserve the current deadline and avoid raw private errors.
+
+Advance to the complete Studio owner/UI workflow next: immutable one-use review
+and policy checks, durable intent/ACK sequencing with in-process outbox holds,
+SQL-free lost-start-response recovery/cancellation, honest results/history and
+suppression of implicit SQL across separate runs. Connect BEGIN, later DML and
+later explicit COMMIT/ROLLBACK on one physical console, plus SHOW/RESULT_SCAN,
+USE/SET/DDL and selected server-validated units. Test interruption and restart
+without automatic replay or settlement. Provide safe SQL completion and journal
+retention without erasing recovery/deduplication evidence. Replace fixed foundation
+delivery deadlines with qualified configurable long-running query behavior.
+Full native/account
+qualification and every other required DataGrip area remain open. The private
+foundations expose no new user command and do not qualify a daily console.
+
+## Reviewed Snowflake console foundations (12 November 2026)
+
+The [pure compiler and private transport](snowflake-sdk-console-transport.md)
+are locally implemented. They preserve ordered mixed SQL, canonical scalar
+bindings, original acknowledgement and bounded result streaming without granting
+application permission. The [ledger](replacement-verification.md) records their
+source-scoped checks and review; no account effects or usable console workflow
+are established by transport tests.
+
+Next implement the retained native console owner, default-off profile consent,
+one-use immutable review/admission, SQL-free run correlation and local receipts.
+Then integrate editor controls and exercise complete mixed reads/writes/explicit
+boundaries across runs, hidden-observer suppression, interruption and recovery.
+The [full design](snowflake-sdk-console-scripts-design.md) remains the acceptance
+contract. Generated-action recovery holds, file-transfer permission, actual
+Snowflake effects, million-row results and the other required capability areas
+remain open; no permanent feature reduction is accepted.
+
+## Script early-stop accounting (12 November 2026)
+
+A reproduced defect marked a script Completed after its first classified read
+hit a result limit and the remaining suffix never ran. The executor now reports
+**Stopped** when that limit leaves a suffix. Final events, history, editor and
+history search retain planned, attempted, successful and unattempted counts plus
+the stop reason. Driver attempts do not prove server submission; successful
+returns do not prove commit or complete result retention. Existing history without
+accounting stays explicitly unknown. No automatic replay or transaction settlement
+is added. See the [contract](script-execution-accounting.md) and
+[usage walkthrough](migration-from-datagrip.md#script-stops-and-statement-counts).
+
+Focused checks pass 160 frontend cases and 13 executor cases. Seven real isolated
+PostgreSQL cases pass, including row/byte limits with a sequence proving the suffix
+untouched, cancellation, explicit server termination, error prefixes, restart
+persistence and a skipped COMMIT left open until explicit rollback. The real
+browser workflow passes 1/1 using 1,000,001 synthetic PostgreSQL rows and a fresh
+observer proving a skipped UPDATE did not execute. Independent bounded review
+has no material finding. Full validation passes 823 frontend and 500 standard
+Rust tests (136 fixture/helper ignores), formatting, TypeScript, production UI
+build, compiler checks and strict all-target/all-feature Clippy. Hidden native
+startup/IPC and ten cleanup cycles pass on the same frozen source. The normal
+SDK-bearing ARM64 package builds from clean feature commit `278754b`; strict
+ad-hoc signature/resources and guarded SDK startup pass with zero authentication
+or SQL requests. Version/build 0.1.0 totals 229.35 MiB in final regular files.
+The app remains local and uninstalled; Developer ID/notarization and normal
+packaged UI/SSO/restart acceptance stay open.
+
+Generalized mixed Snowflake scripts, account write/transaction/DDL effects,
+million-row Snowflake interaction/export, safe editing/import, broader metadata
+and performance tools remain required. The account plan expired unexecuted;
+SANDBOX.BILLIE_TESTING permission is recorded, but a fresh reviewed exact plan and
+possible-billing approval remain needed. The Goal is active and incomplete.
+
+## Snowflake CHECK inspection (12 November 2026)
+
+A separate **View CHECK constraints** action is implemented through retained
+opaque targets, the serialized metadata lane, typed IPC and main-window native
+permissions. The [contract](snowflake-sdk-check-constraints-design.md) fixes exact
+identity, complete bounded results and inert clause display. Focused frontend/IPC
+140/140, focused Rust 13/13 and synthetic SDK sessions 104/104 pass. Full validation
+passes 803 frontend / 486 standard Rust tests (129 fixture/helper ignores) and
+strict checks; the changed synthetic browser workflow passes 1/1. Independent
+bounded UI/integration and backend reviews have no material finding. Hidden
+native startup/IPC and 10 cleanup cycles pass. The normal SDK-bearing ARM64
+package builds from clean 313bc11; strict ad-hoc signature/resources and guarded
+helper startup pass with zero authentication/SQL requests. Version/build 0.1.0
+totals 229.34 MiB in final regular files. It remains local and uninstalled;
+Developer ID/notarization and normal app UI/SSO/restart acceptance remain open.
+No account requests or production qualification-ledger expansion are included.
+
+The [prepared walkthrough](migration-from-datagrip.md#snowflake-check-constraints-prepared-acceptance-walkthrough)
+leaves actual role visibility, output compatibility, interruption and normal
+packaged usability open. CHECK creation/modification/validation, cross-database
+catalogs, inbound relationships, safe grid editing/import, broader SQL/DDL,
+performance investigation, actual million-row Snowflake workflows and owner
+acceptance remain required. The Goal is active and incomplete.
+
+### Next product priorities
+
+1. Implement the required [reviewed SQL console/script design](snowflake-sdk-console-scripts-design.md):
+   one retained owner across runs, private execution without hidden SQL observers,
+   broad reviewed owner-authored SQL, scalar binds and explicit transaction
+   boundaries. Reuse transport primitives beneath public probe-bearing actions;
+   looping those actions would alter LAST_QUERY_ID and session semantics. Retain
+   passive per-field SDK response context separately from coherent generated-action
+   authority. Preserve rollback-only recovery, lost-start-response correlation,
+   whole-plan local admission, original outcomes and an untouched suffix. No
+   automatic replay, settlement, reconnect or suffix resume. Read-only Run all and
+   typed batch parameters already work; the broader workflow remains incomplete.
+2. Continue complete metadata/search, safe grid editing/import, broader DDL/session
+   commands, plans/performance, actual million-row Snowflake interaction/export
+   and normal packaged persistence/accessibility. All remain in required scope.
+
+The read-only planning review is recorded in the [ledger](replacement-verification.md)
+and ignored next-script-review.json; it ran no tests or account activity. Account
+qualification under owner-permitted SANDBOX.BILLIE_TESTING still requires a fresh
+reviewed exact Plan/window and possible-billing approval. The expired plan grants
+no authority; keep independent product work moving.
+
+## Product increment: select a referenced table (12 November 2026)
+
+**Select referenced table** is implemented locally; source and browser checks
+pass. It resolves the exact foreign-key database/schema/table against the
+entire retained catalog, requires one match before checking availability, clears
+the filter and old details, selects the retained opaque target and focuses the
+Relation selector. It sends no RPC. Visible explanations cover missing,
+ambiguous, unavailable and external-database destinations. Fresh ownership,
+context and render-generation checks protect activation across refresh and
+transient holds.
+
+Three focused backend regressions and all 97 synthetic SDK session regressions
+pass, proving exact quoted cross-schema inspection against the existing backend
+admission. Focused UI tests pass 97/97; full validation passes 762 frontend /
+481 standard Rust tests (129 fixture/helper ignores) and strict checks. The
+changed synthetic browser workflow passes 1/1. Independent bounded review has
+no material finding. Production backend source is unchanged. The
+[contract](snowflake-sdk-key-mappings-design.md#referenced-table-selection),
+[prepared walkthrough](migration-from-datagrip.md#referenced-snowflake-tables-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) record results. Hidden native
+startup/IPC and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package
+builds from clean feature commit 5219db5; strict ad-hoc signature/resources and
+guarded helper startup pass with zero authentication/SQL requests. It is local
+and uninstalled; normal UI/SSO/restart, Developer ID/notarization and account
+acceptance remain open.
+
+Cross-database navigation remains required and needs a separately admitted
+database-scoped retained catalog; do not relax profile-database checks or borrow
+schema-switch authority. Inbound/related-row navigation, virtual foreign keys,
+JOIN completion and diagrams remain in the required applicability inventory.
+Current official Snowflake documentation confirms CHECK constraints are
+applicable; their inventory remains required. Dynamic-table mappings,
+dependencies, complete object coverage, safe grid editing/import, general SQL,
+broader schema changes, performance tools and actual million-row Snowflake
+interaction/export remain open. Normal packaged SSO/recovery, live account
+effects and owner hands-on acceptance remain gates. The Goal is active and
+incomplete; no new account activity is authorized.
+
+### CHECK-constraint design before implementation
+
+The initial design below is implemented in the new increment above; local and
+account qualification remain separately tracked. It specifies an independent retained-target
+`inspect_relation_check_constraints` action. The official
+[CHECK_CONSTRAINTS view](https://docs.snowflake.com/en/sql-reference/info-schema/check_constraints)
+provides constraint catalog/schema/table/name and clause directly. Use one closed
+read against the fully quoted retained database, binding its exact catalog,
+schema and table; no constraint-name join or schema-wide fallback is needed.
+Reuse the serialized relation lane, retained revision/opaque target and pre/post
+context/relation checks. Preserve current unavailable-target admission.
+
+The proposed response retains the target identity and five text fields per
+constraint. Bound it to 1,000 rows with an overflow sentinel and 1 MiB, reject
+incomplete/malformed/duplicate/mismatched rows, and preserve clause text as inert
+read-only text. Empty role-visible results and denied requests remain distinct;
+neither grants editing authority or proves engine eligibility. The view supplies
+no enforced/validated flag. Current traits do not distinguish Snowflake-managed
+and externally managed Iceberg tables, so do not infer support from that flag.
+
+The read-only design review used Tier 2 generation 2026-11-12T07:13:02Z,
+coverage for nine source paths, snippets/trace and direct reads. Required
+regressions include quoted cross-schema identities, same names on other tables,
+multiline/Unicode clauses, malformed/NULL/duplicate/overflow results,
+denial/empty states, forged/stale IDs before SQL, held reads and context drift,
+independent UI failure and stale-result invalidation. No files, tests, builds,
+account requests or qualification-ledger authority changed for that review.
+
+## Product increment: ordered key columns (12 November 2026)
+
+The separate Snowflake **View key column mappings** action is implemented locally.
+It pairs composite foreign-key columns by ordinal,
+reports qualified referenced tables, preserves missing/unsupported states and
+leaves declaration/column/definition views available on a mapping failure.
+Dynamic-table mappings and unknown-trait targets remain gated. The
+[contract](snowflake-sdk-key-mappings-design.md),
+[prepared walkthrough](migration-from-datagrip.md#snowflake-key-columns-prepared-acceptance-walkthrough)
+and [ledger](replacement-verification.md) distinguish local checks from account
+acceptance. Focused tests and full validation pass (743 frontend / 481 standard
+Rust tests, 129 fixture/helper ignores and strict checks); the changed synthetic
+browser workflow passes 1/1. Independent bounded review has no unresolved
+material finding. Hidden native command registration/rejection and 10 cleanup
+cycles pass. The normal SDK-bearing ARM64 package builds from clean feature
+commit 54f59b6; strict ad-hoc signature/resources and guarded helper startup pass
+with zero account requests. It is local and uninstalled; normal app UI/SSO,
+Developer ID/notarization and account inspection remain unqualified.
+No new account execution or approval is included.
+
+Next required product work includes foreign-key table navigation/inbound
+references, dynamic-table mappings, CHECK constraints, dependencies and complete
+object coverage. Safe grid editing/import, general SQL/multiple statements,
+broader schema changes, performance tools and actual million-row Snowflake
+interaction/export remain required. Normal packaged SSO/recovery and owner
+hands-on acceptance remain gates; the Goal is active and incomplete.
+
+Referenced-table selection now has its own increment above. Its initial
+read-only design used Tier 2 generation 2026-11-12T07:01:27Z, coverage for ten
+evidence paths and direct reads on clean 54f59b6. It made no edits, builds or
+account requests.
+
+## Product increment: declared keys (12 November 2026)
+
+Add a separate read-only key inventory to the Snowflake relation browser,
+preserving reported flags, hidden foreign-key references and explicit empty/error
+states. The implementation and focused tests are complete; independent review
+has no unresolved material finding. Full validation passes 718 frontend / 476
+standard Rust tests (129 fixture/helper ignores) and strict checks. The changed
+headless browser flow passes 1/1. Hidden native command registration/rejection
+and 10 cleanup cycles pass. The normal SDK-bearing ARM64 package builds from
+clean fabeb62, with strict ad-hoc signature/resources and guarded SDK startup
+passing without account requests. It is local and uninstalled; normal SSO/usage,
+Developer ID/notarization and account key visibility remain unqualified. See the
+[contract](snowflake-sdk-constraints-design.md) and source-specific
+[ledger](replacement-verification.md).
+
+Next metadata work includes key column mappings, foreign-key table navigation,
+CHECK constraints, dependencies and complete object coverage. These declarations
+do not establish safe row identity. Grid editing/import, broader SQL and schema
+changes, performance investigation and million-row Snowflake workflows remain
+required alongside normal packaged SSO/recovery and owner acceptance. The
+separate frozen table-lifecycle account plan does not qualify this command.
+No account activity, installation or publication is part of local verification.
+
+## Product increment: generated relation definitions (12 November 2026)
+
+The Snowflake relation browser now displays and copies generated table/view DDL
+through a closed typed GET_DDL command. It resolves retained opaque catalog
+targets, serializes metadata operations, rejects incomplete/oversized responses
+and discards stale UI results. It does not execute the displayed SQL. Full
+validation passes 697 frontend / 471 standard Rust tests (129 fixture ignores)
+plus strict checks; see the [contract](snowflake-sdk-browsing-design.md)
+and [ledger](replacement-verification.md). Independent bounded review is clean.
+
+The changed browser workflow passes after the recorded initialization fix.
+The corrected hidden native IPC/cleanup check passes; strict Rust checks pass
+after the two ACL enrollment entries. The normal local SDK-bearing ARM64 package
+passes on clean `e218aef`, including resources, strict ad-hoc signature and guarded
+helper startup with zero account requests. It remains uninstalled.
+The [reviewed exact account plan](snowflake-table-attempt-9a8d9d3d.md) for
+05:52–06:22 UTC on 12 November expired without approval or execution. Any account
+attempt needs a new reviewed Plan/window and explicit account, permanent
+marker-store and billing approval. Account definition
+privileges, secure views and supported Snowflake object
+families still need explicitly scoped acceptance. Continue broader metadata,
+object search, grid editing/import, multi-statement SQL, performance and million-row
+workflows; displaying a definition closes none of those required gates.
+
+A separate offline review binds copied source `103cb45`, the actual binary,
+compiler and zero-link runtime. Both the expired preview and fresh Plan were
+emitted and verified without SSO or account activity. The later attempt expired
+at 06:22 UTC without an approval reply, approval file or owner marker-store access;
+the earlier CREATE DATABASE approval is spent. This qualification does not qualify
+the new definition command.
+Normal packaged SSO/recovery, actual database effects, all applicable DataGrip
+capabilities and owner hands-on acceptance remain required. No publication or
+installation is authorized.
+
+## Execute entry and next qualification gates (12 November 2026)
+
+The dedicated command now connects original-envelope restoration to the fixed
+macOS consumption store and private factory. SIGINT/SIGTERM registration precedes
+blocking preparation; observed interruption revokes future admissions while the
+entry retains preparation, original calls, shutdown and terminal persistence.
+Closed receipts distinguish unsuccessful execution from successful receipt
+persistence. Offline emission and verification remain free of account activity.
+The [command guide](snowflake-table-offline-command.md) describes the boundary;
+the [ledger](replacement-verification.md) records completed source-specific checks.
+
+Five optimized process cases pass, covering both signals before preparation and
+during held CREATE, foreground process-group Ctrl-C with lost acknowledgement,
+the full 32-phase lifecycle and spent-marker rejection in a fresh process with
+another output/environment. Tests use synthetic homes and a synthetic SDK; the
+production binary has no fixture override. A prior case stopped in phase 1 and
+two CREATE barriers were unavailable; their cause and shared origin remain
+unconfirmed. Passing repeats do not close the account-entry stability gate.
+
+Next, bind the actual reviewed executable,
+current source/compiler and a complete zero-link runtime. Prepare original exact
+Plan/envelope evidence with the table-only SQL, metadata disclosure, window,
+ceilings and possible billing. Obtain fresh approval before any account attempt
+under `SANDBOX.BILLIE_TESTING`; the rejected CREATE DATABASE approval is spent.
+No account approval question is pending during local verification.
+
+The twelve product areas and additional applicability inventory in the
+[matrix](datagrip-feature-matrix.md) remain required. Normal packaged SSO/recovery,
+actual writes/transactions/DDL, million-row Snowflake results/export, grid
+editing/import, broader metadata/SQL/schema/performance tools and owner hands-on
+acceptance remain open. This command closes no product replacement gate. No
+publication or installation is included.
+
+## Fixed store and revocation boundary (12 November 2026, preceding integration)
+
+The internal macOS permanent store now uses a fixed namespace selected from the
+effective user's OS account record. Synthetic-home and subprocess tests exercise
+bootstrap, unsafe path rejection, concurrent consumption and reuse independent
+of output/environment. A prepared attempt also exposes a memory-only revocation
+handle; retained-owner tests cover cancellation before startup and around CREATE
+acknowledgement/completion. See the [ledger](replacement-verification.md) for
+completed verification and its limits. These are internal qualification changes;
+the command remains offline-only and no account activity occurs.
+
+The latest full repeat passes 263 tests with six default ignores, but a preceding
+repeat fails three factory cases before CREATE. Diagnostic parallel/serial
+follow-up passes without reproducing it. Keep the unconfirmed early failure
+open and investigate with the retained terminal diagnostics before claiming a
+reliable account entry; do not widen production deadlines to mask it.
+
+Next, connect one separately approved execute route to this fixed store and the
+private factory. Register interruption handling before starting, revoke future
+SQL without aborting retained completion/terminal evidence, and prove the complete
+entry with the synthetic SDK. Then present the exact table-only SQL, metadata
+scope, window, ceiling and possible billing for fresh approval under
+`SANDBOX.BILLIE_TESTING`. No approval request is pending while that entry is absent.
+
+The twelve required product areas in the [matrix](datagrip-feature-matrix.md),
+the additional applicability inventory and owner hands-on acceptance remain open.
+In particular, normal packaged SSO/recovery, actual writes/transactions/DDL,
+million-row Snowflake results/export, grid editing/import and broader daily
+workflows still require implementation and evidence. No publication or install
+is included in this increment.
+
+## Dedicated offline entry and remaining execution boundary (12 November 2026, preceding integration)
+
+The dedicated binary and narrow facade now provide offline `emit`/`verify` with
+actual-executable binding, the release build recipe, exclusive persistent Plan/
+envelope output and exact original-byte restoration. Only emission generates a
+new target. `execute` is rejected. The [command guide](snowflake-table-offline-command.md)
+documents reproducible local preparation; the
+[verification ledger](replacement-verification.md) records current checks.
+
+The final actual-command suite passes seven tests. Full validation passes
+679 frontend / 467 standard Rust tests (129 fixture ignores) plus strict checks;
+all 44 final source hashes match. Independent review has no material finding.
+The earlier 252-test qualification result precedes the parser-only lint cleanup;
+the ledger preserves that scope and the final affected-test rerun.
+
+Next, fix permanent consumption-store placement independently of caller paths,
+then connect one separately approved execute route to the private factory. Add
+cross-process permanent RUN reuse rejection and test interrupted callers through
+retained completion/terminal evidence. Prove the complete fixed entry with the
+synthetic SDK before presenting a fresh exact account plan, metadata scope,
+window, SQL ceiling and possible-billing approval for `SANDBOX.BILLIE_TESTING`.
+No account activity or approval question is pending during offline implementation.
+
+Normal packaged SSO/reconnect/cancellation/restart, actual Snowflake lifecycle
+effects, million-row results/export, grid editing/import, broader metadata/SQL/
+schema/performance tools and every remaining applicable DataGrip workflow stay
+required. These product workflows must advance alongside the qualification
+boundary; offline evidence does not establish replacement readiness. Owner
+hands-on acceptance remains required. No install, push, merge or publication
+occurs in this increment.
+
+## Fresh consumed factory and next account boundary (12 November 2026)
+
+The private factory now implements persistent exclusive attempt/workspace/state
+allocation before consumption, exact consumed runtime/profile construction,
+keychain-free ordinary Studio saving/preparation, and detached ownership through
+terminal fsync. Output is separate from both reviewed artifacts and permanent
+markers. Original acknowledgements are retained independently of final errors;
+failed or unsettled output is never automatically deleted or resumed. Independent
+bounded review is clean. See the [verification ledger](replacement-verification.md)
+for checked source and results; preceding construction notes below are historical.
+The optimized suite passes 244 qualification tests (5 default ignores) and 22
+runtime tests; the new detached-owner ignore passes separately through all 32
+phases / 393 synthetic requests. Full validation passes 679 frontend / 467
+standard Rust tests, with 129 fixture ignores, plus strict checks. All 38 frozen
+source hashes match. These local checks do not qualify account or normal UI use.
+
+Next, add the dedicated binary and narrow facade for offline emit/verify and
+separately approved execute. Fix permanent consumption-store placement independently
+of caller output, bind the actual binary/build recipe, and prove offline zero-launch
+and cross-process RUN reuse rejection. Restore the original reviewed envelope;
+generate a new Plan only during emission. Then present the exact table-only SQL,
+metadata scope, limits and billing implications for fresh approval before using
+`SANDBOX.BILLIE_TESTING`. No approval request is pending while that command is absent.
+
+Actual Snowflake lifecycle effects, normal packaged SSO/reconnect/cancellation/
+restart, million-row results/export, safe grid editing/import, broader metadata/
+SQL/schema tools, performance investigation and all remaining applicable DataGrip
+capabilities stay required. The final owner walkthrough remains an acceptance
+gate. No account activity, install, push, merge or publication occurs here.
+
+## Complete-content performance gate (12 November 2026, passed locally)
+
+The complete optimized envelope capture/restore/consume test passes against the
+unchanged full packaged runtime. The consumed S=1 Studio workflow also passes:
+32 phases / 393 synthetic SQL requests, 527 successful admissions, maximum
+1,983 ms, and 667,423 ms from consumption through final persistence. Reproduced
+test-timer ownership and whole-read timeout defects are corrected with focused
+regressions and independent review. See the
+[verification ledger](replacement-verification.md) for exact evidence and failures.
+
+S=32 fails after nine completed phases when one admission reaches three seconds;
+the frozen source still matches. Profiling identifies software SHA-256 as a
+substantial cost; the macOS ARM64 acceleration feature now passes local verification.
+Its independent digest vector and inventory suite pass; full revalidation now
+measures 0.85–0.87 seconds against the exact unchanged packaged runtime. The
+changed-source S=32 run passes all 32 phases / 610 SQL requests: 751 successful
+admissions, maximum 1,419 ms and 703,735 ms consumption-to-persistence. S=1 also
+passes 32 phases / 393 requests: 525 successful admissions, maximum 1,206 ms and
+495,200 ms consumption-to-persistence. Both settle and persist; all 13 frozen
+source hashes match. The combined optimized module passes 204 tests with 4
+default ignores. Full application validation passes 679 frontend / 467 standard
+Rust tests, with 129 fixtures ignored, plus formatting/build/check/strict Clippy.
+Source commits `db18e03` and `a05cfae` preserve every inventory check and existing
+admission/lifecycle limit. The normal ARM64 package build, zero-link resources,
+ad-hoc signature and network-guarded helper startup pass on clean `f5d02e4`;
+normal UI, installation and account acceptance remain open. Proceed to the fixed
+account entry and bound-root construction below. `SANDBOX.BILLIE_TESTING` is the owner's
+permitted new-table location; prepare the exact table-only plan before fresh
+execution/billing approval. No new account activity has occurred. All applicable
+DataGrip workflows and hands-on acceptance remain required; the Goal is active
+and incomplete.
+
+Read-only integration review identifies the next concrete construction work:
+
+The fixed profile/policy and private envelope input increment passes 223 optimized
+tests, with 4 default ignores. Account/host mismatch and case-only RUN reuse are
+reproduced and corrected. See the [verification ledger](replacement-verification.md).
+Full validation passes 679 frontend / 467 standard Rust tests, with 129 fixture
+ignores, plus formatting/build/check/strict Clippy; all seven source hashes match.
+The next owner must reserve persistent exclusive attempt/workspace/state paths
+and terminal output before consumption, retain them through detached final
+persistence, and preserve them after incomplete shutdown. The current generic
+Studio opener must never receive an existing application workspace.
+
+The exact qualification runtime constructor now selects the supplied root with
+compiled pins and no packaged/development fallback, requiring separate private
+state. A reserved-journal constructor moves an already exclusively created,
+untouched header into Policy only for the same Plan/profile; used, failed or
+changed journals are rejected. These are closed construction seams, not the
+factory or account entry. Optimized checks pass 227 qualification tests with
+4 default ignores and 22 runtime tests, including all nine new cases.
+Full validation passes 679 frontend / 467 standard Rust tests, with 129 fixture
+ignores, plus formatting/build/check/strict Clippy; all four source hashes match.
+Their commands and scope are recorded in the
+[verification ledger](replacement-verification.md).
+
+- Add one dedicated binary and a narrow private entry facade for offline
+  emit/verify and separately approved execute. Bind that binary's actual build
+  recipe; only emission generates a Plan. Verify/execute restore original
+  reviewed bytes and their explicit digest.
+- The closed 16 MiB envelope reader and file restoration route are implemented;
+  smaller profile/approval limits and descriptor-relative ownership, permission
+  and identity checks remain intact. Wire this route into the fixed entry and
+  fix the permanent consumption root independently of output paths.
+- Construct Studio, runtime and the new connection attempt only from the consumed
+  roots. The current assembled-component runner constructor is suitable for
+  fixtures, not proof of runtime provenance. Wire the exact runtime constructor
+  and reserved journal into one private owner. Use fresh exclusive private storage;
+  the generic persistence opener can adopt existing databases and change modes.
+- Retain resource/guard/attempt/output ownership through journal and terminal
+  receipt persistence, including dropped waiters and failed launches. Prove
+  zero-launch offline commands, cross-process RUN reuse rejection, no profile or
+  runtime fallback and truthful original outcomes after local storage failure.
+- The isolated Staging/Confirm profile and recomputed fixed policy declaration
+  are implemented, including opt-ins, verified TLS/443, no SSH/secrets and exact
+  target. The seven-field input now validates the account against the driver's
+  hostname derivation. The private factory must allocate exclusive fresh storage,
+  inject a keychain-free secret store, save through the normal Staging group and
+  use the normal prepare/authorize route before launch.
+  Never adopt, modify or downgrade an existing profile; Production still enforces
+  PasswordGated and is a separate qualification scope. Offline mismatch/tamper/
+  missing-token/stale-token tests precede account execution. The first closed
+  lifecycle uses fixed literals; parameterized and million-row account checks
+  require separately reviewed scopes.
+
+## Consumed runner guard (12 November 2026, local verification)
+
+The retained runner now accepts the consumed envelope by value and checks exact
+Plan/profile identity against its owning policy. Full artifact checks precede
+authentication and every physical admission; synchronous publication callbacks
+check only retained failure, wall time and the monotonic deadline. Authentication
+is bounded to 120 seconds and the guard to 30 seconds, preserving the process
+writer's stricter three-second admission limit. A timed-out or dropped scanner
+retains its blocking-work permit until the OS read actually returns, while the
+attempt is immediately revoked.
+
+Final integrity and scanner settlement are journaled once, independently of
+original operation outcomes. Review found and resolved a receipt-only final
+failure that could disappear with a dropped waiter. New regressions cover this
+case, pre-authentication drift, drift after CREATE acknowledgement, stalled
+authentication and interrupted/failed final evidence storage. Source review is
+clean; the final optimized module passes **200 tests / 1 default ignore**. The
+reproduced terminal/control race is corrected with both actual-helper orderings
+covered. Full validation passes **679 frontend / 467 standard Rust tests**, with
+**129 fixture cases ignored**, plus formatting/build/check/strict Clippy. See the
+[verification ledger](replacement-verification.md) for final results.
+Code is committed locally as `f80c8c5`; nothing is pushed or published.
+
+Next, in dependency order:
+
+1. Measure complete optimized Envelope capture/restore/consume/revalidation with
+   actual fixed repository scopes, executable/compiler and unchanged full packaged
+   runtime, using a synthetic private profile. Then run S=1/32 consumed routes on
+   full runtime copies actually used by Studio, with synthetic SDK changes frozen
+   before capture and all mutable logs/controls outside the inventory. Record
+   complete admission count/total/maximum and consumption-to-persistence time;
+   preserve the three-second admission and 15-minute workflow limits. Runtime-only
+   timing and the current minimal synthetic runtime do not prove this gate.
+2. Add a dedicated fixed binary with offline emit/verify and approved execute
+   modes; bind its actual build recipe rather than the HTTP fixture binary.
+3. Use one permanent consumption-store root and fresh exclusive per-attempt
+   private output/state directories. A different output directory must not allow
+   RUN reuse. Add a closed 16 MiB envelope reader; keep smaller profile/approval
+   bounds and do not generate approval in the executable.
+4. Construct Studio/runtime/profile exclusively from the consumed bound roots
+   through one private factory. Retain execution, private resources and terminal
+   output ownership together; journal originals remain independent of reporting.
+5. Verify offline zero-launch behavior, reuse/unsafe-file rejection, failed launch,
+   dropped waiters and terminal-output failures through that same entry/factory.
+6. Emit/review the concrete fresh-table plan for `SANDBOX.BILLIE_TESTING` and
+   obtain fresh execution/billing approval.
+
+Live account effects, packaged SSO, million-row behavior, all applicable DataGrip
+workflows and owner acceptance remain required. The Goal remains active and
+incomplete; this increment changes no normal application or package workflow.
+
+## Offline execution envelope (12 November 2026)
+
+The local envelope now binds the exact closed Plan, fixed Rust/helper/build
+source scopes, complete zero-link runtime tree, executable, compiler, private
+seven-field profile and at-most-30-minute admission window. Restoration recaptures
+the supplied physical roots and requires exact canonical bytes/digest. A distinct
+approval format is checked against the actually running executable before
+run-first/plan-second create-once markers are consumed. Marker handles remain
+retained for identity checks; failed or dropped attempts never refund markers.
+This is an offline primitive, not an account entry or implemented placement of
+the checks around authentication/each SQL. See the verification ledger for checks.
+
+The complete qualification module passes 179 tests with one default ignore; the
+ignored packaged-runtime inventory also passes explicitly. It covers all 15,110
+runtime entries and 202,538,012 file bytes without launching the helper or SSO.
+Focused counts overlap the module total. Independent bounded review is clean.
+Full validation passes 679 frontend / 467 standard Rust tests and strict checks,
+with 129 fixture cases ignored. The code is committed locally as `6b95a4d`.
+
+Next, in dependency order:
+
+1. Supply this consumed envelope only through a fixed Rust account entry to the
+   retained runner. Check it outside process/policy locks before authentication,
+   each physical SQL admission and after execution. Enforce the bound 120-second
+   authentication and 30-second admission waits plus the retained 15-minute
+   monotonic deadline; preserve stricter production limits and original outcomes.
+2. Implement private exclusive manifest/approval/output handling and owned local
+   lifecycle around the exact frozen profile and verified packaged runtime.
+   Prove drift, expiry, interrupted/failed launch, no offline side effects and
+   final durable evidence through the composed entry. These are not established
+   by the separate primitives.
+3. Emit and independently review the concrete fresh-table plan for
+   `SANDBOX.BILLIE_TESTING`, then obtain fresh execution/billing approval.
+4. Qualify real writes/DDL/transactions and interruptions, packaged SSO and 1M-row
+   account behavior; complete all applicable DataGrip workflows and owner
+   acceptance. The Goal remains active/incomplete.
+
+No Snowflake activity or new installed/package workflow occurs here. Earlier
+dated sections retain their original scope. Nothing is pushed or published.
+
+## Retained owner integration (12 November 2026)
+
+The shared 32-phase owner and conservative 32 MiB aggregate inbound body cap are
+implemented locally. Route/fault fixtures use that same execution core. Typed
+incomplete-read records preserve original operation/capture/cleanup errors and
+actual event prefixes through late completion; dropping the waiter retains the
+owner through recording and local settlement. Construction remains test-only.
+The corrected-source qualification module passes 142/142 tests, including all
+135 preceding cases; transport passes 27/27. Focused counts overlap these totals.
+Full validation passes 679 frontend / 467 standard Rust tests and strict checks,
+with 129 fixture cases ignored. Local commits are `963a455` and `68fff80`.
+See the [verification ledger](replacement-verification.md) for final checks and
+the source-review corrections; earlier roadmap sections retain historical scope.
+
+Remaining work, in dependency order:
+
+1. Bind a non-resumable executable attempt to exact reviewed source, actual
+   binary, complete zero-link runtime contents and private profile. Restore the
+   reviewed Plan and consume both its execution hash and account/host/database/
+   schema/RUN marker before authentication. Supply a sealed consumed capability
+   to the same runner; reject drift before authentication, each SQL and after
+   execution. Verify cross-process reuse, partial consumption and launch failure.
+2. Prepare the concrete fresh-table plan under `SANDBOX.BILLIE_TESTING`, with
+   implemented limits and disclosures, then obtain fresh execution/billing
+   approval. The location permission does not revive earlier consumed approvals.
+3. Qualify actual write/DDL/transaction effects and interruptions, packaged SSO,
+   and million-row account performance. Complete all applicable DataGrip
+   workflows and the owner's hands-on acceptance before replacement readiness.
+
+The normal local macOS bundle from the preceding increment remains the runnable
+artifact; this harness-only increment changes no normal package workflow. The
+Goal remains active/incomplete. Nothing is pushed, merged, published or installed.
+The private project hub is not updated: available Sites updates require pushing
+and deployment, both prohibited by the owner's instruction.
+
+## Full Studio qualification composition (11 November 2026)
+
+The synthetic-only owner now uses actual Studio APIs for all 32 phases. Initial
+success runs at S=1/32 match the entire 393/610-request SQL ledger. Closed DDL
+actions use the Plan's definitions and actual validated catalog/inspection tokens;
+reads decode local retained Arrow data and transaction boundaries use prior actual
+runtime authority. Original operation completions are recorded before validation.
+The stateful SDK independently validates all nine SQL strings and generated target;
+its ten Node regressions pass. Pre-repair full application validation passes 679
+frontend and 466 standard Rust tests. The first expanded qualification run passes
+119/122: all seven mutations pass each rejection, SDK callback loss and observation
+failure scenario, and the dropped waiter passes too. Three cases fail at helper
+startup in that run. Focused reruns pass the full success route and cancellation,
+but the post-ACK journal-failure
+case initially closes its session before reaching the intended fault. A reproduced
+finalizing-operation race is now repaired: inactive credit/discard waits for that
+exact operation's original public completion. Four deterministic regressions and
+the original journal-failure case pass; independent review has no material finding.
+The complete repaired-source qualification module passes all 122 tests; 131
+process/adapter cases and strict Rust checks also pass. The two later full runs
+fail the previously recorded PostgreSQL startup timeouts. A timing reproduction
+now attributes those failures to synchronous native trust enumeration with TLS
+disabled; the bounded correction passes the normal parallel protocol target and
+45 real PostgreSQL/SSH/TLS fixture tests. Two new full-route tests also pass all
+14 actual helper-child-exit scenarios, retaining unknown versus acknowledged
+mutation outcomes without replay. Current full validation passes 679 frontend/
+467 standard Rust tests and strict checks. The earlier generic Snowflake helper-
+start cause remains unconfirmed; exact evidence is in the ledger.
+The complete combined-source qualification module passes all 124 tests in normal
+three-thread execution, including both new child-exit loops and existing faults.
+
+Remaining work, in dependency order:
+
+1. Extract the same retained 32-phase owner from its synthetic fixture, preserving
+   production Studio routes, original completions, bounded event capture, local
+   settlement and durable receipt barriers. Convert test assertions into retained
+   typed errors; no account/profile/SQL/target selector or extra cleanup SQL.
+2. Bind one non-resumable executable attempt to reviewed source, actual binary,
+   complete runtime contents and private profile; consume a one-use envelope.
+   Restore the exact reviewed Plan rather than regenerate its target. Enforce
+   the proposed 32 MiB aggregate semantic-result cap independently of transport
+   and per-read bounds. Bind a zero-link runtime with a complete inventory; the
+   newly verified normal bundle supplies such a resource tree, while the default
+   stage has five symlinks. Verify rejection before authentication, cross-process
+   reuse, drift, failed launch and final receipt.
+3. Prepare the exact fresh-table plan under `SANDBOX.BILLIE_TESTING`, then request
+   fresh account execution/billing approval. Old approvals remain consumed.
+4. Qualify actual writes, DDL, transaction effects, normal packaged SSO and
+   million-row performance. Complete all applicable DataGrip workflows and the
+   owner's hands-on walkthrough before replacement acceptance.
+
+The closed Plan restoration preserves the original generated table, SQL,
+expanded ledger and journal header across processes. Seven identity tests and
+four drift tests/eight scenarios are included in the complete passing 135-test
+module, with clean independent reviews. Drift covers original census order/
+overflow, same-count schema replacement before CREATE and in catalog refresh,
+role/warehouse, secondary roles and search path; the latter is not order-only
+coverage. Full validation passes 679 frontend / 467 standard Rust tests and
+strict checks, with 129 fixtures ignored. Plan restoration is an offline identity
+primitive, not the executable envelope or approval; local child exits and
+synthetic responses do not establish account effects. Exact source/evidence is in
+the [ledger](replacement-verification.md#closed-plan-restoration-and-context-drift-11-november-2026).
+The normal arm64 macOS bundle is rebuilt and locally verified with ad-hoc signing,
+zero runtime symlinks and guarded zero-authentication/SQL helper startup. It is not
+installed, notarized or account qualified.
+
+See the [verification ledger](replacement-verification.md) for final results and
+the distinction between synthetic routes and externally qualified product behavior.
+The Goal remains active and incomplete. Nothing is pushed, merged, published or
+installed. Earlier roadmap entries below retain their historical scope.
+
+The private project hub is not updated in this local-only increment: available
+Sites content updates require pushing source and deploying, both prohibited by
+the owner's current instruction. Repository documentation remains the durable
+current evidence until publication is authorized.
+
+## Owning qualification policy (11 November 2026)
+
+Implemented a harness-only owner of the exact physical ledger/control grammar,
+callback debt, frozen lifecycle, actual runtime publications and typed phase
+evidence. A private create-once journal records original intents, helper reports,
+observations and validated phase evidence. Admission and advancement wait for
+their own fsync receipts. Interrupted owners retain failure and consume completed
+receipts once; cleanup cannot advance or retry SQL. See the
+[contract](snowflake-qualification-sql-ledger.md#owning-policy-and-durable-barriers-11-november-2026)
+and [verification evidence](replacement-verification.md#owning-qualification-policy-11-november-2026).
+
+Next, in dependency order:
+
+1. Extend actual adapter/Studio composition beyond startup/preflight through the
+   complete 32-phase route and rejected/interrupted calls. The same-call Studio
+   reconciliation bridge now retains the original options and catalog without
+   another SQL request. Full-route composition remains open.
+2. Extend local-completion coverage into the full actual production route.
+   Verify original early ACKs and final durable evidence across interruption,
+   rejected calls and local storage failure; never repeat SQL during cleanup.
+3. Bind one executable, non-resumable attempt to reviewed source, binary, runtime
+   and private profile identities; implement one-use approval consumption and the
+   fixed runner. No caller-supplied SQL or arbitrary target.
+4. Independently review full-route success, rejection, cancellation, connection
+   interruption and local journal failures. Preserve exact statement budgets and
+   prove cleanup does not replay SQL or evidence.
+5. Prepare the executable fresh-table plan under `SANDBOX.BILLIE_TESTING`, then
+   request fresh exact execution/billing approval before account activity.
+
+The next runner increment uses existing typed Studio APIs. Share the Plan's
+closed CREATE/ADD/DROP definitions; bind ADD/DROP only to validated, fresh real
+catalog/inspection revisions. Retain each original typed completion or error
+before validation, including acknowledged mutations whose later observations
+fail. Own read events through `Finished`, preserving their arrival order and
+both result metadata events. Decode at most two locally retained Arrow rows
+through `Studio::range`; result retrieval must issue no SQL. Transaction
+authority comes from the preceding actual runtime evidence, with no extra state
+query. Keep results until their evidence is durably recorded.
+
+Start with an opaque synthetic-only harness that owns a fresh Plan, disposable
+Studio/helper and journal. Accept no SQL, target, saved-profile identifier,
+arbitrary session or account selector. Exercise all 32 actual Studio routes with
+a stateful synthetic SDK at census sizes 1 and 32, asserting exactly 393/610 SQL
+and rollback/commit visibility within the fixture. On failure retain partial
+events/original outcomes, settle and persist locally; do not advance, replay,
+issue recovery SQL or run cleanup DROP. This is required runner work, not an
+implemented or account-qualified workflow.
+
+The separate local-completion seam now carries exact ticket/generation identity,
+optional actually assigned wire ID, reserved candidate and a closed origin.
+Pending removal and ticket-keyed retained evidence precede observation outside
+the process mutex and unchanged caller publication. In-flight publication guards
+participate in settlement. A deterministic adapter/helper test forces a query to
+finish during durable credit admission: its inactive local completion consumes
+the reservation without inventing a wire assignment or advancing SQL. Other local
+outcomes retain the original report and stop the attempt. Full-runner evidence
+and real account interruption qualification remain open; see the verification
+ledger for passing and failed development runs.
+
+All applicable DataGrip authoring, navigation, grid/import, schema/performance,
+native persistence/packaging, normal packaged SSO and million-row account gates
+remain in scope. The local policy is not replacement acceptance. Earlier roadmap
+entries below retain their historical context; the Goal remains incomplete.
+
+## Offline validation primitives (11 November 2026)
+
+Implemented pure final-wire matching and in-memory lifecycle validation, plus a
+harness-only callback for validated helper terminals before caller publication.
+The original mutation report/ACK survives callback rejection and prior policy
+failure. Wire/lifecycle validators remain unattached to an owning execution
+policy. See the [contract](snowflake-qualification-sql-ledger.md#offline-wire-and-lifecycle-validators-11-november-2026)
+and [verification evidence](replacement-verification.md).
+
+Next bind these primitives to phase ownership, exact SQL/control order and
+callback correlation. Phase completion must include drained/validated results
+and durable original receipts; helper terminal alone is insufficient. Capture
+retirement outcomes as well as helper terminals before claiming complete receipt
+capture. Then finish one-use source/runtime/profile binding, durable journaling
+and the fixed runner. Complete synthetic routes and failure paths precede a
+fresh exact account plan for `SANDBOX.BILLIE_TESTING`. No account access or new
+execution approval occurs in this increment. Full replacement remains incomplete.
+
+## Shared SQL and offline ledger (11 November 2026)
+
+Implemented [shared production definitions and census-bound expansion](snowflake-qualification-sql-ledger.md):
+one pinned helper/Rust bootstrap and transaction contract, production-used named
+read specs, and exact ordered entries for all 32 lifecycle phases. Fourteen
+compiler tests and three read-spec tests pass; the 48-case qualification run
+also passes. Definitive rejection permits only the production route's tail:
+DDL five observer reads, normal Studio readback ten, DML/typed boundaries/metadata
+zero. These are local/synthetic checks, not complete account execution routes.
+
+Next implement the in-memory phase/census/lifecycle policy and bind the ledger
+to physical admission; then durable intent/outcome journaling, a source/runtime/
+profile-bound one-use envelope and the fixed production-route runner. Exercise
+complete 393/610-entry synthetic routes and interrupted/rejected paths before
+preparing any executable account plan. The permitted new-table target remains
+`SANDBOX.BILLIE_TESTING`; no account approval is requested during this local work.
+
+Full DataGrip workflow scope, actual account behavior, million-row performance,
+installation/signing and owner acceptance remain open. See the
+[verification ledger](replacement-verification.md) for the final checks and scope.
+
+## Qualification attachments (11 November 2026)
+
+Implemented the [internal attachment contract](snowflake-qualification-attachments.md):
+asynchronous physical-request admission, bounded raw pipe/frame accounting,
+validated wire-order census and creation-marker observations, cross-domain
+failure latching, and post-lock publication checks through Studio. Focused
+transport/metadata/Studio checks pass 13/13/8 respectively; seven new timing
+regressions reproduced before repair. Independent final source review has no
+outstanding material finding. Full validation and current source/artifact scope
+are recorded in the [ledger](replacement-verification.md).
+
+These hooks are not the qualification policy. Continue with the exact physical
+SQL/phase ledger and exported bootstrap definitions, lifecycle census/marker
+enforcement, private source/runtime/profile envelope and durable one-use journal,
+then the fixed production-route runner. Qualify complete 393/610-execution routes
+and failure suffixes locally before preparing any new account approval request.
+The permitted target remains one fresh table in `SANDBOX.BILLIE_TESTING`.
+
+All remaining DataGrip workflow gaps, normal packaged account behavior,
+million-row account performance, installation/signing and hands-on acceptance
+remain required. The Goal is active and incomplete; nothing is pushed, merged,
+published or installed.
+
+One bounded reliability follow-up remains from broad validation: PostgreSQL
+currently loads native trust roots synchronously even for `TlsMode::Disable`.
+Avoid that unnecessary work and prove disabled TLS never invokes the loader,
+while preserving VerifyFull native/custom roots and hostname rejection. One
+existing protocol readiness wait timed out and passed unchanged in isolation;
+certificate loading is a plausible, unmeasured contributor, not an established
+cause. Keep readiness diagnosis separate from cancellation/EOF deadlines.
+The reconciliation increment reproduced both startup-cleanup dispatch timeouts
+in full validation; unchanged serial and parallel protocol reruns pass. A bounded
+follow-up can own `drivers/postgres.rs` only: gate native trust enumeration by
+VerifyFull and inject its loader in deterministic tests proving Disable never
+calls it. Preserve custom-CA validation, TLS setup, protocol assertions and
+timeouts; then rerun affected protocol and full validation checks. This fix is
+not yet implemented and must not be reported as resolving the unknown cause.
+
+## Receipt recovery and qualification definition (11 November 2026)
+
+Implemented and independently reviewed in `b06f030` / `3039975`: shared original
+SDK DDL/DML/transaction outcome retention, local-only recording recovery, owned
+transaction execution after a dropped caller, and a pure offline table-lifecycle
+definition. Final validation passes 679 frontend / 463 standard Rust tests
+(129 fixture tests ignored). Separate receipt, Studio, compiler, actual isolated
+PostgreSQL and browser checks pass; see the [ledger](replacement-verification.md)
+for scope and reproducible evidence. Account behavior remains unqualified.
+
+Three hidden native runs and the final 224.90 MiB normal SDK bundle pass local
+checks; all 430 frozen inputs remain unchanged through packaging. Strict ad-hoc
+signing/resources and guarded SDK startup pass with zero authentication/SQL.
+Installation, Developer ID/notarization and normal packaged account behavior
+remain open.
+
+Next useful local work is the existing-schema qualification infrastructure:
+
+1. Export and enforce the exact physical SQL order/counts around production calls,
+   including the bounded automatic read-only suffix after a rejected operation.
+2. Intercept and freeze the raw schema census and created-object identity markers;
+   enforce inbound frame/byte/stderr resource limits as well as outbound admission.
+3. Bind the fixed runner to reviewed source, binary, runtime and private profile
+   identities, with one-use approval consumption and a durable execution journal.
+4. Regress interruption, rejected statements, local-recording failure, lost ACKs
+   and partial runs without account access; independently review the result.
+5. Prepare the exact executable plan for the owner's permitted new table under
+   `SANDBOX.BILLIE_TESTING`, then request fresh possible-billing approval.
+
+The [offline definition](snowflake-existing-schema-qualification.md) is not an
+account runner or approval. In parallel, the complete metadata, SQL authoring,
+grid/import, schema/performance, native lifecycle and million-row account gaps
+remain required. Do not reinterpret this lifecycle check as replacement acceptance.
+
+Bounded read-only integration review (Tier 2 generation
+`2026-11-11T11:11:15Z`, best-effort coverage plus exact source) identifies these
+next implementation seams; none is implemented by the offline compiler:
+
+- Attach an opaque harness-only attempt capability through
+  `Studio::connect_prepared_inner` / `SnowflakeExternal::open` before startup.
+  Keep it out of desktop IPC and stored profiles.
+- Admit and consume physical operations in `snowflake_process::write_loop`
+  immediately before writing, after durable intent and ownership rechecks.
+  Queue insertion is insufficient. Bootstrap includes the helper's hidden fixed
+  context SELECT and version query; export their definitions instead of copying.
+- Observe validated wire-order census rows before `parse_schemas` sorting hides
+  order, and parsed `BrowseRelation` creation/DDL markers before public summaries
+  discard them. Enforce these observations before dependent dispatch/publication.
+- Count actual stdout bytes from handshake onward, complete frames and partial
+  failures; concurrently drain/count stderr without retaining contents. Reap and
+  counter-task completion are separate evidence. Preserve known ACKs on later
+  read failure. The existing native query-submit guard remains mandatory and
+  does not replace exact SQL/phase admission.
+
+Split transport/observation plumbing, closed ledger enforcement, and the private
+execution envelope/runner into reviewable increments. Required synthetic coverage
+includes complete 393/610-execution production routes, census/marker drift,
+rejected-operation suffixes, intent failure, cancellation/partial writes, resource
+overflow after ACK and dropped callers with failed local recording. These tests
+must precede any executable approval request.
+
+## Recorded table DDL (11 November 2026, local integration)
+
+Final evidence: 679 frontend / 456 standard Rust tests, 356 helper cases,
+14 browser workflows, 43 isolated PostgreSQL tests and three hidden native runs
+pass. The final 224.88 MiB normal bundle passes signature/resources/guarded SDK
+startup; all 426 frozen source/config/test inputs remain unchanged. No install or
+account mutation qualification is claimed. Details and artifact hashes are in
+the [ledger](replacement-verification.md).
+
+That review identified DML/transaction terminal persistence failures and the need
+to specify automatic post-failure observations. The subsequent receipt increment
+above reproduces and repairs the recording gap without account activity. A fresh
+execution approval is not pending yet; the executable runner remains unfinished.
+
+The SDK external-browser route now includes a separate opt-in for generated
+CREATE TABLE, nullable ADD COLUMN and DROP TABLE. Every statement uses its own
+short-lived review and one-use authority; DROP also requires the exact fully
+qualified target name. ReadOnly and OAuth deny this route. Admission requires a
+coherent idle AUTOCOMMIT session, supported catalog traits and fresh context.
+Permanent and transient ordinary base tables are supported; transient objects
+have no Fail-safe. DDL cannot be rolled back and can race with external actors.
+This is a bounded implemented subset, not complete Snowflake DDL parity.
+
+The UI binds drafts and approval to the owning console, retains acknowledgement
+separately from metadata reconciliation, pauses automatic observers, and requires
+an explicit successful catalog/context refresh before normal metadata resumes.
+Unknown delivery retires without replay. Original typed outcome receipts survive
+a dropped caller; failed local history/audit recording blocks further DDL and
+normal shutdown until a local-only retry succeeds. Abrupt loss while SQLite cannot
+write is not claimed crash-durable. See the [DDL contract](snowflake-sdk-ddl-design.md),
+[walkthrough](migration-from-datagrip.md#reviewed-sdk-table-ddl-prepared-acceptance-walkthrough)
+and [current verification](replacement-verification.md).
+
+The earlier approved database-creation setup was consumed: SSO and initial
+observations passed, CREATE DATABASE was rejected, and no later schema/table SQL
+was dispatched. The owner now permits newly created tables in
+`SANDBOX.BILLIE_TESTING`. The [new lifecycle proposal](snowflake-existing-schema-qualification.md)
+records the complete budget and remaining runner work. A fresh exact plan and
+possible-billing approval are required before account activity; the prior setup must not be replayed. Actual
+account writes/DDL/transaction effects, normal packaged SSO, million-row account
+performance, broader DDL/grid/import/authoring workflows and hands-on acceptance
+remain required. The Goal stays active and incomplete; nothing is merged,
+published or installed.
+
+## Recorded SQL-write increment (11 November 2026, sources `eae1e81` / `fb091db`)
+
+The SDK external-browser route now implements a separately opted-in, individually
+reviewed single INSERT/UPDATE/DELETE workflow with scalar parameters, exact status
+counts, one-use submission authority and durable outcome history. It targets the
+fully qualified SQL name shown in review; concurrent DDL, temporary-name shadows,
+defaults, policies and dependencies can change resolution/effects. There is no
+immutable object-identity or safe grid-edit claim. Acknowledged success is separate
+from committed data effects. Unknown outcomes retire without replay; ordinary
+observer denial retains rollback recovery. Metadata remains paused until an
+explicit coherent refresh. ReadOnly and OAuth still deny writes.
+
+Local commits `eae1e81` and `fb091db` pass full `pnpm validate`: 671 frontend
+and 426 standard Rust tests, with 129 fixture tests explicitly ignored. Focused
+checks pass 51 Rust DML cases, then 15 final Studio cases including the reproduced
+and repaired graceful-shutdown history gap. All 21 Studio/actual-helper synthetic
+SDK fixtures, seven browser DML/transaction flows and 43 actual disposable
+PostgreSQL regressions pass. Helper coverage is 255 passing cases across the 107
+actual-SDK loopback and 148 remaining-helper runs. The recorded DML-source normal
+macOS bundle (224.33 MiB), strict ad-hoc signature/resources/startup checks and
+three hidden native runs pass with zero startup authentication/SQL. See the
+[verification ledger](replacement-verification.md) for source pins and limits.
+These tests do not qualify actual Snowflake writes, transaction effects or a
+million-row account result. Broader DML, grid editing, DDL, AUTOCOMMIT changes and
+all remaining applicable DataGrip capabilities remain required gaps.
+
+The owner requested a [disposable setup plan](snowflake-disposable-setup.md).
+The separate helper-only runner implements a fixed 28-SQL ledger with three
+CREATEs, permanent one-use consumption and private acknowledgement receipts.
+Its recorded local qualification preceded the consumed account attempt described
+above. The original pure DDL generator checkpoint had 11 tests; the current
+application workflow is recorded in the section above. A separate million-row
+helper/driver/store/CSV bridge passes with a synthetic SDK; actual Snowflake
+performance and complete account workflows remain unqualified.
+The Goal remains active and incomplete; nothing is merged, published or installed.
+
+## Recorded transaction increment (10 November 2026, source `929ae06`)
+
+Local source now includes separately reviewed SDK BEGIN/COMMIT/ROLLBACK controls,
+one-use authority, policy rechecks and rollback-only recovery. SDK profiles still
+default ReadOnly; only explicitly selected external-browser policies can permit
+BEGIN/COMMIT. OAuth remains ReadOnly. On that recorded source, DML, DDL and AUTOCOMMIT
+changes remained blocked. The UI retains command acknowledgement separately from transaction
+activity and verified data effects, and pauses automatic metadata after a control.
+See the [transaction contract](snowflake-sdk-transactions-design.md).
+The next required SQL-write increment follows the
+[reviewed DML proposal](snowflake-sdk-dml-design.md): explicit opt-in, strict AST
+admission, exact affected-count evidence and same-session recovery. It is a design,
+not enabled write support; broader DML and DDL remain required.
+
+Full `pnpm validate` passes: 659 frontend and 384 Rust tests, formatting,
+production frontend build, Rust checks and strict all-target/all-feature Clippy.
+The standard run reports 129 fixture tests ignored. Separate checks pass 31
+actual-helper/synthetic-SDK internal adapter tests, 31 adapter integration tests
+and 16 Studio/helper fixtures; all six affected cases also pass against the final
+source. Seven Studio policy/race tests and actual local SQLite profile restart/
+backup round trips pass. Three transaction browser flows pass, including keyboard
+approval and 31-second quiet-window checks; seven related UI cases passed in the
+prior run. These UI tests intercept RPCs and do not qualify account behavior.
+
+The rebuilt isolated SDK native app passes three runs, 20 check categories and
+ten cleanup cycles each, including typed IPC admission guards. The normal SDK
+macOS bundle passes packaging, strict ad-hoc signature/resource checks and guarded
+SDK startup: 224.14 MiB, 15,106 resource entries, no symlinks, zero authentication
+or SQL requests. All 324 frozen inputs stay unchanged. This source is committed
+as `929ae06`; it is unmerged, unpublished and not installed. No account transaction
+statements or writes are authorized or executed for this increment. Actual
+account effects, Developer ID/notarization and owner acceptance remain open.
+
+## Confirmed owner target (9 November 2026)
+
+The owner requires **Snowflake on macOS with SSO `authenticator=externalbrowser`**,
+and **everything DataGrip currently provides for that workflow**, explicitly
+including reads, writes, schema changes and multi-statement transactions.
+The [Snowflake implementation queue](snowflake-datagrip-replacement.md) records
+the required workflow inventory and qualification sequence.
+This is not a read-only-pilot or MVP target. All applicable capabilities in the
+official DataGrip baseline remain required until the owner explicitly excludes
+one; existing exclusions are blockers, not optional enhancements.
+
+The owner also requires the **latest stable DataGrip release** and Snowflake
+query results up to **1,000,000 rows**. Current comparison: DataGrip 2026.3,
+released 5 November 2026. Complete million-row paging/export with bounded memory
+is required. The [opt-in temporary result store](large-results.md) now targets
+one million rows with bounded memory/disk. Earlier actual PostgreSQL paging/export
+and browser/native preference checks pass; their source and artifact identities
+are recorded in the verification ledger.
+Actual Snowflake million-row behavior remains unqualified.
+
+Current Joinery implements explicit local-application OAuth/SQL API and stateful
+SDK external-browser profile routes. OAuth restricts SQL to reads. SDK typed controls, separately opted-in bounded
+SQL DML and separately opted-in generated table DDL use their dedicated review
+paths; broader SQL/session commands remain restricted. SDK same-session
+completion is implemented and locally qualified separately. A distinct
+revision-bound relation catalog/inspection/read-only preview is now implemented
+locally; see the [browsing contract](snowflake-sdk-browsing-design.md) and
+[current qualification](replacement-verification.md#sdk-relation-browsing-10-november-2026).
+Generic editable browsing, complete object/constraint inspection, broader writes/DDL
+and complete transaction behavior remain incomplete. Full account/session compatibility remains
+unqualified. These are primary replacement blockers. Local
+PostgreSQL/MySQL safety repairs remain useful application work but do not close
+Snowflake acceptance. External account qualification needs explicit non-production
+scope and permission for any billable activity/writes; no private DataGrip state
+or credentials will be inspected.
+
+The current [session observer](snowflake-sdk-session-observation.md) implements
+bounded, same-connection AUTOCOMMIT/policy/opaque-transaction observations,
+nullable roles and explicit Unknown states. Stable observations preserve cached
+plans; changed or unavailable observations revoke them. Local qualification
+passes; the [ledger](replacement-verification.md#sdk-session-observation-10-november-2026)
+records current tests, packaging and native evidence. Guarded SDK schema
+selection and explicit transaction controls are locally qualified. Account
+transaction effects remain unqualified.
+The separately approved helper observation ledger passes on the actual account. Its ten/eleven additional SQL
+executions are outside the earlier two-query canary approval.
+
+An [offline qualification manifest](snowflake-qualification-manifest.md) is now
+implemented and locally verified: 12 synthetic tests and actual CLI checks with
+synthetic identifiers, current source/runtime validation and private exclusive
+output. The distinct observer/options/scalar workflow has a complete 24-SQL
+ledger. A separately reviewed [execution boundary](snowflake-qualification-runner.md)
+now implements one-use approval consumption, source/runtime validation, bounded
+child lifecycle and private evidence. Its 18 runner tests and the complete
+113-test qualification suite pass. One freshly approved account attempt passed
+SSO and the two startup queries, then stopped on a definitive rejection of its
+session-context query. Logout, child reaping and temporary-state removal passed.
+The approval is consumed; no retry was attempted. Diagnose and locally repair
+the context query before preparing any new approved attempt. The SDK query now
+uses documented TO_VARCHAR text normalization and passes focused regression,
+independent review and full validation. A separately approved corrected attempt
+then passed all 24 statements on the actual account at 12:59:21 UTC, including
+context/settings, bounded schema discovery and scalar validation. See the
+[account pass and its limits](replacement-verification.md#corrected-account-readmetadata-qualification-10-november-2026).
+Normal application and complete account-workflow qualification remain open; see the
+[attempt evidence](replacement-verification.md#approved-account-qualification-attempt-10-november-2026).
+
+The [schema-switch transport foundation](snowflake-sdk-session-design.md) is
+implemented: strict read-only context, separate typed USE/readback operation,
+retained USE acknowledgement and conservative retirement on uncertainty. Full
+validation passes **627 frontend / 363 standard Rust** tests; 169 helper/guard/
+actual-SDK loopback tests, 33 process fixtures, 30 synthetic-SDK adapter fixtures
+and three focused browser workflows pass. Fresh normal SDK macOS packaging,
+ad-hoc signature and packaged hello/EOF startup pass with zero authentication/SQL;
+hidden-native checks will accompany the dependent IPC/UI slice. The revision-bound
+adapter, typed IPC and guarded UI selector are now implemented under the
+[current qualification](replacement-verification.md#sdk-guarded-schema-selection-10-november-2026).
+Account switch acceptance remains required and incomplete. No public writes,
+DDL or transaction actions are enabled by this foundation.
+
+The [explicit-transaction transport foundation](snowflake-sdk-transactions-design.md)
+is implemented and locally tested. It separates a boundary command's
+acknowledgement from verified database disposition. The dependent adapter now retains same-session rollback recovery when an aborted
+transaction rejects observer reads. The complete controls pass local application
+qualification on `929ae06`; actual transaction effects remain unqualified.
+
+At `c543ef5`, the transaction transport and synthetic-function policy repairs
+also pass fresh normal SDK macOS packaging, ad-hoc signing/resources and guarded
+hello/EOF startup with zero authentication/SQL. Three hidden native runs pass
+19 check categories and ten cleanup cycles each, with all 322 frozen inputs
+unchanged. This does not qualify actual transactions or enable their UI; current
+[artifact evidence](replacement-verification.md#transaction-increment-package-and-native-checks-10-november-2026)
+records the runnable local bundle and its limits.
+
+The preceding relation-browsing increment is locally qualified: **619 frontend / 338
+standard Rust** tests, **29** synthetic-SDK actual-helper adapter tests, the
+application/helper browsing flow, **11** focused browser workflows and an actual
+PostgreSQL context/transaction regression pass. Fresh normal SDK macOS packaging,
+signature/startup and **19** hidden native check categories with ten cleanup
+cycles pass. The ledger records source hashes, artifact identities and explicit
+account/installed-application limits. This does not qualify Snowflake account
+metadata or enable writes, DDL or transactions.
+
+The current [SDK application integration](snowflake-sdk-integration.md) adds explicit
+authentication modes, fixed native runtime selection, retained cleanup authority,
+pending launch permits and a reviewed opt-in resource-packaging route. Focused
+checks and combined validation pass (604 frontend / 297 standard Rust tests),
+as do 124 actual fixture tests and normal SDK resource-bearing macOS packaging,
+ad-hoc signature and packaged SDK hello/EOF startup. All 143 browser workflows and 19 hidden SDK native checks with ten cleanup
+cycles pass, as do two standalone PostgreSQL native recovery pairs.
+The subsequent [SDK same-session completion](snowflake-sdk-metadata-design.md)
+passes local qualification: 607 frontend / 312 standard Rust tests, 124 real-engine
+regressions, all 145 browser workflows, fresh SDK-bearing packaging/startup and
+19 hidden native check categories. Complete browsing/session context and the
+required write/transaction workflows remain in the queue. No target capability
+was made optional.
+A separately approved two-query SDK helper canary now passes actual SSO,
+configured context, session continuity, synthetic scalar values and local
+cleanup. The ledger preserves its first validator failure and corrected rerun;
+broader account SQL and writes still require concrete authorization.
+
+The default Snowflake SQL starter repair reproduces the exact script's
+`PolicyBlocked` failure in both policy and actual-helper tests, then adds strict
+Snowflake-only zero-argument `CURRENT_USER()` / `CURRENT_VERSION()` observers.
+Qualified/quoted functions, unknown functions and relative-history forms remain
+blocked. All 19 safety and 19 synthetic-SDK actual-helper tests pass, as do
+607 frontend / 314 standard Rust tests and full validation; see the
+[repair evidence](replacement-verification.md#snowflake-starter-repair-10-november-2026-local-checks).
+Complete browsing and authoritative session state remain required.
+
+The reviewed [browsing/session proposal](snowflake-sdk-browsing-design.md)
+defines the catalog → inspect → bounded preview → refresh workflow, qualified
+targets and truthful unknown transaction/context states. The separate
+[submission guard](snowflake-sdk-submit-guard-design.md) now implements a
+process-local boundary against SDK retransmission and passes local qualification:
+159 helper tests, 607 frontend / 314 standard Rust tests, focused browser flows,
+fresh SDK-bearing macOS packaging/startup and 19 hidden native check categories.
+The browsing contract now has a local catalog/column-inspection/preview
+implementation. Truthful session observation is now locally qualified;
+typed schema switching is now locally qualified under the
+reviewed [session observation/switching contract](snowflake-sdk-session-design.md);
+the complete browsing/session workflow is not finished. Neither is
+account qualified. The guard's actual pinned-SDK fault, redirect, proxy and cleanup
+evidence establishes a bounded submission foundation; that foundation alone
+must not enable writes or transactions.
+
+The preceding stateful transport foundation is in the repository: a pinned SDK helper
+passes 31 local tests (six use the actual SDK against loopback HTTP), and its
+Rust supervisor passes eight unit and 30 integration tests. The latter includes
+explicit cleanup receipts for unused/failed launches and actual child reaping.
+The read adapter adds 11 integration tests, including exact typed binding and
+terminal/cancellation ordering. Nine runtime-preparation tests, actual offline
+macOS arm64 staging and staged SDK startup pass; the stage is not an app bundle.
+The [driver design](snowflake-driver-design.md) records the observed SDK retry
+behavior and remaining gates. Those foundation counts predate the current profile/cleanup integration. Current
+resource packaging now passes locally. Normal packaged SSO/session behavior,
+writes and transactions retain separate open qualification gates.
+
+The preceding lifecycle increment added reserved connection-attempt identifiers, cancellation
+before/during authentication, exact retirement of late responses, and a native
+shutdown publication barrier. Focused UI tests pass; independent review exposed
+startup socket/task ownership gaps in PostgreSQL, SSH and MySQL. Their focused
+repairs and 124 actual database fixtures now pass. Combined qualification passes
+598 frontend / 262 standard Rust tests, all 141 browser workflows, three native
+smoke runs, two actual PostgreSQL recovery pairs and the normal ad-hoc macOS
+bundle. This is prerequisite lifecycle work for
+SDK integration; it does not implement externalbrowser SSO. See the
+[active verification record](replacement-verification.md#connection-startup-increment-10-november-2026-locally-qualified).
+The [connection ownership contract](connection-lifecycle.md) records cancellation,
+preflight, resource bounds and shutdown limits. The current SDK integration implements profile routing and retained cleanup;
+hidden native qualification now passes. SDK completion now has an implementation;
+complete session metadata, browsing and the required write/transaction workflows
+remain open.
+
+The active 9 November 2026 Goal and next qualification queue are in
+[daily replacement acceptance](replacement-acceptance.md). The required Snowflake externalbrowser/macOS target is confirmed above;
+historical slice completion does not establish daily replacement acceptance.
+
+The earlier P0 repairs cover query-result provenance, truthful bounded snapshots,
+abrupt backend restart, manual transaction outcomes and delayed result inspection.
+Their historical qualification remains below and in the ledger. The current
+identity-safety increment has separate, narrower evidence and open gates.
+The first pinned run passed validation, 91 fixtures, bundle and native smoke;
+116/118 browser workflows passed and the two failures were reproduced. The
+repaired runtime passed normal macOS packaging/signature, three isolated
+native processes and 120/120 browser workflows. The repairs have independent
+reviews; no material finding remains. The native-test-only follow-up `a1ab58b`
+passes full validation (542 frontend / 180 standard Rust), two isolated actual
+native close/reopen pairs against PostgreSQL, six runner acceptance tests and
+ordinary smoke compatibility. Pending drafts/preferences survive close, manual
+writes roll back and native invocation counters show no replay before observation.
+Normal packaged restart and credentials remain unqualified. Next: confirm
+required workflows and engine/authentication pairs, qualify authorized external combinations, and
+obtain the owner walkthrough acceptance. Follow the
+[verification ledger](replacement-verification.md); source presence and old
+slice test counts do not close these gates.
+
+The reviewed-writer safety follow-up repairs synchronous PostgreSQL retirement,
+blocks queued writes after session closure, and fixes CSV unknown-outcome text
+and editor retirement. Real regressions reproduced the defects before repair;
+independent reviews found no material issues. Validation (545 frontend / 180
+standard Rust), 103 real fixtures and four new fault browser workflows pass.
+Combined packaging/signature, two native recovery pairs, ordinary smoke and all
+124 browser workflows pass for that earlier source. A separate diagnostic on
+`ff59ca6` reproduced 27 drop/recreate identity failures (nine each on PostgreSQL,
+MySQL and MariaDB), including deletes, empty-result inserts and CSV between batch
+commits. The PostgreSQL identity repair is committed locally and the current
+MySQL/MariaDB increment implements bounded retained metadata-lock guards,
+fail-closed original-generation checks and exact CSV preview ownership.
+Preliminary integrated validation passed 580 frontend / 193 standard Rust,
+123 real fixtures, 27/27 strict three-engine identity scenarios and all 137 browser
+workflows. A later actual PostgreSQL regression exposed tokenless CSV association
+with a newer preview; the legacy path is removed and named IPC requires the exact
+token. Verified TLS-over-SSH now exercises actual guarded browse and approved
+writes on both MySQL and MariaDB. Final source checks for local code `997680e`
+pass 581 frontend / 193 standard Rust, 124 actual fixtures, all 27 strict scenarios
+and all 137 browser workflows. Clean-source `6218e60` hidden native recovery,
+ordinary smoke and normal ad-hoc macOS bundle qualification also pass; see the
+ledger for artifact identities and limits. Historical `5762ee5` native/bundle
+qualification belongs to the earlier PostgreSQL increment. See the
+[identity investigation](table-identity-safety.md) and
+[retained-guard contract](mysql-table-identity-design.md).
+
+Next after local integration: implement the confirmed Snowflake externalbrowser
+stateful transport and million-row result path; qualify all applicable DataGrip
+2026.3 capabilities, performance and accessibility;
+complete normal packaged restart/credentials and the hands-on walkthrough.
+The Goal remains active until acceptance. No push, installation or publication
+is authorized. The owner authorized reuse of the existing Snowflake connection;
+only its non-secret configuration was inspected. Other private application state
+and all external query/write qualification remain outside that authorization.
+
 This delivery sequence supplements [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 The [feature matrix](datagrip-feature-matrix.md) records engineering evidence;
 the owner-private [project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)

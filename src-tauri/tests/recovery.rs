@@ -31,14 +31,18 @@ fn recovery_writer() {
     .unwrap();
     db.set_setting("recovery-fixture", "committed").unwrap();
     db.record_history(&HistoryEntry {
+        provenance: HistoryProvenance::Recorded,
+        execution_summary: None,
+        snowflake_dml: None,
+        snowflake_ddl: None,
         id: "committed-run".into(),
         connection_id: "fixture".into(),
         connection_name: "Disposable recovery fixture".into(),
         started_at: now_ms(),
         sql: None,
         statement_count: 1,
-        status: RunStatus::Completed,
-        elapsed_ms: 1,
+        status: Some(RunStatus::Completed),
+        elapsed_ms: Some(1),
     })
     .unwrap();
     db.audit("fixture", "execute", "synthetic-digest", "Completed")
@@ -76,7 +80,7 @@ fn assert_recovered(root: &Path) {
     let history = db.history("").unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, "committed-run");
-    assert_eq!(history[0].status, RunStatus::Completed);
+    assert_eq!(history[0].status, Some(RunStatus::Completed));
     assert!(history[0].sql.is_none());
     assert_eq!(db.audit_log().unwrap().len(), 1);
     let conn = rusqlite::Connection::open(root.join("joinery.sqlite")).unwrap();

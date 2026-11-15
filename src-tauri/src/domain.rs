@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+pub use crate::console_contract::*;
+pub use crate::relation_inspection::*;
+
 pub use crate::ddl::{
     DdlStatement, IndexConstraintAction, IndexConstraintPreview, SchemaDdlPlan, TableColumnDraft,
     TableMaintenanceAction, TableMaintenancePreview, TableObjectAction, TableObjectPreview,
@@ -113,9 +116,60 @@ pub struct ConnectionProfile {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SnowflakeConfig {
+    #[serde(default)]
+    pub authentication: SnowflakeAuthentication,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_dml: bool,
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_ddl: bool,
+    /// Separate consent for exact owner-authored console SQL. Generated DML/DDL
+    /// permissions and legacy profiles must never implicitly grant this.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_console: bool,
+    /// Per-unit execution/result-delivery budget; absent legacy profiles retain 65 seconds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_console_timeout"
+    )]
+    #[ts(optional)]
+    pub reviewed_console_timeout_seconds: Option<u32>,
     pub role: String,
     pub warehouse: String,
     pub schema: String,
+}
+
+impl SnowflakeConfig {
+    pub fn effective_console_timeout_seconds(&self) -> AppResult<u32> {
+        let seconds = self.reviewed_console_timeout_seconds.unwrap_or(65);
+        if !(1..=86_400).contains(&seconds) {
+            return Err(AppError::invalid(
+                "Reviewed console timeout must be between 1 and 86400 seconds",
+            ));
+        }
+        Ok(seconds)
+    }
+}
+
+fn deserialize_console_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    let seconds = u32::deserialize(deserializer)?;
+    if !(1..=86_400).contains(&seconds) {
+        return Err(serde::de::Error::custom("Invalid reviewed console timeout"));
+    }
+    Ok(Some(seconds))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeAuthentication {
+    #[default]
+    LocalApplicationOauth,
+    ExternalBrowser,
 }
 
 // Secret inputs deliberately do not implement Debug and are never persisted with profiles.
@@ -137,6 +191,10 @@ pub struct SessionInfo {
     pub latency_ms: u32,
     pub encrypted: bool,
     pub capabilities: EngineCapabilities,
+    /// Permanent reviewed-console ownership; background SQL must stay paused.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub console_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -144,8 +202,16 @@ pub struct SessionInfo {
 pub struct EngineCapabilities {
     pub sql: bool,
     pub transactions: bool,
+    /// Reviewed explicit boundaries, independently of AUTOCOMMIT mode changes.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub explicit_transaction_controls: bool,
     pub cancellation: bool,
     pub table_browsing: bool,
+    /// Session-bound relation inspection and bounded read-only previews.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub relation_browsing: bool,
     pub table_editing: bool,
     /// Server-side typed sorting and filtering while browsing tables.
     pub table_filtering: bool,
@@ -166,6 +232,14 @@ pub struct EngineCapabilities {
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
     pub ddl_editing: bool,
+    /// Narrow reviewed generated table DDL on the Snowflake SDK route.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub snowflake_reviewed_ddl: bool,
+    /// Reviewed native Snowflake relation grid editing and manual batch transactions.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub snowflake_grid_editing: bool,
     /// Active lock-wait and blocker chain inspection.
     #[serde(default)]
     #[ts(optional, as = "Option<bool>")]
@@ -365,6 +439,18 @@ pub struct StatementPlan {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedPlan {
+    /// Dedicated typed execution route; never a generic row-count job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_dml: bool,
+    /// Dedicated typed reviewed Snowflake DDL route; never a generic SQL job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_ddl: bool,
+    /// Dedicated typed reviewed Snowflake relation grid route; never a generic SQL job.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub reviewed_snowflake_grid: bool,
     pub id: String,
     pub session_id: String,
     pub statements: Vec<StatementPlan>,
@@ -377,6 +463,10 @@ pub struct PreparedPlan {
     pub requires_approval: bool,
     pub requires_passphrase: bool,
     pub confirmation_text: Option<String>,
+    /// Separate exact-target confirmation (e.g. DROP TABLE), independent of policy confirmation_text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_confirmation_text: Option<String>,
     pub warnings: Vec<String>,
     #[ts(type = "number")]
     pub expires_at: u64,
@@ -944,9 +1034,31 @@ pub struct TablePage {
 #[serde(rename_all = "camelCase")]
 pub enum RunStatus {
     Completed,
+    Stopped,
     Failed,
     Cancelled,
     OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExecutionStopReason {
+    ResultLimit,
+    Cancelled,
+    Failed,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionSummary {
+    pub planned: usize,
+    /// Local driver invocations, not proof of remote SQL submission.
+    pub attempted: usize,
+    /// Successful driver returns, not proof of commit or complete retention.
+    pub completed: usize,
+    pub not_attempted: usize,
+    pub stop_reason: Option<ExecutionStopReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1005,6 +1117,9 @@ pub enum QueryEvent {
         run_id: String,
         status: RunStatus,
         elapsed_ms: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        execution_summary: Option<ExecutionSummary>,
     },
 }
 
@@ -1143,9 +1258,62 @@ pub struct LockWaitSnapshot {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryProvenance {
+    #[default]
+    Recorded,
+    Admitted,
+    Interrupted,
+    RestoreRecovered,
+}
+
+// Unit-enum Deserialize also accepts {"variant":null}. Persisted lifecycle
+// provenance has a closed string representation shared with summary projections.
+impl<'de> Deserialize<'de> for HistoryProvenance {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "recorded" => Ok(Self::Recorded),
+            "admitted" => Ok(Self::Admitted),
+            "interrupted" => Ok(Self::Interrupted),
+            "restoreRecovered" => Ok(Self::RestoreRecovered),
+            _ => Err(serde::de::Error::custom("Invalid history provenance")),
+        }
+    }
+}
+
+fn validate_history_lifecycle(
+    provenance: HistoryProvenance,
+    status: Option<RunStatus>,
+    elapsed_ms: Option<u32>,
+    has_outcome_evidence: bool,
+) -> AppResult<()> {
+    if (provenance == HistoryProvenance::Recorded && status.is_none())
+        || (status.is_none() && elapsed_ms.is_some())
+        || (provenance == HistoryProvenance::Admitted
+            && (status.is_some() || elapsed_ms.is_some() || has_outcome_evidence))
+    {
+        return Err(AppError::invalid("History lifecycle is inconsistent"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryEntry {
+    /// Legacy entries predate lifecycle provenance and contain recorded outcomes.
+    #[serde(default)]
+    pub provenance: HistoryProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_summary: Option<ExecutionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_dml: Option<SnowflakeDmlEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_ddl: Option<SnowflakeDdlEvidence>,
     pub id: String,
     pub connection_id: String,
     pub connection_name: String,
@@ -1153,8 +1321,84 @@ pub struct HistoryEntry {
     pub started_at: u64,
     pub sql: Option<String>,
     pub statement_count: usize,
-    pub status: RunStatus,
-    pub elapsed_ms: u32,
+    pub status: Option<RunStatus>,
+    pub elapsed_ms: Option<u32>,
+}
+
+impl HistoryEntry {
+    pub(crate) fn validate_lifecycle(&self) -> AppResult<()> {
+        validate_history_lifecycle(
+            self.provenance,
+            self.status,
+            self.elapsed_ms,
+            self.execution_summary.is_some()
+                || self.snowflake_dml.is_some()
+                || self.snowflake_ddl.is_some(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryCursor {
+    #[ts(type = "number")]
+    pub started_at: u64,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryPageRequest {
+    pub search: String,
+    pub cursor: Option<HistoryCursor>,
+    pub limit: u32,
+}
+
+/// Bounded SQL preview; opening a row explicitly retrieves its current detail.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HistorySummary {
+    #[serde(default)]
+    pub provenance: HistoryProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub execution_summary: Option<ExecutionSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_dml: Option<SnowflakeDmlEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_ddl: Option<SnowflakeDdlEvidence>,
+    pub id: String,
+    pub connection_id: String,
+    pub connection_name: String,
+    #[ts(type = "number")]
+    pub started_at: u64,
+    pub sql_preview: Option<String>,
+    pub sql_stored: bool,
+    pub statement_count: usize,
+    pub status: Option<RunStatus>,
+    pub elapsed_ms: Option<u32>,
+}
+
+impl HistorySummary {
+    pub(crate) fn validate_lifecycle(&self) -> AppResult<()> {
+        validate_history_lifecycle(
+            self.provenance,
+            self.status,
+            self.elapsed_ms,
+            self.execution_summary.is_some()
+                || self.snowflake_dml.is_some()
+                || self.snowflake_ddl.is_some(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub entries: Vec<HistorySummary>,
+    pub next_cursor: Option<HistoryCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1178,6 +1422,84 @@ pub struct MetadataBackup {
     #[ts(type = "number")]
     pub size_bytes: u64,
     pub digest: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryBackupFormat {
+    LegacySqlite,
+    EncryptedV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryBackup {
+    pub metadata: MetadataBackup,
+    pub format: RecoveryBackupFormat,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryPhase {
+    Staging,
+    Validating,
+    Encrypting,
+    Decrypting,
+    Merging,
+    CreatingUndo,
+    Replacing,
+    Finalizing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryProgress {
+    pub phase: RecoveryPhase,
+    #[ts(type = "number")]
+    pub completed_bytes: u64,
+    #[ts(type = "number | null")]
+    pub total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryOperationKind {
+    Create,
+    Restore,
+    Import,
+    Export,
+}
+
+/// Secret input travels separately and is never included in operation status.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryRequest {
+    pub kind: RecoveryOperationKind,
+    pub backup_id: Option<String>,
+    pub digest: Option<String>,
+    pub confirmation: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecoveryOperationState {
+    Running,
+    Succeeded,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryOperation {
+    pub id: String,
+    /// Absent when reconciling an identifier whose process-local status was lost.
+    pub kind: Option<RecoveryOperationKind>,
+    pub state: RecoveryOperationState,
+    pub progress: RecoveryProgress,
+    pub cancellation_requested: bool,
+    pub backup: Option<RecoveryBackup>,
+    pub error: Option<AppError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1332,6 +1654,10 @@ pub struct Bootstrap {
     pub supported_engines: Vec<EngineKind>,
     pub result_budget_bytes: usize,
     pub row_limit: usize,
+    /// Opt-in anonymous temporary result storage; applies to new results.
+    #[serde(default)]
+    #[ts(optional, as = "Option<bool>")]
+    pub temporary_result_storage: bool,
     pub workspace: Option<SavedWorkspace>,
     #[serde(default)]
     pub saved_queries: Vec<SavedQuery>,
@@ -1388,6 +1714,9 @@ pub struct SavedWorkspace {
 #[serde(rename_all = "camelCase")]
 pub struct ResourceUsage {
     pub retained_bytes: usize,
+    #[serde(default)]
+    #[ts(optional, as = "Option<usize>")]
+    pub temporary_result_bytes: usize,
     pub result_count: usize,
     pub session_count: usize,
     pub active_runs: usize,
@@ -1427,6 +1756,11 @@ pub struct AppError {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<ErrorLocation>")]
     pub location: Option<Box<ErrorLocation>>,
+    /// The observed editor context is no longer valid. This is distinct from
+    /// an error reading one table, which must preserve other cached columns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub completion_invalidated: Option<bool>,
 }
 
 impl AppError {
@@ -1435,10 +1769,15 @@ impl AppError {
             code,
             message: message.into(),
             location: None,
+            completion_invalidated: None,
         }
     }
     pub fn with_location(mut self, location: ErrorLocation) -> Self {
         self.location = Some(Box::new(location));
+        self
+    }
+    pub fn with_completion_invalidated(mut self) -> Self {
+        self.completion_invalidated = Some(true);
         self
     }
     pub fn invalid(message: impl Into<String>) -> Self {
@@ -1505,6 +1844,10 @@ pub struct CompletionIdentity {
     pub role: String,
     pub search_path: Vec<String>,
     pub case_sensitive_table_names: Option<bool>,
+    /// Engine-specific canonical identity beyond the common display fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_fingerprint: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -1522,6 +1865,8 @@ pub enum TransactionMode {
     #[default]
     AutoCommit,
     Manual,
+    /// Observation only; never a valid requested transaction mode.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1531,6 +1876,464 @@ pub enum TransactionState {
     Idle,
     InTransaction,
     Failed,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionUsability {
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ExplicitTransactionAction {
+    Begin,
+    Commit,
+    Rollback,
+}
+
+impl ExplicitTransactionAction {
+    pub fn sql(self) -> &'static str {
+        match self {
+            Self::Begin => crate::drivers::snowflake_sql_contract::BEGIN_SQL,
+            Self::Commit => crate::drivers::snowflake_sql_contract::COMMIT_SQL,
+            Self::Rollback => crate::drivers::snowflake_sql_contract::ROLLBACK_SQL,
+        }
+    }
+}
+
+/// Opaque one-use authority; never a claim about transaction usability/effects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TransactionControlAuthority {
+    Observed {
+        revision: String,
+        #[serde(rename = "allowedActions")]
+        allowed_actions: Vec<ExplicitTransactionAction>,
+    },
+    RollbackOnly {
+        revision: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TransactionControlRequest {
+    pub action: ExplicitTransactionAction,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum TransactionBoundaryOutcome {
+    Acknowledged,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlKind {
+    Insert,
+    Update,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDmlRequest {
+    pub sql: String,
+    #[serde(default)]
+    pub parameters: Vec<QueryParamInput>,
+    /// One-use coherent observed authority; rollback-only authority never admits DML.
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlOutcome {
+    Succeeded,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDmlSummaryStatus {
+    Validated,
+    Unavailable,
+}
+
+/// Counts are decimal strings, never rounded JavaScript numbers or status-row counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlSummary {
+    pub status: SnowflakeDmlSummaryStatus,
+    pub affected_rows: Option<String>,
+    pub multi_joined_rows: Option<String>,
+}
+
+impl SnowflakeDmlSummary {
+    pub fn unavailable() -> Self {
+        Self {
+            status: SnowflakeDmlSummaryStatus::Unavailable,
+            affected_rows: None,
+            multi_joined_rows: None,
+        }
+    }
+}
+
+/// Durable statement evidence; excludes parameters and transient session authority.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlEvidence {
+    pub kind: SnowflakeDmlKind,
+    pub statement_outcome: SnowflakeDmlOutcome,
+    pub summary: SnowflakeDmlSummary,
+    pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDmlResult {
+    pub kind: SnowflakeDmlKind,
+    pub statement_outcome: SnowflakeDmlOutcome,
+    pub summary: SnowflakeDmlSummary,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlKind {
+    CreateTable,
+    AddColumn,
+    AlterColumnNullability,
+    RenameColumn,
+    DropColumn,
+    DropTable,
+    CreateView,
+    DropView,
+}
+
+impl SnowflakeDdlKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CreateTable => "createTable",
+            Self::AddColumn => "addColumn",
+            Self::AlterColumnNullability => "alterColumnNullability",
+            Self::RenameColumn => "renameColumn",
+            Self::DropColumn => "dropColumn",
+            Self::DropTable => "dropTable",
+            Self::CreateView => "createView",
+            Self::DropView => "dropView",
+        }
+    }
+}
+
+impl From<crate::safety::snowflake_ddl::Kind> for SnowflakeDdlKind {
+    fn from(kind: crate::safety::snowflake_ddl::Kind) -> Self {
+        match kind {
+            crate::safety::snowflake_ddl::Kind::CreateTable => Self::CreateTable,
+            crate::safety::snowflake_ddl::Kind::AddColumn => Self::AddColumn,
+            crate::safety::snowflake_ddl::Kind::DropTable => Self::DropTable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlColumnDraft {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+}
+
+impl SnowflakeDdlColumnDraft {
+    pub fn to_table_column_draft(&self) -> TableColumnDraft {
+        TableColumnDraft {
+            name: self.name.clone(),
+            data_type: self.data_type.clone(),
+            nullable: self.nullable,
+            default_expression: None,
+            auto_increment: false,
+            primary_key: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SnowflakeDdlAction {
+    CreateTable {
+        database: String,
+        schema: String,
+        name: String,
+        columns: Vec<SnowflakeDdlColumnDraft>,
+    },
+    AddColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column: SnowflakeDdlColumnDraft,
+    },
+    AlterColumnNullability {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+        nullable: bool,
+    },
+    RenameColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+        new_name: String,
+    },
+    DropColumn {
+        browse_revision: String,
+        target_id: String,
+        inspection_revision: String,
+        column_name: String,
+    },
+    DropTable {
+        browse_revision: String,
+        target_id: String,
+    },
+    CreateView {
+        database: String,
+        schema: String,
+        name: String,
+        query_sql: String,
+    },
+    DropView {
+        browse_revision: String,
+        target_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlPreflightRequest {
+    pub session_id: String,
+    pub action: SnowflakeDdlAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlPreflightResponse {
+    pub revision: String,
+    pub kind: SnowflakeDdlKind,
+    pub database: String,
+    pub schema: String,
+    pub name: String,
+    pub qualified_target: String,
+    pub sql: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeDdlRequest {
+    pub revision: String,
+    pub action: SnowflakeDdlAction,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlOutcome {
+    Succeeded,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeDdlSummaryStatus {
+    Acknowledged,
+    Unavailable,
+}
+
+/// Durable statement evidence for reviewed Snowflake DDL; never claims affected rows or rollbackability.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDdlEvidence {
+    pub kind: SnowflakeDdlKind,
+    pub qualified_target: String,
+    pub statement_outcome: SnowflakeDdlOutcome,
+    pub summary_status: SnowflakeDdlSummaryStatus,
+    pub catalog_reconciliation_required: bool,
+    pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeDdlResult {
+    pub kind: SnowflakeDdlKind,
+    pub qualified_target: String,
+    pub statement_outcome: SnowflakeDdlOutcome,
+    pub summary_status: SnowflakeDdlSummaryStatus,
+    pub catalog_reconciliation_required: bool,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SnowflakeGridCellInput {
+    Default,
+    Null,
+    Text { value: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeGridColumnValue {
+    pub column_index: usize,
+    pub value: SnowflakeGridCellInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SnowflakeGridMutation {
+    Insert {
+        values: Vec<SnowflakeGridColumnValue>,
+    },
+    Update {
+        #[serde(rename = "rowIndex")]
+        row_index: usize,
+        changes: Vec<SnowflakeGridColumnValue>,
+    },
+    Delete {
+        #[serde(rename = "rowIndex")]
+        row_index: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridMode {
+    Automatic,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareSnowflakeGridEditsRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub transaction_id: Option<String>,
+    pub preview: PreviewRelationRequest,
+    pub snapshot_id: String,
+    pub mutations: Vec<SnowflakeGridMutation>,
+    pub mode: SnowflakeGridMode,
+    #[serde(default)]
+    pub rollback_prior: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridFinishAction {
+    Commit,
+    Rollback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeGridBatchOutcome {
+    Committed,
+    Pending,
+    RolledBack,
+    Rejected,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeGridResult {
+    pub session_id: String,
+    pub operation_id: String,
+    pub outcome: SnowflakeGridBatchOutcome,
+    pub transaction_id: Option<String>,
+    pub recording_error: Option<String>,
+    pub metadata_refresh_required: bool,
+    pub retired: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionControlResult {
+    pub action: ExplicitTransactionAction,
+    pub boundary_outcome: TransactionBoundaryOutcome,
+    pub state: SessionRuntimeState,
+    pub retired: bool,
+    pub error: Option<AppError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum TransactionObservation {
+    Unavailable,
+    Observed {
+        #[serde(rename = "transactionId")]
+        transaction_id: Option<String>,
+        #[serde(rename = "abortOnError")]
+        abort_on_error: bool,
+        usability: TransactionUsability,
+    },
+}
+
+impl<'de> Deserialize<'de> for TransactionObservation {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(tag = "status", rename_all = "camelCase", deny_unknown_fields)]
+        enum Wire {
+            Unavailable {},
+            Observed {
+                #[serde(
+                    rename = "transactionId",
+                    deserialize_with = "deserialize_required_nullable"
+                )]
+                transaction_id: Option<String>,
+                #[serde(rename = "abortOnError")]
+                abort_on_error: bool,
+                usability: TransactionUsability,
+            },
+        }
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Unavailable {} => Self::Unavailable,
+            Wire::Observed {
+                transaction_id,
+                abort_on_error,
+                usability,
+            } => Self::Observed {
+                transaction_id,
+                abort_on_error,
+                usability,
+            },
+        })
+    }
+}
+
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1551,8 +2354,20 @@ pub struct SessionRuntimeState {
     pub context_kind: SessionContextKind,
     pub active_context: Option<String>,
     pub database: String,
-    pub role: String,
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warehouse: Option<String>,
     pub search_path: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transaction_observation: Option<TransactionObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub transaction_control_authority: Option<TransactionControlAuthority>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1560,6 +2375,65 @@ pub struct SessionRuntimeState {
 pub struct SessionContextOptions {
     pub state: SessionRuntimeState,
     pub available: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub revision: Option<String>,
+}
+
+/// One-use authority for a schema selected from this session's observed options.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchSchemaRequest {
+    pub revision: String,
+    pub database: String,
+    pub schema: String,
+    pub context_fingerprint: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeContextCatalog {
+    pub state: SessionRuntimeState,
+    pub available_roles: Vec<String>,
+    pub available_warehouses: Vec<String>,
+    pub available_databases: Vec<String>,
+    pub available_schemas: Vec<String>,
+    pub revision: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SnowflakeContextTarget {
+    Role {
+        role: String,
+    },
+    Warehouse {
+        warehouse: String,
+    },
+    Database {
+        database: String,
+        #[serde(default)]
+        #[ts(optional)]
+        schema: Option<String>,
+    },
+    Schema {
+        database: String,
+        schema: String,
+    },
+}
+
+/// One-use authority for a Snowflake role, warehouse, database, or schema switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchSnowflakeContextRequest {
+    pub revision: String,
+    pub context_fingerprint: String,
+    pub target: SnowflakeContextTarget,
 }
 
 fn default_true() -> bool {
@@ -1767,6 +2641,8 @@ pub struct CsvImportIssue {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CsvImportPreview {
+    #[serde(default)]
+    pub preview_token: Option<String>,
     pub file_name: String,
     pub headers: Vec<String>,
     pub mappings: Vec<CsvColumnMapping>,
@@ -1900,6 +2776,75 @@ pub struct DataCompareReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_switch_requires_exact_string_authority_fields() {
+        let request = serde_json::json!({
+            "revision":"opaque-revision", "database":"DB",
+            "schema":"Selected.Schema", "contextFingerprint":"opaque-fingerprint"
+        });
+        let parsed: SwitchSchemaRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.schema, "Selected.Schema");
+        for key in ["revision", "database", "schema", "contextFingerprint"] {
+            let mut missing = request.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<SwitchSchemaRequest>(missing).is_err());
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!(1),
+                serde_json::json!({}),
+            ] {
+                let mut wrong_type = request.clone();
+                wrong_type[key] = invalid;
+                assert!(serde_json::from_value::<SwitchSchemaRequest>(wrong_type).is_err());
+            }
+        }
+        let mut extra = request;
+        extra["sql"] = serde_json::json!("USE SCHEMA OTHER");
+        assert!(serde_json::from_value::<SwitchSchemaRequest>(extra).is_err());
+    }
+
+    #[test]
+    fn transaction_observation_requires_complete_tagged_evidence() {
+        let observed = serde_json::json!({
+            "status":"observed", "transactionId":null,
+            "abortOnError":true, "usability":"unknown"
+        });
+        assert_eq!(
+            serde_json::from_value::<TransactionObservation>(observed.clone()).unwrap(),
+            TransactionObservation::Observed {
+                transaction_id: None,
+                abort_on_error: true,
+                usability: TransactionUsability::Unknown
+            }
+        );
+        for key in ["transactionId", "abortOnError", "usability"] {
+            let mut incomplete = observed.clone();
+            incomplete.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<TransactionObservation>(incomplete).is_err(),
+                "{key}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<TransactionObservation>(
+                serde_json::json!({"status":"unavailable","transactionId":null})
+            )
+            .is_err()
+        );
+        let opaque = TransactionObservation::Observed {
+            transaction_id: Some("18446744073709551616:opaque".into()),
+            abort_on_error: false,
+            usability: TransactionUsability::Unknown,
+        };
+        assert_eq!(
+            serde_json::from_value::<TransactionObservation>(
+                serde_json::to_value(&opaque).unwrap()
+            )
+            .unwrap(),
+            opaque
+        );
+    }
 
     fn diagram_column(name: &str, primary_key: bool) -> DiagramColumn {
         DiagramColumn {
@@ -2234,5 +3179,47 @@ mod tests {
         assert_eq!(edges[0].object, mutual_view);
         assert_eq!(edges[0].relation, "view");
         assert_eq!(edges[1].object, fn_int);
+    }
+
+    #[test]
+    fn snowflake_ddl_dtos_are_recursively_closed() {
+        let create = serde_json::json!({
+            "sessionId": "session-1",
+            "action": {
+                "kind": "createTable",
+                "database": "DB",
+                "schema": "PUBLIC",
+                "name": "ORDERS",
+                "columns": [
+                    {"name": "ID", "dataType": "NUMBER(38,0)", "nullable": false}
+                ]
+            }
+        });
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(create.clone()).is_ok());
+        let mut extra_outer = create.clone();
+        extra_outer["sql"] = serde_json::json!("CREATE TABLE T (ID INT)");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_outer).is_err());
+
+        let mut extra_action = create.clone();
+        extra_action["action"]["comment"] = serde_json::json!("not allowed");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_action).is_err());
+
+        let mut extra_column = create;
+        extra_column["action"]["columns"][0]["defaultExpression"] = serde_json::json!("1");
+        assert!(serde_json::from_value::<SnowflakeDdlPreflightRequest>(extra_column).is_err());
+
+        let request = serde_json::json!({
+            "revision": "rev-1",
+            "action": {
+                "kind": "dropTable",
+                "browseRevision": "browse-1",
+                "targetId": "target-1"
+            },
+            "sql": "DROP TABLE \"DB\".\"PUBLIC\".\"ORDERS\" RESTRICT"
+        });
+        assert!(serde_json::from_value::<SnowflakeDdlRequest>(request.clone()).is_ok());
+        let mut cascade = request;
+        cascade["action"]["cascade"] = serde_json::json!(false);
+        assert!(serde_json::from_value::<SnowflakeDdlRequest>(cascade).is_err());
     }
 }

@@ -57,6 +57,7 @@ impl Snowflake {
             role: format!("{user} ({})", self.role),
             search_path,
             case_sensitive_table_names: None,
+            context_fingerprint: None,
         })
     }
 

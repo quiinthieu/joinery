@@ -44,7 +44,6 @@ import type {
   EngineKind,
   ObjectDetails,
   QueryParamSlot,
-  SessionContextOptions,
   TableInfo,
   TableRef,
   TableSchema,
@@ -57,7 +56,12 @@ import {
   sqlFormatterLanguage,
   type EditorFormatJob,
 } from "../../data/sql-format";
-import { useStudio } from "../../state/studio";
+import {
+  useStudio,
+  isSnowflakeConsoleSession,
+  revokeSchemaSelectionBeforeWork,
+  observeTemplateSessionContext,
+} from "../../state/studio";
 import { selectedStatement, selectedStatementSlice } from "./sql-context";
 import {
   adjacentStatement,
@@ -85,6 +89,15 @@ import { CompletionSession } from "./completion-session";
 import { effectiveSqlSnippets } from "./sql-snippets";
 import { applySqlTemplate } from "./sql-template-context";
 import { SqlTemplateDialog } from "./SqlTemplateDialog";
+
+function isCompletionInvalidated(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "completionInvalidated" in error &&
+    (error as { completionInvalidated?: unknown }).completionInvalidated === true
+  );
+}
 
 export interface EditorHandle {
   selection(): string;
@@ -325,6 +338,34 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const availableContexts = useStudio((s) =>
     props.sessionId ? s.sessionContexts[props.sessionId] : undefined,
   );
+  const contextAuthority = useStudio((s) =>
+    props.sessionId ? s.sessionContextAuthorities[props.sessionId] : undefined,
+  );
+  const snowflakeContextAuthority = useStudio((s) =>
+    props.sessionId ? s.snowflakeContextAuthorities[props.sessionId] : undefined,
+  );
+  const snowflakeContextExpanded = useStudio((s) =>
+    props.sessionId ? s.snowflakeContextExpanded[props.sessionId] === true : false,
+  );
+  const contextSwitchPending = useStudio((s) =>
+    props.sessionId ? s.sessionContextSwitching[props.sessionId] === true : false,
+  );
+  const transactionPending = useStudio((s) =>
+    props.sessionId ? s.sessionTransactionPending[props.sessionId] === true : false,
+  );
+  const rollbackOnly = runtimeState?.transactionControlAuthority?.status === "rollbackOnly";
+  const metadataRefreshRequired = useStudio((s) =>
+    props.sessionId ? s.sessionMetadataRefreshRequired[props.sessionId] === true : false,
+  );
+  const consoleMode = useStudio(
+    (s) => !!props.sessionId && isSnowflakeConsoleSession(s, props.sessionId),
+  );
+  const metadataBlocked =
+    consoleMode ||
+    contextSwitchPending ||
+    transactionPending ||
+    rollbackOnly ||
+    metadataRefreshRequired;
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
@@ -352,7 +393,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   };
   const configure = () => {
     const config = latest.current;
-    const snapshot = liveRef.current;
+    const snapshot =
+      config.sessionId && isSnowflakeConsoleSession(useStudio.getState(), config.sessionId)
+        ? null
+        : liveRef.current;
     if (config.engine === "redis") return config;
     return {
       ...config,
@@ -364,7 +408,33 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       unqualifiedTables: snapshot?.unqualifiedTables,
       caseSensitiveTableNames: snapshot?.identity.caseSensitiveTableNames ?? undefined,
       contextRevision: snapshot?.revision,
+      contextFingerprint: snapshot?.identity.contextFingerprint ?? null,
     };
+  };
+  const invalidateCompletionContext = (
+    sessionId: string,
+    contextRevision: string,
+    cache: Map<string, TableSchema>,
+    error: unknown,
+  ) => {
+    if (
+      latest.current.sessionId !== sessionId ||
+      liveRef.current?.revision !== contextRevision ||
+      schemaCacheRef.current !== cache
+    )
+      return;
+    clearNavigation();
+    liveRef.current = null;
+    liveObjectsRef.current = [];
+    schemaCacheRef.current = new Map();
+    contextLoadRef.current = null;
+    setLive(null);
+    setContextError(messageOf(error));
+    completion.current?.configure(configure());
+    if (view.current) {
+      closeCompletion(view.current);
+      completion.current?.update(view.current.state);
+    }
   };
   const host = useRef<HTMLDivElement>(null),
     view = useRef<EditorView | null>(null),
@@ -384,13 +454,21 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     const cache = schemaCacheRef.current;
     const cached = cache.get(key);
     if (cached) return cached;
-    const loaded = contextRevision
-      ? await client.call<TableSchema>("completion_schema", {
-          sessionId,
-          table,
-          revision: contextRevision,
-        })
-      : await client.call<TableSchema>("table_schema", { sessionId, table });
+    let loaded: TableSchema;
+    try {
+      revokeSchemaSelectionBeforeWork(sessionId);
+      loaded = contextRevision
+        ? await client.call<TableSchema>("completion_schema", {
+            sessionId,
+            table,
+            revision: contextRevision,
+          })
+        : await client.call<TableSchema>("table_schema", { sessionId, table });
+    } catch (error) {
+      if (contextRevision && isCompletionInvalidated(error))
+        invalidateCompletionContext(sessionId, contextRevision, cache, error);
+      throw error;
+    }
     if (
       schemaCacheRef.current === cache &&
       latest.current.sessionId === sessionId &&
@@ -402,11 +480,32 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
 
   const buildSymbolContext = (): SqlSymbolContext => {
     const config = latest.current;
-    const snapshot = liveRef.current;
+    const state = useStudio.getState();
+    const snapshot =
+      config.sessionId && isSnowflakeConsoleSession(state, config.sessionId)
+        ? null
+        : liveRef.current;
+    let databaseObjects = liveObjectsRef.current;
+    if (databaseObjects.length === 0 && config.sessionId) {
+      for (const [connId, info] of Object.entries(state.sessions)) {
+        if (info.id === config.sessionId) {
+          databaseObjects = state.objects[connId] ?? [];
+          break;
+        }
+      }
+      if (databaseObjects.length === 0) {
+        for (const [connId, entries] of Object.entries(state.sessionPool)) {
+          if (entries.some((entry) => entry.info.id === config.sessionId)) {
+            databaseObjects = state.objects[connId] ?? [];
+            break;
+          }
+        }
+      }
+    }
     return {
       engine: config.engine,
       tables: snapshot?.tables ?? [],
-      databaseObjects: liveObjectsRef.current,
+      databaseObjects,
       schemas: schemaCacheRef.current,
       database: snapshot?.identity.database ?? config.database,
       defaultSchema: config.defaultSchema,
@@ -538,6 +637,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             : null;
     const sessionId = latest.current.sessionId;
     if (catalogObject && sessionId && latest.current.objectExplorerSupported) {
+      revokeSchemaSelectionBeforeWork(sessionId);
       setNavDetailsLoading(true);
       void client
         .call<ObjectDetails>("object_details", { sessionId, object: catalogObject })
@@ -589,10 +689,13 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           throw new Error(
             "Connect this console before using database or schema template variables.",
           );
-        const { state: runtime } = await client.call<SessionContextOptions>("session_contexts", {
-          sessionId,
-        });
-        if (runtime.sessionId !== sessionId || runtime.transactionState === "failed")
+        const runtime = await observeTemplateSessionContext(sessionId);
+        if (
+          !runtime ||
+          runtime.sessionId !== sessionId ||
+          runtime.transactionState === "failed" ||
+          runtime.transactionState === "unknown"
+        )
           throw new Error(
             "Current console context is unavailable. Recover the transaction and try again.",
           );
@@ -672,7 +775,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     try {
       await contextLoadRef.current;
       if (!current()) return;
-      const snapshot = liveRef.current;
+      const snapshot = isSnowflakeConsoleSession(useStudio.getState(), sessionId)
+        ? null
+        : liveRef.current;
       if (!snapshot) throw new Error("Current console metadata is unavailable. Refresh and retry.");
       const context = renameContext();
       const plan = prepareColumnInspection(state, state.selection.main.head, buildSymbolContext());
@@ -683,6 +788,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
         bytes = 0;
       for (const table of plan.tables) {
         if (!current() || renameContext() !== context) return;
+        revokeSchemaSelectionBeforeWork(sessionId);
         const schema = await client.call<TableSchema>("inspection_schema", {
           sessionId,
           revision: snapshot.revision,
@@ -1056,26 +1162,38 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     liveRef.current = null;
     liveObjectsRef.current = [];
     schemaCacheRef.current = new Map();
+    const cacheGeneration = schemaCacheRef.current;
     contextLoadRef.current = null;
     setLive(null);
     setContextError(null);
     if (props.engine === "redis") return;
     completion.current?.configure(configure());
     if (view.current) closeCompletion(view.current);
+    if (metadataBlocked) return;
     if (props.sessionId) {
-      void useStudio.getState().refreshSessionContexts(props.sessionId);
-      contextLoadRef.current = client
-        .call<CompletionCatalog>("completion_catalog", { sessionId: props.sessionId })
+      const isCurrent = () =>
+        !cancelled &&
+        schemaCacheRef.current === cacheGeneration &&
+        latest.current.sessionId === props.sessionId;
+      contextLoadRef.current = Promise.resolve()
+        .then(() => {
+          if (!isCurrent()) return null;
+          revokeSchemaSelectionBeforeWork(props.sessionId!);
+          return client.call<CompletionCatalog>("completion_catalog", {
+            sessionId: props.sessionId!,
+          });
+        })
         .then(async (snapshot) => {
-          if (!cancelled) {
+          if (snapshot && isCurrent()) {
             liveRef.current = snapshot;
             setLive(snapshot);
-            if (props.objectExplorerSupported) {
+            if (props.objectExplorerSupported && props.engine !== "snowflake") {
               try {
+                revokeSchemaSelectionBeforeWork(props.sessionId!);
                 const objects = await client.call<DatabaseObjectSummary[]>("database_objects", {
                   sessionId: props.sessionId,
                 });
-                if (!cancelled) liveObjectsRef.current = objects;
+                if (isCurrent()) liveObjectsRef.current = objects;
               } catch {
                 /* Catalog privileges may be narrower than SQL access. */
               }
@@ -1083,13 +1201,27 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           }
         })
         .catch((error) => {
-          if (!cancelled) setContextError(messageOf(error));
+          if (
+            !cancelled &&
+            schemaCacheRef.current === cacheGeneration &&
+            latest.current.sessionId === props.sessionId
+          )
+            setContextError(messageOf(error));
+        })
+        .finally(async () => {
+          if (
+            !cancelled &&
+            schemaCacheRef.current === cacheGeneration &&
+            latest.current.sessionId === props.sessionId
+          )
+            await useStudio.getState().refreshSessionContexts(props.sessionId!);
         });
     }
     return () => {
       cancelled = true;
     };
   }, [
+    metadataBlocked,
     props.engine,
     props.sessionId,
     props.tables,
@@ -1124,13 +1256,39 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const currentContext = runtimeState?.activeContext ?? "";
   const contextOptions =
     availableContexts && availableContexts.length > 0
-      ? currentContext && !availableContexts.includes(currentContext)
+      ? currentContext &&
+        !availableContexts.includes(currentContext) &&
+        runtimeState?.transactionObservation === undefined
         ? [currentContext, ...availableContexts]
         : availableContexts
       : [];
-  const showContextSwitcher =
+  const isSnowflakeSdkEditor =
+    !consoleMode &&
+    props.engine === "snowflake" &&
     Boolean(props.sessionId) &&
-    contextOptions.length > 0 &&
+    runtimeState !== undefined &&
+    runtimeState.transactionObservation !== undefined;
+  const snowflakeContextReady =
+    isSnowflakeSdkEditor &&
+    snowflakeContextExpanded &&
+    !switchingContext &&
+    !metadataBlocked &&
+    Boolean(snowflakeContextAuthority?.revision) &&
+    snowflakeContextAuthority?.state === runtimeState &&
+    runtimeState.transactionState === "idle" &&
+    runtimeState.transactionObservation?.status === "observed" &&
+    runtimeState.transactionObservation.transactionId === null;
+  const currentRole = runtimeState?.role ?? "";
+  const currentWarehouse = runtimeState?.warehouse ?? "";
+  const currentDatabase = runtimeState?.database ?? "";
+  const roleOptions = snowflakeContextAuthority?.availableRoles ?? [];
+  const warehouseOptions = snowflakeContextAuthority?.availableWarehouses ?? [];
+  const databaseOptions = snowflakeContextAuthority?.availableDatabases ?? [];
+  const snowflakeSchemaOptions = snowflakeContextAuthority?.availableSchemas ?? [];
+  const showContextSwitcher =
+    !consoleMode &&
+    Boolean(props.sessionId) &&
+    (contextOptions.length > 0 || runtimeState?.transactionObservation !== undefined) &&
     runtimeState !== undefined &&
     runtimeState.contextKind !== "none";
   return (
@@ -1141,30 +1299,215 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       {props.engine !== "redis" &&
         (props.sessionId || paramSlots.length > 0 || props.value.trim()) && (
           <div className="editor-context-row">
-            {showContextSwitcher && (
-              <select
-                className="context-switcher"
-                aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
-                value={currentContext}
-                disabled={switchingContext}
-                onChange={(event) => {
-                  const target = event.target.value;
-                  if (!target || !props.sessionId || target === currentContext) return;
-                  setSwitchingContext(true);
-                  void useStudio
-                    .getState()
-                    .switchSessionContext(props.sessionId, target)
-                    .catch((error) => useStudio.getState().notify(messageOf(error)))
-                    .finally(() => setSwitchingContext(false));
-                }}
-              >
-                {!currentContext && <option value="">No active context</option>}
-                {contextOptions.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
+            {isSnowflakeSdkEditor && snowflakeContextExpanded ? (
+              <>
+                <select
+                  className="context-switcher"
+                  aria-label="Active role"
+                  value={currentRole}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const role = event.target.value;
+                    if (!role || !props.sessionId || role === currentRole) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, { kind: "role", role })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentRole && <option value="">No active role</option>}
+                  {currentRole && !roleOptions.includes(currentRole) && (
+                    <option value={currentRole} disabled>
+                      {currentRole} (unavailable)
+                    </option>
+                  )}
+                  {roleOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active warehouse"
+                  value={currentWarehouse}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const warehouse = event.target.value;
+                    if (!warehouse || !props.sessionId || warehouse === currentWarehouse) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "warehouse",
+                        warehouse,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentWarehouse && <option value="">No active warehouse</option>}
+                  {currentWarehouse && !warehouseOptions.includes(currentWarehouse) && (
+                    <option value={currentWarehouse} disabled>
+                      {currentWarehouse} (unavailable)
+                    </option>
+                  )}
+                  {warehouseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active database"
+                  value={currentDatabase}
+                  disabled={!snowflakeContextReady}
+                  onChange={(event) => {
+                    const database = event.target.value;
+                    if (!database || !props.sessionId || database === currentDatabase) return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "database",
+                        database,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentDatabase && <option value="">No active database</option>}
+                  {currentDatabase && !databaseOptions.includes(currentDatabase) && (
+                    <option value={currentDatabase} disabled>
+                      {currentDatabase} (unavailable)
+                    </option>
+                  )}
+                  {databaseOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="context-switcher"
+                  aria-label="Active schema"
+                  value={currentContext}
+                  disabled={!snowflakeContextReady || !currentDatabase}
+                  onChange={(event) => {
+                    const schema = event.target.value;
+                    if (
+                      !schema ||
+                      !props.sessionId ||
+                      !currentDatabase ||
+                      schema === currentContext
+                    )
+                      return;
+                    setSwitchingContext(true);
+                    void useStudio
+                      .getState()
+                      .switchSnowflakeSessionContext(props.sessionId, {
+                        kind: "schema",
+                        database: currentDatabase,
+                        schema,
+                      })
+                      .catch((error) => useStudio.getState().notify(messageOf(error)))
+                      .finally(() => setSwitchingContext(false));
+                  }}
+                >
+                  {!currentContext && (
+                    <option value="">
+                      {currentDatabase ? "No active context" : "No active database"}
+                    </option>
+                  )}
+                  {currentContext && !snowflakeSchemaOptions.includes(currentContext) && (
+                    <option value={currentContext} disabled>
+                      {currentContext} (unavailable)
+                    </option>
+                  )}
+                  {snowflakeSchemaOptions.map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                {!snowflakeContextAuthority && !metadataBlocked && (
+                  <span>Refresh to change context</span>
+                )}
+              </>
+            ) : (
+              <>
+                {showContextSwitcher && (
+                  <select
+                    className="context-switcher"
+                    aria-label={props.engine === "mysql" ? "Active database" : "Active schema"}
+                    title={
+                      runtimeState?.transactionObservation !== undefined && !contextAuthority
+                        ? "Refresh completion context to select a schema"
+                        : undefined
+                    }
+                    value={currentContext}
+                    disabled={
+                      switchingContext ||
+                      metadataBlocked ||
+                      (runtimeState?.transactionObservation !== undefined &&
+                        (!contextAuthority?.revision ||
+                          contextAuthority.state !== runtimeState ||
+                          runtimeState.transactionState !== "idle" ||
+                          runtimeState.transactionObservation.status !== "observed" ||
+                          runtimeState.transactionObservation.transactionId !== null))
+                    }
+                    onChange={(event) => {
+                      const target = event.target.value;
+                      if (!target || !props.sessionId || target === currentContext) return;
+                      setSwitchingContext(true);
+                      void useStudio
+                        .getState()
+                        .switchSessionContext(props.sessionId, target)
+                        .catch((error) => useStudio.getState().notify(messageOf(error)))
+                        .finally(() => setSwitchingContext(false));
+                    }}
+                  >
+                    {!currentContext && <option value="">No active context</option>}
+                    {currentContext && !contextOptions.includes(currentContext) && (
+                      <option value={currentContext} disabled>
+                        {currentContext} (unavailable)
+                      </option>
+                    )}
+                    {contextOptions.map((item) => (
+                      <option key={item} value={item}>
+                        {item}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {showContextSwitcher &&
+                  runtimeState?.transactionObservation !== undefined &&
+                  !contextAuthority &&
+                  !metadataBlocked && <span>Refresh to change schema</span>}
+                {isSnowflakeSdkEditor && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    style={{ flexShrink: 0 }}
+                    aria-label="Load Snowflake session contexts"
+                    disabled={switchingContext || metadataBlocked}
+                    onClick={() => {
+                      if (!props.sessionId) return;
+                      setSwitchingContext(true);
+                      void useStudio
+                        .getState()
+                        .refreshSnowflakeSessionContexts(props.sessionId, true)
+                        .catch((error) => useStudio.getState().notify(messageOf(error)))
+                        .finally(() => setSwitchingContext(false));
+                    }}
+                  >
+                    Role / Warehouse / DB
+                  </button>
+                )}
+              </>
             )}
             <div
               aria-live="polite"
@@ -1191,11 +1534,21 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
               >
                 {!props.sessionId
                   ? "Connect to run parameterized SQL"
-                  : contextError
-                    ? `Completion unavailable: ${contextError}`
-                    : live
-                      ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
-                      : "Loading completion context…"}
+                  : consoleMode
+                    ? "Reviewed console · static authoring only; automatic metadata SQL is disabled"
+                    : transactionPending
+                      ? "Transaction action in progress…"
+                      : rollbackOnly
+                        ? "Only rollback recovery is available"
+                        : metadataRefreshRequired
+                          ? "Refresh completion context after the transaction action"
+                          : contextSwitchPending
+                            ? "Changing schema…"
+                            : contextError
+                              ? `Completion unavailable: ${contextError}`
+                              : live
+                                ? `${live.identity.database || "No database"} · ${live.identity.role}${props.engine !== "mysql" ? ` · ${live.identity.searchPath.join(", ")}` : ""}`
+                                : "Loading completion context…"}
               </span>
               {paramSlots.length > 0 && props.onOpenParameters && (
                 <button
@@ -1261,7 +1614,21 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   className="button ghost small"
                   style={{ flexShrink: 0 }}
                   aria-label="Refresh completion context"
-                  onClick={() => setRefresh((n) => n + 1)}
+                  disabled={
+                    consoleMode || transactionPending || contextSwitchPending || rollbackOnly
+                  }
+                  onClick={() => {
+                    if (props.sessionId && metadataRefreshRequired) {
+                      // Resume the native hold with explicit owner intent before
+                      // allowing completion/health effects to send SQL again.
+                      void useStudio
+                        .getState()
+                        .refreshSessionContexts(props.sessionId, true)
+                        .catch((error) => setContextError(messageOf(error)));
+                      return;
+                    }
+                    setRefresh((n) => n + 1);
+                  }}
                 >
                   Refresh
                 </button>

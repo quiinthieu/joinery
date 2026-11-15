@@ -29,6 +29,20 @@ pub trait FileDialogProvider: Send + Sync {
     async fn pick_open_sql(&self) -> AppResult<Option<PathBuf>>;
 
     async fn pick_save_sql(&self, suggested_name: &str) -> AppResult<Option<PathBuf>>;
+
+    async fn pick_open_metadata_backup(&self) -> AppResult<Option<PathBuf>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Metadata backup selection is unavailable",
+        ))
+    }
+
+    async fn pick_save_metadata_backup(&self, _suggested_name: &str) -> AppResult<Option<PathBuf>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Metadata backup selection is unavailable",
+        ))
+    }
 }
 
 pub struct DisabledFileDialog;
@@ -74,6 +88,22 @@ pub struct NativeFileDialog;
 #[cfg(feature = "desktop")]
 #[async_trait]
 impl FileDialogProvider for NativeFileDialog {
+    async fn pick_open_metadata_backup(&self) -> AppResult<Option<PathBuf>> {
+        Ok(rfd::AsyncFileDialog::new()
+            .add_filter("Encrypted Joinery backup", &["age"])
+            .pick_file()
+            .await
+            .map(|handle| handle.path().to_path_buf()))
+    }
+
+    async fn pick_save_metadata_backup(&self, suggested_name: &str) -> AppResult<Option<PathBuf>> {
+        Ok(rfd::AsyncFileDialog::new()
+            .set_file_name(suggested_name)
+            .add_filter("Encrypted Joinery backup", &["age"])
+            .save_file()
+            .await
+            .map(|handle| handle.path().to_path_buf()))
+    }
     async fn pick_save_file(
         &self,
         suggested_name: &str,
@@ -197,6 +227,20 @@ impl SandboxFileDialog {
 
 #[async_trait]
 impl FileDialogProvider for SandboxFileDialog {
+    async fn pick_open_metadata_backup(&self) -> AppResult<Option<PathBuf>> {
+        self.queue
+            .lock()
+            .next_open
+            .take()
+            .ok_or_else(|| AppError::invalid("No backup was queued in the disposable file sandbox"))
+    }
+
+    async fn pick_save_metadata_backup(&self, suggested_name: &str) -> AppResult<Option<PathBuf>> {
+        if let Some(queued) = self.queue.lock().next_save.take() {
+            return Ok(queued);
+        }
+        Ok(Some(self.resolve_confined(suggested_name)?))
+    }
     async fn pick_save_file(
         &self,
         suggested_name: &str,

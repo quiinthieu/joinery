@@ -2,6 +2,16 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import {
+  copyPreparedSnowflakeRuntime,
+  parseNativeSmokeArgs,
+  removePreparedSnowflakeRuntime,
+} from "./native-smoke-resources.mjs";
+
+const options = parseNativeSmokeArgs(process.argv.slice(2));
+if (options.snowflakeResources && (process.platform !== "darwin" || process.arch !== "arm64")) {
+  throw new Error("--snowflake-resources requires a darwin-arm64 native smoke build");
+}
 
 const extension = process.platform === "win32" ? ".exe" : "";
 const source = path.resolve(`src-tauri/target/release/joinery${extension}`);
@@ -22,6 +32,8 @@ const build = {
   platform: process.platform,
   architecture: process.arch,
   builtAt: new Date().toISOString(),
+  resourcesIncluded: false,
+  snowflakeManifestSha256: null,
 };
 if (process.platform === "darwin") {
   // LaunchServices gives this hidden fixture its own process responsibility.
@@ -45,6 +57,17 @@ if (process.platform === "darwin") {
 </dict></plist>
 `,
   );
+  if (options.snowflakeResources) {
+    const result = copyPreparedSnowflakeRuntime({
+      repoRoot: process.cwd(),
+      bundleContents: contents,
+    });
+    build.resourcesIncluded = true;
+    build.snowflakeManifestSha256 = result.manifestSha256;
+    if (result.cleanupWarning) process.stderr.write(`${result.cleanupWarning}\n`);
+  } else {
+    removePreparedSnowflakeRuntime({ bundleContents: contents });
+  }
   execFileSync("codesign", ["--force", "--sign", "-", bundle], { stdio: "pipe" });
   build.bundle = bundle;
   build.bundleBinarySha256 = createHash("sha256")

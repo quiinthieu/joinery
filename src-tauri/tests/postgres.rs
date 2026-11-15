@@ -512,11 +512,11 @@ async fn explicit_cancel_quarantines_the_connection_and_limits_bound_retention()
     );
     studio.shutdown();
     let (_root, studio, session) = setup(SafeMode::Silent).await;
-    let events = run(&studio, &session, "SELECT generate_series(1,200000) AS n").await;
+    let events = run(&studio, &session, "SELECT generate_series(1,1000512) AS n").await;
     assert_eq!(status(&events), RunStatus::Completed);
     let result = result(&events);
     assert_eq!(result.status, RetentionStatus::Truncated);
-    assert!(result.retained_rows > 0 && result.retained_rows <= 100000);
+    assert!(result.retained_rows > 0 && result.retained_rows <= 1_000_000);
     assert!(studio.usage().retained_bytes <= 64 * 1024 * 1024);
     studio.shutdown();
 }
@@ -2332,7 +2332,8 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .unwrap()
         .unwrap();
     let usage_before = studio.results.usage();
-    assert_eq!(usage_before.0, 0);
+    // Setup descriptors are charged; streaming export must not retain more.
+    let disk_before = studio.results.disk_usage();
     let (tx, rx) = mpsc::unbounded_channel();
     studio
         .start_export(
@@ -2356,6 +2357,7 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         .unwrap();
     let export_events = finish_export(rx).await;
     assert_eq!(studio.results.usage(), usage_before);
+    assert_eq!(studio.results.disk_usage(), disk_before);
     assert!(matches!(
         export_events.last(),
         Some(ExportEvent::Finished {
@@ -2474,6 +2476,179 @@ async fn streaming_table_export_preserves_exact_values_enforces_read_only_and_ma
         RunStatus::Completed
     );
     studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PostgreSQL fixture"]
+async fn csv_import_automatic_preview_mappings_prepare_the_reviewed_target() {
+    use futures_util::FutureExt;
+    use joinery_core::file_capability::SandboxFileDialog;
+
+    let root = tempfile::tempdir().unwrap();
+    let sandbox = SandboxFileDialog::new(&root.path().join("imports")).unwrap();
+    let studio = Studio::with_secrets_and_dialog(
+        root.path(),
+        Arc::new(MemorySecrets::default()),
+        sandbox.clone(),
+    )
+    .unwrap();
+    let profile = studio
+        .save_profile(
+            ConnectionProfile {
+                id: new_id(),
+                name: "Automatic CSV mapping regression".into(),
+                group_id: "local".into(),
+                engine: EngineKind::Postgres,
+                host: "127.0.0.1".into(),
+                port: std::env::var("JOINERY_TEST_PORT")
+                    .unwrap_or_else(|_| "55432".into())
+                    .parse()
+                    .unwrap(),
+                database: "joinery".into(),
+                username: "joinery".into(),
+                environment: Environment::Local,
+                safe_mode: SafeMode::Confirm,
+                tls_mode: TlsMode::Disable,
+                ca_cert_path: None,
+                ssh: None,
+                remember_password: false,
+                store_query_text: false,
+                store_drafts: false,
+                snowflake: None,
+            },
+            None,
+        )
+        .unwrap();
+    let session = studio
+        .connect(
+            &profile.id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let table = TableRef {
+        schema: "public".into(),
+        name: format!("csv_auto_{}", new_id().replace('-', "")),
+    };
+    let qualified = format!("public.{}", table.name);
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                &format!("CREATE TABLE {qualified} (id integer PRIMARY KEY, note text NOT NULL)")
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    let checked = std::panic::AssertUnwindSafe(async {
+        std::fs::write(sandbox.root().join("automatic.csv"), "id,note\n1,reviewed\n").unwrap();
+        sandbox.queue_open(Some("automatic.csv")).unwrap();
+        let source = studio.pick_import_source().await.unwrap().unwrap();
+        let options = CsvImportOptions::default();
+        let preview = studio
+            .preview_csv_import(&session.id, &source.token, &table, options.clone(), Vec::new())
+            .await
+            .unwrap();
+        assert!(preview.can_prepare, "{:?}", preview.issues);
+        assert_eq!(preview.mappings.len(), 2);
+        assert_eq!(preview.mappings[0].target_column.as_deref(), Some("id"));
+        assert_eq!(preview.mappings[1].target_column.as_deref(), Some("note"));
+
+        // Two asynchronous previews own independent generations. Releasing a
+        // late response must not discard the preview accepted by the dialog.
+        let later = studio.preview_csv_import(&session.id, &source.token, &table, options.clone(), Vec::new()).await.unwrap();
+        let original_token = preview.preview_token.as_deref().unwrap();
+        let later_token = later.preview_token.as_deref().unwrap();
+        assert_ne!(original_token, later_token);
+        let released_plan = studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), later.mappings.clone(), 0, later_token).await.unwrap();
+        let released_approval = studio.authorize(&released_plan.plan.id, None, released_plan.plan.confirmation_text.as_deref()).unwrap();
+        studio.release_csv_import_preview(&session.id, &source.token, later_token);
+        assert_eq!(studio.execute(&released_plan.plan.id, Some(&released_approval), Arc::new(|_| true)).unwrap_err().code, ErrorCode::ApprovalExpired, "closing this exact preview must discard its unused approved batch");
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, later_token).await.unwrap_err().code, ErrorCode::Conflict);
+        studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token).await.expect("releasing a different preview must preserve this exact generation");
+        studio.release_csv_import_preview("other-session", &source.token, original_token);
+        studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token).await.expect("release is scoped to the session and source as well as token");
+
+        // Original automatic requests remain supported, without changing the reviewed target.
+        studio
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), Vec::new(), 0, original_token)
+            .await
+            .expect("original automatic mapping request must remain valid");
+
+        // The dialog submits the effective mappings returned by the preview.
+        let prepared = studio
+            .prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), preview.mappings.clone(), 0, original_token)
+            .await
+            .expect("automatic preview must accept its returned effective mappings");
+        assert_eq!(prepared.row_count, 1);
+        assert!(prepared.plan.requires_approval);
+
+        let mut changed = preview.mappings.clone();
+        changed[1].target_column = None;
+        assert_eq!(
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, options.clone(), changed, 0, original_token).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        let changed_options = CsvImportOptions { has_header: false, ..options };
+        assert_eq!(
+            studio.prepare_csv_import_batch(&session.id, &source.token, &table, changed_options, preview.mappings.clone(), 0, original_token).await.unwrap_err().code,
+            ErrorCode::Conflict
+        );
+        let token = studio.authorize(&prepared.plan.id, None, prepared.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &prepared.plan, Some(&token)).1).await;
+        assert_eq!(status(&events), RunStatus::Completed, "{events:?}");
+        let observed = result(&run(&studio, &session, &format!("SELECT id::text, note FROM {qualified}")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("1".into()), Some("reviewed".into())]);
+
+        assert_eq!(status(&run(&studio, &session, &format!("DROP TABLE {qualified}; CREATE TABLE {qualified} (id integer PRIMARY KEY, note text NOT NULL); INSERT INTO {qualified} VALUES (2, 'replacement')")).await), RunStatus::Completed);
+        let stale = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap();
+        let token = studio.authorize(&stale.plan.id, None, stale.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &stale.plan, Some(&token)).1).await;
+        assert_eq!(status(&events), RunStatus::Failed, "{events:?}");
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{events:?}");
+        let observed = result(&run(&studio, &session, &format!("SELECT id::text, note FROM {qualified}")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+
+        // A caller retaining the old preview must not silently adopt a newer
+        // matching preview of the replacement when its token is omitted.
+        let newer = studio.preview_csv_import(&session.id, &source.token, &table, CsvImportOptions::default(), Vec::new()).await.unwrap();
+        assert_ne!(newer.preview_token.as_deref(), Some(original_token));
+        let observer = studio.connect(&profile.id, ConnectionSecrets { password: Some("joinery-local-only".into()), ..Default::default() }).await.unwrap();
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, "").await.unwrap_err().code, ErrorCode::Conflict);
+        // An old exact token still targets the old OID even while a newer preview exists.
+        let old = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap();
+        let approval = studio.authorize(&old.plan.id, None, old.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &old.plan, Some(&approval)).1).await;
+        assert_eq!(status(&events), RunStatus::Failed, "{events:?}");
+        assert!(events.iter().any(|event| matches!(event, QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict)), "{events:?}");
+        studio.release_csv_import_preview(&session.id, &source.token, original_token);
+        assert_eq!(studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), preview.mappings.clone(), 0, original_token).await.unwrap_err().code, ErrorCode::Conflict, "releasing A must not select B, even when B is the only matching preview");
+        let observed = result(&run(&studio, &observer, &format!("SELECT id::text, note FROM {qualified} ORDER BY id")).await);
+        assert_eq!(observed.retained_rows, 1);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+        let fresh = studio.prepare_csv_import_batch(&session.id, &source.token, &table, CsvImportOptions::default(), newer.mappings, 0, newer.preview_token.as_deref().unwrap()).await.unwrap();
+        let approval = studio.authorize(&fresh.plan.id, None, fresh.plan.confirmation_text.as_deref()).unwrap();
+        let events = finish(start(&studio, &fresh.plan, Some(&approval)).1).await;
+        assert_eq!(status(&events), RunStatus::Completed, "{events:?}");
+        assert_eq!(studio.execute(&fresh.plan.id, Some(&approval), Arc::new(|_| true)).unwrap_err().code, ErrorCode::ApprovalExpired);
+        let observed = result(&run(&studio, &observer, &format!("SELECT id::text, note FROM {qualified} ORDER BY id")).await);
+        assert_eq!(observed.retained_rows, 2);
+        assert_eq!(studio.results.row(&observed.id, 0).unwrap(), vec![Some("1".into()), Some("reviewed".into())]);
+        assert_eq!(studio.results.row(&observed.id, 1).unwrap(), vec![Some("2".into()), Some("replacement".into())]);
+    }).catch_unwind().await;
+    let cleanup = run(&studio, &session, &format!("DROP TABLE {qualified}")).await;
+    studio.shutdown();
+    assert_eq!(status(&cleanup), RunStatus::Completed, "{cleanup:?}");
+    if let Err(panic) = checked {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[tokio::test]
@@ -2649,6 +2824,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
                 CsvImportOptions::default(),
                 remapped.clone(),
                 0,
+                bad_preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap_err()
@@ -2702,6 +2878,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
                 CsvImportOptions::default(),
                 remapped.clone(),
                 batch_idx,
+                preview.preview_token.as_deref().unwrap(),
             )
             .await
             .unwrap();
@@ -2725,6 +2902,16 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
     std::fs::write(sandbox.root().join("conflict.csv"), conflict_csv.as_bytes()).unwrap();
     sandbox.queue_open(Some("conflict.csv")).unwrap();
     let conflict_grant = studio.pick_import_source().await.unwrap().unwrap();
+    let conflict_preview = studio
+        .preview_csv_import(
+            &session.id,
+            &conflict_grant.token,
+            &table,
+            CsvImportOptions::default(),
+            remapped.clone(),
+        )
+        .await
+        .unwrap();
     let conflict_batch = studio
         .prepare_csv_import_batch(
             &session.id,
@@ -2733,6 +2920,7 @@ async fn csv_import_remaps_columns_enforces_read_only_validates_upfront_and_roll
             CsvImportOptions::default(),
             remapped,
             0,
+            conflict_preview.preview_token.as_deref().unwrap(),
         )
         .await
         .unwrap();
@@ -2846,7 +3034,6 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
 
     // 1. Multi-page (> 500 rows) LiveTable vs LiveTable without retaining in ResultStore
     let usage_before = studio.usage();
-    assert_eq!(usage_before.retained_bytes, 0);
     let live_report = studio
         .compare_data(CompareRequest {
             left: CompareSide::LiveTable {
@@ -2874,8 +3061,13 @@ async fn data_comparison_diffs_multi_page_live_tables_snapshots_anomalies_and_ra
     assert_eq!(live_report.different_count, 1);
     assert_eq!(live_report.only_left_count, 1);
     assert_eq!(live_report.only_right_count, 1);
-    assert_eq!(studio.usage().retained_bytes, 0);
-    assert_eq!(studio.usage().result_count, usage_before.result_count);
+    let usage_after = studio.usage();
+    assert_eq!(usage_after.retained_bytes, usage_before.retained_bytes);
+    assert_eq!(
+        usage_after.temporary_result_bytes,
+        usage_before.temporary_result_bytes
+    );
+    assert_eq!(usage_after.result_count, usage_before.result_count);
 
     let modified = live_report
         .diffs
@@ -5085,6 +5277,164 @@ async fn table_maintenance_executes_reviewed_analyze_vacuum_and_reindex_and_guar
 
 #[tokio::test]
 #[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_commit_preserves_snapshot_and_rerun_reads_server_defaults() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let table = format!("query_snapshot_{}", new_id().replace('-', "_"));
+    assert_eq!(status(&run(&studio, &session, &format!("CREATE TABLE public.{table} (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, note text NOT NULL DEFAULT 'server default')")).await), RunStatus::Completed);
+    let sql = format!("SELECT id, note FROM public.{table}");
+    let initial = result(&run(&studio, &session, &sql).await);
+    let preview = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(initial.id.clone()),
+                updates: Vec::new(),
+                deletes: Vec::new(),
+                inserts: vec![RowInsert { values: Vec::new() }],
+            },
+        )
+        .unwrap();
+    let approval = studio.authorize(&preview.plan.id, None, None).unwrap();
+    let events = finish(start(&studio, &preview.plan, Some(&approval)).1).await;
+    let retained = studio.results.info(&initial.id).unwrap();
+    let stale_edit = studio.prepare_changes(
+        &session.id,
+        &initial.id,
+        vec![CellChange {
+            row: 0,
+            column: "c1".into(),
+            value: Some("must re-run".into()),
+        }],
+    );
+    let actual = result(&run(&studio, &session, &sql).await);
+    let actual_row = studio.results.row(&actual.id, 0).unwrap();
+    assert_eq!(
+        status(&run(&studio, &session, &format!("DROP TABLE public.{table}")).await),
+        RunStatus::Completed
+    );
+    assert_eq!(status(&events), RunStatus::Completed);
+    assert_eq!(
+        retained.retained_rows, 0,
+        "commit invented a retained row from omitted defaults"
+    );
+    assert_eq!(
+        retained.editability,
+        Some(ResultEditability::ReadOnly {
+            reason: "Result is a snapshot from before these changes. Re-run query to refresh."
+                .into()
+        })
+    );
+    assert_eq!(stale_edit.unwrap_err().code, ErrorCode::PolicyBlocked);
+    assert!(actual_row[0].is_some());
+    assert_eq!(actual_row[1].as_deref(), Some("server default"));
+    assert!(matches!(
+        actual.editability,
+        Some(ResultEditability::Editable { .. })
+    ));
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_search_path_resolves_later_schema_and_quoted_table() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    let suffix = new_id();
+    let first_schema = format!("query edit empty {suffix}");
+    let target_schema = format!("query edit target {suffix}");
+    let setup_sql = format!(
+        "CREATE SCHEMA \"{first_schema}\"; CREATE SCHEMA \"{target_schema}\";
+         CREATE TABLE \"{target_schema}\".\"Mixed Orders\" (id integer PRIMARY KEY, note text);
+         INSERT INTO \"{target_schema}\".\"Mixed Orders\" VALUES (1, 'original');
+         SET search_path TO \"{first_schema}\",\"{target_schema}\",public"
+    );
+    assert_eq!(
+        status(&run(&studio, &session, &setup_sql).await),
+        RunStatus::Completed
+    );
+    let selected_events = run(&studio, &session, "SELECT id, note FROM \"Mixed Orders\"").await;
+    let selected = result(&selected_events);
+    // Clean up owned objects before assertions so a failed regression leaves no fixture state.
+    let cleanup_sql = format!(
+        "SET search_path TO public; DROP SCHEMA \"{first_schema}\"; DROP SCHEMA \"{target_schema}\" CASCADE"
+    );
+    assert_eq!(
+        status(&run(&studio, &session, &cleanup_sql).await),
+        RunStatus::Completed
+    );
+    assert!(selected_events.iter().any(|event| matches!(event,
+        QueryEvent::SessionState { state } if state.transaction_mode == TransactionMode::AutoCommit
+            && state.transaction_state == TransactionState::Idle)));
+    assert_eq!(
+        selected.editability,
+        Some(ResultEditability::Editable {
+            table: TableRef {
+                schema: target_schema,
+                name: "Mixed Orders".into()
+            },
+            primary_key: vec!["id".into()],
+        })
+    );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn query_result_temporary_shadow_is_read_only() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "CREATE TEMP TABLE orders AS SELECT id, status FROM public.orders WHERE id = 2"
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    for sql in [
+        "SELECT id, status FROM orders",
+        "SELECT id, status FROM pg_temp.orders",
+    ] {
+        let shadow = result(&run(&studio, &session, sql).await);
+        assert!(
+            matches!(shadow.editability, Some(ResultEditability::ReadOnly { .. })),
+            "temporary shadow was editable: {:?}",
+            shadow.editability
+        );
+        assert_eq!(
+            studio
+                .prepare_changes(
+                    &session.id,
+                    &shadow.id,
+                    vec![CellChange {
+                        row: 0,
+                        column: "c1".into(),
+                        value: Some("must_not_write_public".into())
+                    }]
+                )
+                .unwrap_err()
+                .code,
+            ErrorCode::PolicyBlocked
+        );
+    }
+    let permanent = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT id, status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
+    assert!(matches!(
+        permanent.editability,
+        Some(ResultEditability::Editable { .. })
+    ));
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
 async fn single_table_select_result_provenance_commits_edits_and_rejects_missing_pk() {
     let (_root, studio, session) = setup(SafeMode::Silent).await;
 
@@ -5135,10 +5485,33 @@ async fn single_table_select_result_provenance_commits_edits_and_rejects_missing
     let commit_events = finish(start(&studio, &preview.plan, Some(&approval)).1).await;
     assert_eq!(status(&commit_events), RunStatus::Completed);
 
-    // Retained result in ResultStore is updated in place AND live DB has the committed value
+    // Keep the retained query snapshot truthful and require an explicit rerun.
     assert_eq!(
-        studio.results.row(&original_status.id, 0).unwrap()[1].as_deref(),
-        Some(updated_val.as_str())
+        studio.results.row(&original_status.id, 0).unwrap()[1],
+        prior_val
+    );
+    assert!(matches!(
+        studio
+            .results
+            .info(&original_status.id)
+            .unwrap()
+            .editability,
+        Some(ResultEditability::ReadOnly { .. })
+    ));
+    assert_eq!(
+        studio
+            .prepare_changes(
+                &session.id,
+                &original_status.id,
+                vec![CellChange {
+                    row: 0,
+                    column: "c1".into(),
+                    value: prior_val.clone(),
+                }]
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::PolicyBlocked
     );
     let verify_live = result(
         &run(
@@ -5183,13 +5556,21 @@ async fn single_table_select_result_provenance_commits_edits_and_rejects_missing
     );
 
     // Restore original value
+    let refreshed = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT id, status FROM public.orders WHERE id = 2",
+        )
+        .await,
+    );
     let restore = studio
         .prepare_table_changes(
             &session.id,
             TableChanges {
-                result_id: Some(original_status.id.clone()),
+                result_id: Some(refreshed.id.clone()),
                 updates: vec![ResultChanges {
-                    result_id: original_status.id,
+                    result_id: refreshed.id,
                     changes: vec![CellChange {
                         row: 0,
                         column: "c1".into(),

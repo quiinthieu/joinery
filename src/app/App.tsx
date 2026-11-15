@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { planSourceForExecution } from "../features/studio/plan-snapshots";
+import { createWindowCloser, lockWindowInteraction } from "./windowClose";
 import {
   Activity,
   ArrowDownLeft,
@@ -42,11 +43,23 @@ import {
 } from "lucide-react";
 import { Sidebar } from "../features/connections/Sidebar";
 import { ConnectionDialog, ConnectDialog } from "../features/connections/ConnectionDialog";
+import {
+  cancelPendingConnections,
+  hasPendingConnections,
+} from "../features/connections/connectionSetup";
 import { Preferences } from "../features/studio/Preferences";
+import { MetadataRecovery } from "../features/studio/MetadataRecovery";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
+import { SnowflakeConsoleReview } from "../features/studio/SnowflakeConsoleReview";
+import { SnowflakeConsoleReceipts } from "../features/studio/SnowflakeConsoleReceipts";
+import {
+  consoleReceiptHeld,
+  consoleReceiptBlocksSession,
+  validateConsolePlan,
+} from "../features/studio/SnowflakeConsole";
 import { ExportDialog } from "../features/grid/ExportDialog";
 import { ImportCsvDialog } from "../features/grid/ImportCsvDialog";
 import { DataCompareDialog } from "../features/grid/DataCompareDialog";
@@ -72,12 +85,19 @@ import type {
   QueryParamSlot,
   ResourceUsage,
   TableChanges,
+  ExplicitTransactionAction,
+  SnowflakeConsoleMode,
+  SnowflakeConsolePlan,
 } from "../ipc/generated";
 import {
   useStudio,
+  revokeSchemaSelectionBeforeWork,
   beginEventBatch,
   querySessionForTab,
   metadataSessionForTab,
+  isSnowflakeConsoleSession,
+  assertOrdinarySession,
+  isConsoleOwnedResult,
   isLastOwnerOfSecondarySession,
   sessionHasOpenTransaction,
   isTabFileDirty,
@@ -91,7 +111,14 @@ import {
   matchesKeyboardEvent,
   type ShortcutActionId,
 } from "../features/studio/shortcuts";
-import { flushWorkspace, watchWorkspace } from "../state/workspace";
+import {
+  flushWorkspaceForClose,
+  watchWorkspace,
+  initializeWorkspaceRecoveryStartupHold,
+  workspaceRecoveryStartupHeld,
+  subscribeWorkspaceRecovery,
+  workspaceRecoveryHeld,
+} from "../state/workspace";
 import { dirtyStore } from "../data/dirty-store";
 import { resultCache } from "../data/result-cache";
 import { COPY_FORMATS } from "../features/grid/copy-format";
@@ -122,6 +149,15 @@ import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type Dialog =
+  | {
+      kind: "snowflakeConsoleReview";
+      plan: SnowflakeConsolePlan;
+      tabId: string;
+      sessionId: string;
+      document: string;
+      revision: number;
+      profile?: ConnectionProfile;
+    }
   | { kind: "connection"; profile?: ConnectionProfile; groupId?: string }
   | { kind: "connect"; profile: ConnectionProfile; tabId?: string }
   | { kind: "settings" }
@@ -154,6 +190,7 @@ type Dialog =
       profile?: ConnectionProfile;
       allowSaveOnly?: boolean;
       explain?: "estimate" | "analyze";
+      consoleMode?: SnowflakeConsoleMode;
     }
   | { kind: "references"; keys: ForeignKey[]; target: CellTarget; tabId: string }
   | { kind: "referencing"; keys: InboundForeignKey[]; target: CellTarget; tabId: string };
@@ -181,6 +218,14 @@ export function pendingCountFor(tab: StudioTab) {
 }
 
 export function App() {
+  useState(initializeWorkspaceRecoveryStartupHold);
+  const recoveryStartupHeld = useSyncExternalStore(
+    subscribeWorkspaceRecovery,
+    workspaceRecoveryStartupHeld,
+  );
+  const [startupBootstrapSettled, setStartupBootstrapSettled] = useState(false);
+  const initialBootstrap = useRef<Promise<void> | null>(null);
+  const [recoveryCloseError, setRecoveryCloseError] = useState<string | null>(null);
   const state = useStudio(),
     [dialog, setDialog] = useState<Dialog | null>(null),
     [selectedCell, setSelectedCell] = useState<CellTarget | null>(null),
@@ -256,6 +301,7 @@ export function App() {
       return;
     }
     try {
+      assertOrdinarySession(session.id);
       const all = await client.call<InboundForeignKey[]>("referencing_foreign_keys", {
         sessionId: session.id,
         table: current.table,
@@ -504,7 +550,16 @@ export function App() {
       : []),
   ];
   useEffect(() => {
-    void state.initialize();
+    let active = true;
+    // StrictMode replays effects; both setups must drain the same initial
+    // request before a reconciled reload can replace the workspace.
+    initialBootstrap.current ??= state.initialize();
+    void initialBootstrap.current.finally(() => {
+      if (active) setStartupBootstrapSettled(true);
+    });
+    return () => {
+      active = false;
+    };
   }, []);
   useEffect(watchWorkspace, []);
   useLayoutEffect(() => {
@@ -515,6 +570,11 @@ export function App() {
     const hasPendingWork = () => {
       const snap = useStudio.getState();
       return (
+        workspaceRecoveryHeld() ||
+        hasPendingConnections() ||
+        Object.values(snap.snowflakeConsoleReceipts).some(consoleReceiptHeld) ||
+        Object.keys(snap.sessionSnowflakeGridPending).length > 0 ||
+        Object.keys(snap.sessionSnowflakeGridTransactions).length > 0 ||
         snap.tabs.some(
           (tab) =>
             pendingCountFor(tab) > 0 ||
@@ -523,8 +583,8 @@ export function App() {
             (tab.querySession && !tab.querySessionClosed),
         ) ||
         Object.values(snap.sessionPool).some((entries) => entries.length > 0) ||
-        Object.values(snap.sessionStates).some(
-          (st) => st.transactionState === "inTransaction" || st.transactionState === "failed",
+        Object.values(snap.sessions).some((session) =>
+          sessionHasOpenTransaction(snap.sessionStates, session.id),
         )
       );
     };
@@ -539,41 +599,45 @@ export function App() {
       return () => window.removeEventListener("beforeunload", beforeUnload);
     }
     const windowHandle = getCurrentWindow();
-    const closeSafely = async () => {
-      await flushWorkspace();
-      await windowHandle.destroy();
-    };
+    const requestClose = createWindowCloser({
+      hasPendingWork,
+      flush: flushWorkspaceForClose,
+      cancelConnections: cancelPendingConnections,
+      shutdown: () => client.call("app_shutdown"),
+      destroy: () => windowHandle.destroy(),
+      lockInteraction: lockWindowInteraction,
+      confirm: (approve) => {
+        if (workspaceRecoveryHeld()) {
+          const message =
+            "Workspace saving is paused for metadata recovery. Resolve recovery before closing Joinery; drafts have not been saved.";
+          setRecoveryCloseError(message);
+          useStudio.getState().notify(message);
+          return;
+        }
+        setDialog({
+          kind: "confirm",
+          title: "Close Joinery?",
+          description:
+            "Pending edits will be discarded and active sessions closed. Running statements and open transactions may need verification on the database. Completed writes are not undone.",
+          action: approve,
+        });
+      },
+    });
     const unsubscribe = windowHandle.onCloseRequested((event) => {
       event.preventDefault();
-      if (!hasPendingWork()) {
-        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
-        return;
-      }
-      setDialog({
-        kind: "confirm",
-        title: "Close Joinery?",
-        description:
-          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
-        action: closeSafely,
-      });
+      void requestClose().catch((error) => useStudio.getState().notify(messageOf(error)));
     });
     const quit = windowHandle.listen<number>("joinery:quit-requested", (event) => {
       void client.call("acknowledge_quit", { generation: event.payload });
-      if (!hasPendingWork()) {
-        void closeSafely().catch((error) => useStudio.getState().notify(messageOf(error)));
-        return;
-      }
-      setDialog({
-        kind: "confirm",
-        title: "Close Joinery?",
-        description:
-          "Pending edits will be discarded, running queries cancelled, and open SQL transactions rolled back. Completed writes are not undone.",
-        action: closeSafely,
-      });
+      void requestClose().catch((error) => useStudio.getState().notify(messageOf(error)));
+    });
+    const shutdownFailed = windowHandle.listen<string>("joinery:shutdown-failed", (event) => {
+      useStudio.getState().notify(event.payload);
     });
     return () => {
       void unsubscribe.then((off) => off());
       void quit.then((off) => off());
+      void shutdownFailed.then((off) => off());
     };
   }, []);
   useEffect(() => {
@@ -591,13 +655,29 @@ export function App() {
   useEffect(() => {
     if (!session) return;
     const timer = setInterval(() => {
-      if (document.visibilityState !== "hidden")
-        void client
-          .call<number>("health", { sessionId: session.id })
-          .then((latencyMs) => {
-            useStudio.getState().updateSessionLatency(session.id, latencyMs);
-          })
-          .catch(() => useStudio.getState().retireSession(session.id));
+      const current = useStudio.getState();
+      if (
+        document.visibilityState === "hidden" ||
+        isSnowflakeConsoleSession(current, session.id) ||
+        current.isSessionContextPending(session.id) ||
+        current.sessionStates[session.id]?.transactionControlAuthority?.status === "rollbackOnly" ||
+        current.sessionMetadataRefreshRequired[session.id] ||
+        current.tabs.some(
+          (tab) =>
+            ["queued", "running"].includes(tab.status) &&
+            querySessionForTab(tab, current.sessions)?.id === session.id,
+        )
+      )
+        return;
+      revokeSchemaSelectionBeforeWork(session.id);
+      void client
+        .call<number>("health", { sessionId: session.id })
+        .then((latencyMs) => {
+          useStudio.getState().updateSessionLatency(session.id, latencyMs);
+        })
+        .catch((error) => {
+          if (appErrorOf(error).code !== "conflict") useStudio.getState().retireSession(session.id);
+        });
     }, 30000);
     return () => clearInterval(timer);
   }, [session?.id]);
@@ -623,11 +703,32 @@ export function App() {
       state.notify("The query session changed. Run the statement again in its current session.");
       return;
     }
+    if (plan.reviewedSnowflakeDml) {
+      // Authorization has finished. Keep the running console and its explicit
+      // disconnect control reachable while the typed write is pending.
+      setDialog((current) =>
+        current?.kind === "review" && current.plan.id === plan.id ? null : current,
+      );
+      try {
+        const result = await useStudio.getState().executeSnowflakeDml(plan, approval, tabId);
+        if (result.statementOutcome === "succeeded") onSuccess?.();
+      } catch (error) {
+        state.notify(messageOf(error));
+      }
+      return;
+    }
+    try {
+      revokeSchemaSelectionBeforeWork(plan.sessionId);
+    } catch (error) {
+      state.notify(messageOf(error));
+      return;
+    }
     if (active.kind === "query" && !preserveResults) {
       for (const previous of active.results) {
         resultCache.release(previous.id);
         dirtyStore.clearTab(previous.id, [previous.id]);
-        await client.call("release_result", { resultId: previous.id });
+        if (!isConsoleOwnedResult(previous))
+          await client.call("release_result", { resultId: previous.id });
       }
       state.updateTab(tabId, { results: [], activeResultId: null });
     }
@@ -644,11 +745,17 @@ export function App() {
       dataSessionId: plan.sessionId,
       planSource: planSourceForExecution(plan, executionSession, undefined),
       runMetrics: undefined,
+      executionSummary: undefined,
+      snowflakeDmlResult: undefined,
+      snowflakeDdlResult: undefined,
       clientStartedAt: performance.now(),
       clientElapsedMs: undefined,
     });
     const batch = beginEventBatch(tabId);
     try {
+      // Releasing old results can await IPC while metadata refreshes finish.
+      // Revoke any authority installed during that interval before dispatch.
+      revokeSchemaSelectionBeforeWork(plan.sessionId);
       const runId = await client.execute(plan.id, approval, (event) => {
         if (event.type === "planContext") {
           const latest = useStudio.getState().tabs.find((tab) => tab.id === tabId);
@@ -676,6 +783,53 @@ export function App() {
         });
     }
   }
+  async function runExplicitTransaction(action: ExplicitTransactionAction) {
+    const snapshot = useStudio.getState();
+    const active = snapshot.tabs.find((tab) => tab.id === snapshot.activeTabId);
+    if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
+    const selected = querySessionForTab(active, snapshot.sessions);
+    if (selected) assertOrdinarySession(selected.id);
+    if (!selected?.capabilities.explicitTransactionControls)
+      throw new Error("Explicit transaction controls are unavailable for this session");
+    if (snapshot.sessionTransactionPending[selected.id])
+      throw new Error("Wait for the transaction action to finish first");
+    if (
+      snapshot.tabs.some(
+        (tab) =>
+          querySessionForTab(tab, snapshot.sessions)?.id === selected.id &&
+          (tab.status === "queued" || tab.status === "running"),
+      )
+    )
+      throw new Error("Wait for this session's queries to finish first");
+    const authority = snapshot.sessionStates[selected.id]?.transactionControlAuthority;
+    const allowed =
+      authority?.status === "rollbackOnly"
+        ? action === "rollback"
+        : authority?.allowedActions.includes(action) === true;
+    if (!authority || !allowed) throw new Error("Refresh transaction state before continuing");
+    const plan = await client.call("prepare_transaction_control", {
+      sessionId: selected.id,
+      request: { action, revision: authority.revision },
+    });
+    const latest = useStudio.getState();
+    const owner = latest.tabs.find((tab) => tab.id === active.id);
+    if (!owner || querySessionForTab(owner, latest.sessions)?.id !== selected.id)
+      throw new Error("The owning query session changed; prepare this action again");
+    if (plan.requiresApproval) {
+      setDialog({
+        kind: "review",
+        plan,
+        tabId: active.id,
+        profile: latest.bootstrap?.profiles.find((profile) => profile.id === selected.connectionId),
+        onApprove: async (approval) => {
+          await useStudio.getState().executeTransactionControl(plan, approval);
+        },
+      });
+    } else {
+      setDialog(null);
+      await useStudio.getState().executeTransactionControl(plan);
+    }
+  }
   async function prepareAndExecuteSql(
     tabId: string,
     sessionId: string,
@@ -684,9 +838,50 @@ export function App() {
     targetProfile?: ConnectionProfile,
     explain?: "estimate" | "analyze",
     origin?: SqlExecutionOrigin,
+    consoleMode: SnowflakeConsoleMode = "parsedStatements",
   ) {
-    const revision = useStudio.getState().tabs.find((tab) => tab.id === tabId)?.revision;
+    const owner = useStudio.getState().tabs.find((tab) => tab.id === tabId);
+    const revision = owner?.revision;
     try {
+      if (isSnowflakeConsoleSession(useStudio.getState(), sessionId)) {
+        if (explain)
+          throw new Error(
+            "Use exact reviewed EXPLAIN SQL in the console; generated Explain is disabled.",
+          );
+        if (
+          Object.values(useStudio.getState().snowflakeConsoleReceipts).some((entry) =>
+            consoleReceiptBlocksSession(entry, sessionId),
+          )
+        )
+          throw new Error("Reconcile the retained console run before preparing another execution.");
+        const plan = await client.prepareSnowflakeConsole(sessionId, {
+          sql: targetSql,
+          mode: consoleMode,
+          parameters: params ?? null,
+        });
+        validateConsolePlan(plan, sessionId);
+        const latest = useStudio.getState();
+        const current = latest.tabs.find((entry) => entry.id === tabId);
+        if (
+          !owner ||
+          !current ||
+          current.sql !== owner.sql ||
+          current.revision !== revision ||
+          querySessionForTab(current, latest.sessions)?.id !== sessionId
+        )
+          throw new Error("The editor or session changed. Prepare another immutable review.");
+        setDialog({
+          kind: "snowflakeConsoleReview",
+          plan,
+          tabId,
+          sessionId,
+          document: owner.sql,
+          revision: owner.revision,
+          profile: targetProfile,
+        });
+        return;
+      }
+      revokeSchemaSelectionBeforeWork(sessionId);
       const plan = await client.call<PreparedPlan>(
         explain ? "prepare_explain" : "prepare_execution",
         {
@@ -713,7 +908,12 @@ export function App() {
       throw error;
     }
   }
-  async function runSql(sql?: string, explain?: "estimate" | "analyze", fromUtf16?: number) {
+  async function runSql(
+    sql?: string,
+    explain?: "estimate" | "analyze",
+    fromUtf16?: number,
+    consoleMode: SnowflakeConsoleMode = "parsedStatements",
+  ) {
     const active = references.current.current;
     if (!active || active.kind !== "query" || ["queued", "running"].includes(active.status)) return;
     const selected = querySessionForTab(active, useStudio.getState().sessions);
@@ -751,6 +951,7 @@ export function App() {
             profile: target,
             allowSaveOnly: false,
             explain,
+            consoleMode,
           });
           return;
         }
@@ -763,6 +964,7 @@ export function App() {
         target,
         explain,
         origin,
+        consoleMode,
       );
     } catch (error) {
       const latest = useStudio.getState().tabs.find((tab) => tab.id === active.id);
@@ -851,6 +1053,7 @@ export function App() {
         deletes,
         inserts,
       };
+      assertOrdinarySession(session.id);
       const preview = await client.call<ChangePreview>("prepare_table_changes", {
         sessionId: session.id,
         changes,
@@ -899,8 +1102,8 @@ export function App() {
           ? `Close ${active.fileName ?? "this workspace"}?`
           : "Close this workspace?",
         description: dirtyFile
-          ? `Unsaved changes in ${active.fileName} will be lost and running queries cancelled. Closing an isolated session rolls back its open transactions.`
-          : "Pending edits will be discarded and running queries cancelled. Closing an isolated session rolls back its open transactions. Completed writes are not undone.",
+          ? `Unsaved changes in ${active.fileName} will be lost and running queries cancelled. Verify any open or unknown transaction on the database after closing an isolated session.`
+          : "Pending edits will be discarded and running queries cancelled. Verify any open or unknown transaction on the database after closing an isolated session. Completed writes are not undone.",
         action,
       });
     else action();
@@ -933,6 +1136,11 @@ export function App() {
     const pooledSessions = state.sessionPool[profile.id] ?? [];
     if (
       pooledSessions.length > 0 ||
+      Boolean(
+        primarySessionId &&
+        (state.sessionSnowflakeGridPending[primarySessionId] ||
+          state.sessionSnowflakeGridTransactions[primarySessionId]),
+      ) ||
       sessionHasOpenTransaction(state.sessionStates, primarySessionId) ||
       pooledSessions.some((entry) =>
         sessionHasOpenTransaction(state.sessionStates, entry.info.id),
@@ -949,7 +1157,7 @@ export function App() {
         kind: "confirm",
         title: `Disconnect ${profile.name}?`,
         description:
-          "This closes all its sessions and results, discards pending edits, cancels running queries, and rolls back open transactions.",
+          "This closes all its sessions and results, discards pending edits, and cancels running queries. Verify any open or unknown transaction on the database; remote rollback may not be immediate.",
         action,
       });
     else void action().catch((error) => state.notify(messageOf(error)));
@@ -1005,6 +1213,7 @@ export function App() {
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (workspaceRecoveryStartupHeld()) return;
       if (references.current.dialog) return;
       const snap = useStudio.getState();
       const active = references.current.current;
@@ -1101,6 +1310,19 @@ export function App() {
       } else if (key === "g" && event.shiftKey) {
         event.preventDefault();
         void actions.current.goToReferencing();
+      } else if (
+        key === "." &&
+        active &&
+        Object.values(snap.snowflakeConsoleReceipts).some(
+          (entry) => entry.tabId === active.id && consoleReceiptHeld(entry),
+        )
+      ) {
+        event.preventDefault();
+        for (const receipt of Object.values(snap.snowflakeConsoleReceipts))
+          if (receipt.tabId === active.id && consoleReceiptHeld(receipt))
+            void snap
+              .cancelSnowflakeConsole(receipt.clientRequestId)
+              .catch((error) => snap.notify(messageOf(error)));
       } else if (key === "." && active?.runId) {
         event.preventDefault();
         void client
@@ -1120,6 +1342,7 @@ export function App() {
   async function cancelProcess(process: ProcessInfo) {
     if (!current || !session) return;
     try {
+      assertOrdinarySession(session.id);
       const plan = await client.call<PreparedPlan>("prepare_process_cancel", {
         sessionId: session.id,
         id: process.id,
@@ -1130,6 +1353,22 @@ export function App() {
       state.notify(messageOf(error));
     }
   }
+
+  if (recoveryStartupHeld)
+    return (
+      <Modal title="Resolve metadata recovery" busy onClose={() => {}}>
+        <p role="status">
+          Workspace saving is paused. Resolve the retained recovery operation before editing or
+          closing Joinery. Existing drafts remain held; nothing will be replayed.
+        </p>
+        {recoveryCloseError && <InlineError message={recoveryCloseError} />}
+        {startupBootstrapSettled ? (
+          <MetadataRecovery onBusy={() => {}} />
+        ) : (
+          <p>Reading local metadata before recovery reconciliation…</p>
+        )}
+      </Modal>
+    );
 
   return (
     <div className={`app-shell ${!state.sidebarVisible ? "sidebar-hidden" : ""}`}>
@@ -1310,6 +1549,14 @@ export function App() {
               />
             ) : current.kind === "history" ? (
               <HistoryView />
+            ) : session &&
+              isSnowflakeConsoleSession(state, session.id) &&
+              current.kind !== "query" ? (
+              <p role="status">
+                Metadata, monitoring and generated operations are disabled on this reviewed console
+                connection. Open a separate profile with reviewed console off; temporary objects and
+                transactions are not shared.
+              </p>
             ) : current.kind === "processes" ? (
               <ProcessesView tab={current} onCancel={(process) => void cancelProcess(process)} />
             ) : current.kind === "diagram" ? (
@@ -1341,6 +1588,15 @@ export function App() {
                 onRun={(sql, from) => void runSql(sql, undefined, from)}
                 onExplain={() => void runSql(undefined, "estimate")}
                 onAnalyze={() => void runSql(undefined, "analyze")}
+                onRunConsoleScript={() => void runSql(current.sql)}
+                onRunConsoleSelected={() => {
+                  const selected = editor.current?.selection();
+                  if (!selected?.trim()) {
+                    state.notify("Select the exact SQL unit first.");
+                    return;
+                  }
+                  void runSql(selected, undefined, 0, "selectedUnit");
+                }}
                 onOpenParameters={(slots) => {
                   if (current.kind !== "query") return;
                   const selectedSession = querySessionForTab(
@@ -1359,6 +1615,7 @@ export function App() {
                   });
                 }}
                 onReview={() => void reviewEdits()}
+                onTransactionControl={runExplicitTransaction}
                 onConfirm={(title, description, action) =>
                   setDialog({ kind: "confirm", title, description, action })
                 }
@@ -1491,8 +1748,12 @@ export function App() {
           <div>
             <span>
               {usage
-                ? `${(usage.retainedBytes / 1024 / 1024).toFixed(1)} MB results`
-                : "Memory only"}
+                ? `${(usage.retainedBytes / 1024 / 1024).toFixed(1)} MiB result memory${
+                    usage.temporaryResultBytes
+                      ? ` · ${(usage.temporaryResultBytes / 1024 / 1024).toFixed(1)} MiB temporary storage`
+                      : ""
+                  }`
+                : "Result usage unavailable"}
             </span>
             <span className="status-separator">·</span>
             <button onClick={() => setDialog({ kind: "palette" })}>
@@ -1564,11 +1825,37 @@ export function App() {
                     dialog.profile,
                     dialog.explain,
                     dialog.origin,
+                    dialog.consoleMode,
                   );
                 }
               : undefined
           }
           onClose={() => setDialog(null)}
+        />
+      )}
+      <SnowflakeConsoleReceipts />
+      {dialog?.kind === "snowflakeConsoleReview" && (
+        <SnowflakeConsoleReview
+          plan={dialog.plan}
+          profile={dialog.profile}
+          onClose={() => setDialog(null)}
+          onExecute={async (approval) => {
+            const latest = useStudio.getState();
+            const owner = latest.tabs.find((entry) => entry.id === dialog.tabId);
+            if (
+              !owner ||
+              owner.sql !== dialog.document ||
+              owner.revision !== dialog.revision ||
+              querySessionForTab(owner, latest.sessions)?.id !== dialog.sessionId
+            )
+              throw new Error(
+                "The editor or physical session changed. Review again before executing.",
+              );
+            setDialog(null);
+            await latest
+              .startSnowflakeConsole(dialog.tabId, dialog.plan, approval)
+              .catch((error) => latest.notify(messageOf(error)));
+          }}
         />
       )}
       {dialog?.kind === "review" && (
@@ -1588,7 +1875,11 @@ export function App() {
                 Boolean(dialog.preview),
               );
           }}
-          onClose={() => setDialog(null)}
+          onClose={() =>
+            setDialog((current) =>
+              current?.kind === "review" && current.plan.id === dialog.plan.id ? null : current,
+            )
+          }
         />
       )}
       {dialog?.kind === "value" && (
@@ -2124,24 +2415,28 @@ export function App() {
             ...(current?.kind === "query" && session?.capabilities.transactions
               ? (() => {
                   const runtime = state.sessionStates[session.id];
-                  const txMode = runtime?.transactionMode ?? "autoCommit";
-                  const txState = runtime?.transactionState ?? "idle";
+                  const txMode = runtime?.transactionMode ?? "unknown";
+                  const txState = runtime?.transactionState ?? "unknown";
                   return [
-                    {
-                      label:
-                        txMode === "manual"
-                          ? "Switch session to auto-commit"
-                          : "Switch session to manual commit",
-                      shortcut: "",
-                      icon: Activity,
-                      action: () =>
-                        void state
-                          .setTransactionMode(
-                            session.id,
-                            txMode === "manual" ? "autoCommit" : "manual",
-                          )
-                          .catch((error) => state.notify(messageOf(error))),
-                    },
+                    ...(txMode !== "unknown"
+                      ? [
+                          {
+                            label:
+                              txMode === "manual"
+                                ? "Switch session to auto-commit"
+                                : "Switch session to manual commit",
+                            shortcut: "",
+                            icon: Activity,
+                            action: () =>
+                              void state
+                                .setTransactionMode(
+                                  session.id,
+                                  txMode === "manual" ? "autoCommit" : "manual",
+                                )
+                                .catch((error) => state.notify(messageOf(error))),
+                          },
+                        ]
+                      : []),
                     ...(txState === "inTransaction" && profile?.safeMode !== "readOnly"
                       ? [
                           {
@@ -2155,7 +2450,7 @@ export function App() {
                           },
                         ]
                       : []),
-                    ...(txState !== "idle"
+                    ...(txState === "inTransaction" || txState === "failed"
                       ? [
                           {
                             label: "Rollback transaction",
@@ -2170,6 +2465,32 @@ export function App() {
                       : []),
                   ];
                 })()
+              : []),
+            ...(current?.kind === "query" &&
+            session?.capabilities.explicitTransactionControls &&
+            !state.sessionTransactionPending[session.id]
+              ? (["begin", "commit", "rollback"] as const).flatMap((action) => {
+                  const authority = state.sessionStates[session.id]?.transactionControlAuthority;
+                  const allowed =
+                    authority?.status === "rollbackOnly"
+                      ? action === "rollback"
+                      : authority?.allowedActions.includes(action) === true;
+                  if (!allowed || (action !== "rollback" && profile?.safeMode === "readOnly"))
+                    return [];
+                  const label =
+                    action === "begin" ? "Begin" : action === "commit" ? "Commit" : "Rollback";
+                  return [
+                    {
+                      label: `${label} transaction`,
+                      shortcut: "",
+                      icon: action === "rollback" ? RotateCcw : Check,
+                      action: () =>
+                        void runExplicitTransaction(action).catch((error) =>
+                          state.notify(messageOf(error)),
+                        ),
+                    },
+                  ];
+                })
               : []),
             ...tableCommands,
           ]}

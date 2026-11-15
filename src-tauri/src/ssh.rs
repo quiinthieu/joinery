@@ -7,13 +7,17 @@ use russh::{
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    net::Shutdown,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
-use tokio::{net::TcpListener, task::JoinSet};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -61,6 +65,7 @@ pub struct Tunnel {
     failed: Arc<AtomicBool>,
     stop: CancellationToken,
     task: tokio::task::AbortHandle,
+    _transport: SshTransportOwner,
 }
 impl Tunnel {
     pub fn is_closed(&self) -> bool {
@@ -72,6 +77,31 @@ impl Drop for Tunnel {
         self.stop.cancel();
         self.task.abort();
     }
+}
+
+/// russh detaches its session task during key exchange. Closing the socket from
+/// outside that task makes cancellation effective even while it cannot receive
+/// a dropped handle's disconnect signal. Either the tunnel or its forwarding
+/// task ending must retire the transport, so every owner shuts down on drop.
+#[derive(Clone)]
+struct SshTransportOwner(Arc<std::net::TcpStream>);
+
+impl Drop for SshTransportOwner {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(Shutdown::Both);
+    }
+}
+
+async fn connect_owned(
+    ssh: &SshConfig,
+    handler: CheckKey,
+) -> Result<(client::Handle<CheckKey>, SshTransportOwner), russh::Error> {
+    let stream = TcpStream::connect((ssh.host.as_str(), ssh.port)).await?;
+    let socket = stream.into_std()?;
+    let owner = SshTransportOwner(Arc::new(socket.try_clone()?));
+    let stream = TcpStream::from_std(socket)?;
+    let handle = client::connect_stream(config(), stream, handler).await?;
+    Ok((handle, owner))
 }
 
 pub fn host_setting(ssh: &SshConfig) -> String {
@@ -106,12 +136,9 @@ impl SshManager {
             expected: known.clone(),
             observed: observed.clone(),
         };
-        let result = tokio::time::timeout(
-            Duration::from_secs(10),
-            client::connect(config(), (ssh.host.as_str(), ssh.port), handler),
-        )
-        .await;
-        if let Ok(Ok(handle)) = result {
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), connect_owned(ssh, handler)).await;
+        if let Ok(Ok((handle, _transport))) = result {
             let _ = handle
                 .disconnect(russh::Disconnect::ByApplication, "Host key verified", "en")
                 .await;
@@ -199,9 +226,9 @@ impl SshManager {
             expected: known.clone(),
             observed: observed.clone(),
         };
-        let mut handle = match tokio::time::timeout(
+        let (mut handle, transport) = match tokio::time::timeout(
             Duration::from_secs(10),
-            client::connect(config(), (ssh.host.as_str(), ssh.port), handler),
+            connect_owned(ssh, handler),
         )
         .await
         {
@@ -280,7 +307,9 @@ impl SshManager {
         let failure = failed.clone();
         let target = profile.host.clone();
         let target_port = profile.port;
+        let forwarding_transport = transport.clone();
         let task = tokio::spawn(async move {
+            let _transport = forwarding_transport;
             let mut channels = JoinSet::new();
             let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
             loop {
@@ -311,6 +340,7 @@ impl SshManager {
             stop,
             failed,
             task: task.abort_handle(),
+            _transport: transport,
         });
         let mut tunnels = self.tunnels.lock();
         tunnels.retain(|_, t| t.strong_count() > 0);

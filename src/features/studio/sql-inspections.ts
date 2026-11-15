@@ -78,7 +78,8 @@ export function prepareColumnInspection(
     new Error(
       "Column inspection supports a direct-table SELECT with bounded JOINs, without subqueries.",
     );
-  if (context.engine !== "postgres" && context.engine !== "mysql") throw unsupported();
+  if (context.engine !== "postgres" && context.engine !== "mysql" && context.engine !== "snowflake")
+    throw unsupported();
   const statement = statementTokensAt(state, pos);
   if (!statement) throw new Error("Statement is incomplete or exceeds the inspection limit.");
   const clean = (tokens: readonly SqlToken[]) => tokens.filter((t) => !t.kind.endsWith("Comment"));
@@ -89,7 +90,8 @@ export function prepareColumnInspection(
     const name = readIdentifier(token.text).value;
     if (
       (context.engine === "postgres" && new TextEncoder().encode(name).length > 63) ||
-      (context.engine === "mysql" && [...name].length > 64)
+      (context.engine === "mysql" && [...name].length > 64) ||
+      (context.engine === "snowflake" && [...name].length > 255)
     )
       throw unsupported();
   };
@@ -157,7 +159,17 @@ export function prepareColumnInspection(
     bindings: Binding[];
   }
   type Scope = Binding[];
-  const clauses = new Set(["WHERE", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FOR", "FETCH"]);
+  const clauses = new Set([
+    "WHERE",
+    "GROUP",
+    "HAVING",
+    "QUALIFY",
+    "ORDER",
+    "LIMIT",
+    "OFFSET",
+    "FOR",
+    "FETCH",
+  ]);
   const joinModifiers = new Set(["INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "NATURAL"]);
   const joins = new Set([
     "",
@@ -441,7 +453,8 @@ export function prepareColumnInspection(
         relation.push(tokens[next + 1]);
         next += 2;
       }
-      if (relation.length > 2) throw unsupported();
+      if (relation.length > (context.engine === "snowflake" && context.database ? 3 : 2))
+        throw unsupported();
       const explicitAlias = word(tokens[next]) === "AS";
       if (explicitAlias) next++;
       const alias = nameToken(tokens[next]) ? tokens[next++] : undefined;
@@ -474,11 +487,13 @@ export function prepareColumnInspection(
         throw new Error("Visible-table metadata is unavailable; no column claim was made.");
       const table = lookup.resolve(relation.map((token) => readIdentifier(token.text)));
       const info = table && context.tables.find((item) => tableKey(item.table) === tableKey(table));
-      if (
-        !table ||
-        !info ||
-        !["table", "partitionedTable", "r", "p", "BASE TABLE"].includes(info.kind)
-      )
+      const isDirectBaseTable = (kind: string) =>
+        ["table", "partitionedTable", "r", "p", "BASE TABLE"].includes(kind) ||
+        (context.engine === "snowflake" &&
+          kind.startsWith("BASE TABLE; ") &&
+          !kind.includes("dynamic=yes") &&
+          !kind.includes("dynamic=unknown"));
+      if (!table || !info || !isDirectBaseTable(info.kind))
         throw new Error(
           "A unique direct base table could not be resolved; no column claim was made.",
         );

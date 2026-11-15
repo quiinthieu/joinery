@@ -1,10 +1,11 @@
+import { historyDurationText, historyEvidenceText, historyExecutionText } from "./HistoryMetadata";
 import type {
   ConnectionProfile,
   DatabaseObjectKind,
   DatabaseObjectRef,
   DatabaseObjectSummary,
   Environment,
-  HistoryEntry,
+  HistorySummary,
   SavedQuery,
   SessionInfo,
   TableInfo,
@@ -114,7 +115,7 @@ export type SearchResultItem<TIcon = unknown> =
   | {
       id: string;
       kind: "history";
-      entry: HistoryEntry;
+      entry: HistorySummary;
       label: string;
       subtitle: string;
       shortcut: string;
@@ -132,7 +133,9 @@ export interface SearchEverywhereInput<TIcon = unknown> {
   catalog: Readonly<Record<string, readonly TableInfo[] | undefined>>;
   objects: Readonly<Record<string, readonly DatabaseObjectSummary[] | undefined>>;
   savedQueries?: readonly SavedQuery[];
-  history: readonly HistoryEntry[];
+  history: readonly HistorySummary[];
+  /** Native matches are authoritative only for this exact query, including deep SQL. */
+  historyMatchedQuery?: string;
   limit?: number;
 }
 
@@ -184,11 +187,12 @@ function scoreTextMatch(
   return 260;
 }
 
-function formatHistorySingleLine(sql: string | null, statementCount: number): string {
-  if (!sql) {
-    return `${statementCount} statement${statementCount === 1 ? "" : "s"} · SQL text not stored`;
+function formatHistorySingleLine(sql: string | null): string {
+  if (sql === null) {
+    return "SQL text not stored";
   }
   const collapsed = sql.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "Empty SQL text";
   return collapsed.length > 110 ? `${collapsed.slice(0, 109)}…` : collapsed;
 }
 
@@ -388,7 +392,7 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
       const connName = saved.connectionId
         ? (profileById.get(saved.connectionId)?.name ?? null)
         : null;
-      const preview = formatHistorySingleLine(saved.sql, 1);
+      const preview = formatHistorySingleLine(saved.sql);
       savedItems.push({
         item: {
           id: `saved:${saved.id}`,
@@ -412,19 +416,22 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
 
   if (includeHistory) {
     for (const entry of input.history) {
-      if (!queryLower && input.scope === "all" && !entry.sql) continue;
-      const preview = formatHistorySingleLine(entry.sql, entry.statementCount);
+      if (!queryLower && input.scope === "all" && !entry.sqlStored) continue;
+      const preview = formatHistorySingleLine(entry.sqlPreview);
+      const execution = historyExecutionText(entry);
+      const lifecycle =
+        (entry.provenance ?? "recorded") !== "recorded" ? historyEvidenceText(entry) : "";
       historyItems.push({
         item: {
           id: `hist:${entry.id}`,
           kind: "history",
           entry,
           label: preview,
-          subtitle: `${entry.connectionName} · ${entry.elapsedMs} ms`,
+          subtitle: `${entry.connectionName} · ${historyDurationText(entry)} · ${execution}${lifecycle ? ` · ${lifecycle}` : ""}${entry.executionSummary ? " · Attempts may not reach the server; completed statements may be uncommitted" : ""}`,
           shortcut: "History",
         },
         primary: preview,
-        haystack: `${entry.sql ?? ""} ${entry.connectionName} history`,
+        haystack: `${entry.sqlPreview ?? ""} ${entry.connectionName} ${execution} ${lifecycle} history`,
       });
     }
   }
@@ -517,11 +524,12 @@ export function buildSearchEverywhereResults<TIcon = unknown>(
   }
 
   for (const h of historyItems) {
-    const base = scoreTextMatch(queryLower, tokens, h.primary, null, null, h.haystack);
+    const local = scoreTextMatch(queryLower, tokens, h.primary, null, null, h.haystack);
+    const base = local ?? (input.historyMatchedQuery === input.query ? 260 : null);
     if (base === null) continue;
     scored.push({
       item: h.item,
-      score: base + (h.item.entry.sql ? 4 : 0),
+      score: base + (h.item.entry.sqlStored ? 4 : 0),
       tieOrder: tieOrder++,
     });
   }

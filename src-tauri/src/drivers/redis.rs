@@ -101,6 +101,7 @@ impl Redis {
         };
         let wire = options.connect().await?;
         let info = SessionInfo {
+            console_mode: false,
             id: session.into(),
             connection_id: profile.id.clone(),
             engine: EngineKind::Redis,
@@ -110,8 +111,10 @@ impl Redis {
             capabilities: EngineCapabilities {
                 sql: false,
                 transactions: false,
+                explicit_transaction_controls: false,
                 cancellation: true,
                 table_browsing: false,
+                relation_browsing: false,
                 table_editing: false,
                 table_filtering: false,
                 processes: false,
@@ -119,6 +122,8 @@ impl Redis {
                 schema_diagram: false,
                 schema_diff: false,
                 ddl_editing: false,
+                snowflake_reviewed_ddl: false,
+                snowflake_grid_editing: false,
                 lock_inspection: false,
                 explain_analyze: false,
                 oauth_browser: false,

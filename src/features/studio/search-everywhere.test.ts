@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   ConnectionProfile,
   DatabaseObjectSummary,
-  HistoryEntry,
+  HistorySummary,
   SessionInfo,
   TableInfo,
 } from "../../ipc/generated";
@@ -148,13 +148,15 @@ describe("buildSearchEverywhereResults", () => {
     ],
   };
 
-  const history: HistoryEntry[] = [
+  const history: HistorySummary[] = [
     {
+      provenance: "recorded",
       id: "h-1",
       connectionId: "pg-1",
       connectionName: "Local Postgres",
       startedAt: 1700000000000,
-      sql: "SELECT count(*) FROM public.orders WHERE status = 'paid';",
+      sqlPreview: "SELECT count(*) FROM public.orders WHERE status = 'paid';",
+      sqlStored: true,
       statementCount: 1,
       status: "completed",
       elapsedMs: 4,
@@ -383,4 +385,186 @@ describe("buildSearchEverywhereResults", () => {
       subtitle: "Load table rows in Data view before exporting.",
     });
   });
+});
+
+describe("script history accounting", () => {
+  const base: HistorySummary = {
+    provenance: "recorded",
+    id: "script",
+    connectionId: "pg",
+    connectionName: "Accounting fixture",
+    startedAt: 1,
+    sqlPreview: null,
+    sqlStored: false,
+    statementCount: 999,
+    status: "completed",
+    elapsedMs: 8,
+  };
+  function search(history: HistorySummary[], query = "") {
+    return buildSearchEverywhereResults({
+      query,
+      scope: "history",
+      commands: [],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: null,
+      profiles: [],
+      sessions: {},
+      catalog: {},
+      objects: {},
+      history,
+    }).items;
+  }
+
+  it("keeps legacy counts unknown without inventing SQL or using the old planned count", () => {
+    const [item] = search([base]);
+    expect(item.label).toBe("SQL text not stored");
+    expect(item.subtitle).toContain("Completed · Statement counts unknown");
+    expect(item.subtitle).not.toContain("999");
+    expect(item.subtitle).not.toContain("Attempted:");
+  });
+
+  it("shows and searches the stopped suffix even when SQL text was not stored", () => {
+    const entry: HistorySummary = {
+      ...base,
+      status: "stopped",
+      executionSummary: {
+        planned: 3,
+        attempted: 1,
+        completed: 1,
+        notAttempted: 2,
+        stopReason: "resultLimit",
+      },
+    };
+    const [item] = search([entry], "not attempted");
+    expect(item.label).toBe("SQL text not stored");
+    expect(item.subtitle).toContain(
+      "Stopped · Planned: 3 · Attempted: 1 · Completed: 1 · Not attempted: 2",
+    );
+    expect(item.subtitle).toContain(
+      "Result retention limit reached · Statements 2–3 were not attempted",
+    );
+    expect(item.subtitle).toContain(
+      "Attempts may not reach the server; completed statements may be uncommitted",
+    );
+    expect(item.subtitle).not.toContain("999");
+  });
+
+  it.each([
+    ["completed", null, "Completed"],
+    ["cancelled", "cancelled", "Cancelled"],
+    ["failed", "failed", "Failed"],
+    ["outcomeUnknown", "outcomeUnknown", "Outcome unknown"],
+  ] as const)(
+    "keeps the %s outcome and authoritative counts in search results",
+    (status, stopReason, label) => {
+      const entry: HistorySummary = {
+        ...base,
+        status,
+        sqlPreview: "SELECT\n  7",
+        sqlStored: true,
+        executionSummary: {
+          planned: 1,
+          attempted: 1,
+          completed: status === "completed" ? 1 : 0,
+          notAttempted: 0,
+          stopReason,
+        },
+      };
+      const [item] = search([entry]);
+      expect(item.label).toBe("SELECT 7");
+      expect(item.subtitle).toContain(
+        `${label} · Planned: 1 · Attempted: 1 · Completed: ${entry.executionSummary!.completed} · Not attempted: 0`,
+      );
+      expect(entry.sqlPreview).toBe("SELECT\n  7");
+    },
+  );
+});
+
+// A 256-character summary cannot independently verify a match deep in stored SQL.
+describe("native history matches", () => {
+  const entry: HistorySummary = {
+    provenance: "recorded",
+    id: "deep",
+    connectionId: "pg",
+    connectionName: "Local",
+    startedAt: 1,
+    sqlPreview: "SELECT /* preview only */",
+    sqlStored: true,
+    statementCount: 1,
+    status: "completed",
+    elapsedMs: 1,
+  };
+  const input = {
+    query: "far_beyond_preview",
+    scope: "history" as const,
+    commands: [],
+    tabs: [],
+    activeTabId: null,
+    preferredConnectionId: null,
+    profiles: [],
+    sessions: {},
+    catalog: {},
+    objects: {},
+    history: [entry],
+  };
+  it("preserves a native deep-SQL match for the exact requested query", () => {
+    expect(
+      buildSearchEverywhereResults({ ...input, historyMatchedQuery: input.query }).items,
+    ).toHaveLength(1);
+  });
+  it("does not treat an old query's native matches as matches for a new query", () => {
+    expect(
+      buildSearchEverywhereResults({ ...input, historyMatchedQuery: "previous query" }).items,
+    ).toHaveLength(0);
+    expect(buildSearchEverywhereResults(input).items).toHaveLength(0);
+  });
+});
+
+describe("history lifecycle metadata", () => {
+  const entry: HistorySummary = {
+    id: "lifecycle",
+    connectionId: "pg",
+    connectionName: "Local",
+    startedAt: 1,
+    sqlPreview: "SELECT original",
+    sqlStored: true,
+    statementCount: 1,
+    provenance: "admitted",
+    status: null,
+    elapsedMs: null,
+  };
+  function search(history: HistorySummary[], query = "") {
+    return buildSearchEverywhereResults({
+      query,
+      scope: "history",
+      commands: [],
+      tabs: [],
+      activeTabId: null,
+      preferredConnectionId: null,
+      profiles: [],
+      sessions: {},
+      catalog: {},
+      objects: {},
+      history,
+    }).items;
+  }
+  it("renders and searches admitted metadata without fabricating completion or duration", () => {
+    const [item] = search([entry], "completion pending");
+    expect(item.subtitle).toContain("Admitted; completion pending");
+    expect(item.subtitle).toContain("Duration unavailable");
+    expect(item.subtitle).toContain("Admission does not prove dispatch or server submission");
+    expect(item.subtitle).not.toMatch(/undefined|\b0 ms\b|Completed ·/);
+  });
+  it.each(["interrupted", "restoreRecovered"] as const)(
+    "searches %s unknown provenance and preserves exact known terminals",
+    (provenance) => {
+      const [unknown] = search([{ ...entry, provenance }], "recovered completion unknown");
+      expect(unknown.subtitle).toContain("Completion unknown");
+      const [known] = search([{ ...entry, provenance, status: "completed", elapsedMs: 17 }]);
+      expect(known.subtitle).toContain("Completed · Statement counts unknown");
+      expect(known.subtitle).toContain("17 ms");
+      expect(known.subtitle).toContain("Original recorded completion is preserved");
+    },
+  );
 });

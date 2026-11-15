@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 import { Table, Utf8, vectorFromArray, tableToIPC } from "apache-arrow";
 import type {
   ConnectionProfile,
@@ -25,7 +25,10 @@ async function fixture(page: Page, raw: string) {
         profile = args.profile;
         result = profile;
         break;
-      case "connect":
+      case "prepare_connection":
+        result = "sf-plan-attempt";
+        break;
+      case "connect_prepared":
         result = {
           id: "sf-plan-session",
           connectionId: profile.id,
@@ -149,6 +152,7 @@ async function fixture(page: Page, raw: string) {
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection name", { exact: true }).fill("Snowflake plan fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
   await page.getByLabel("Database", { exact: true }).fill("LAB");

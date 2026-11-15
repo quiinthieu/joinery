@@ -2,11 +2,25 @@ import type { SavedWorkspace } from "../ipc/generated";
 import { client, desktopAvailable, messageOf } from "../ipc/client";
 import { useStudio } from "./studio";
 
+export const RECOVERY_OPERATION_KEY = "joinery.metadataRecoveryOperation.v1";
+
+function recoveryRemembered() {
+  try {
+    return typeof window !== "undefined" && sessionStorage.getItem(RECOVERY_OPERATION_KEY) !== null;
+  } catch {
+    // Storage failure must not let a previously pending restore overwrite its
+    // workspace before the recovery UI can reconcile it.
+    return true;
+  }
+}
+
 /** Serialize saves so an older slow request can never replace a newer draft. */
 export class WorkspaceWriter {
   private pending: SavedWorkspace | null = null;
   private running: Promise<void> | null = null;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  private paused = false;
+  private generation = 0;
   constructor(
     private write: (workspace: SavedWorkspace) => Promise<void>,
     private onError: (error: unknown) => void,
@@ -14,6 +28,7 @@ export class WorkspaceWriter {
   schedule(workspace: SavedWorkspace) {
     this.pending = workspace;
     clearTimeout(this.timer);
+    if (this.paused) return;
     this.timer = setTimeout(() => {
       void this.flush().catch(this.onError);
     }, 400);
@@ -22,16 +37,19 @@ export class WorkspaceWriter {
     clearTimeout(this.timer);
     if (this.running) {
       await this.running;
+      if (this.paused) return;
       return this.flush();
     }
+    if (this.paused) return;
     this.running = (async () => {
-      while (this.pending) {
+      while (this.pending && !this.paused) {
         const workspace = this.pending;
+        const generation = this.generation;
         this.pending = null;
         try {
           await this.write(workspace);
         } catch (error) {
-          this.pending ??= workspace;
+          if (generation === this.generation) this.pending ??= workspace;
           throw error;
         }
       }
@@ -41,6 +59,38 @@ export class WorkspaceWriter {
     } finally {
       this.running = null;
     }
+  }
+
+  async flushDurably(): Promise<void> {
+    const requireWritable = () => {
+      if (this.paused)
+        throw new Error(
+          "Workspace saving is paused for metadata recovery. Resolve recovery before closing Joinery; drafts have not been saved.",
+        );
+    };
+    requireWritable();
+    await this.flush();
+    requireWritable();
+  }
+
+  isPaused() {
+    return this.paused;
+  }
+
+  async pause(): Promise<void> {
+    this.paused = true;
+    clearTimeout(this.timer);
+    await this.running;
+  }
+
+  discard() {
+    this.generation += 1;
+    this.pending = null;
+    clearTimeout(this.timer);
+  }
+
+  resume() {
+    this.paused = false;
   }
 }
 
@@ -85,6 +135,53 @@ const writer = new WorkspaceWriter(
   (workspace) => client.call("save_workspace", { workspace }),
   (error) => useStudio.getState().notify(`Workspace could not be saved: ${messageOf(error)}`),
 );
+if (recoveryRemembered()) void writer.pause();
+
+let startupRecoveryHeld = false;
+const recoveryListeners = new Set<() => void>();
+function setStartupRecoveryHeld(value: boolean) {
+  if (value === startupRecoveryHeld) return;
+  startupRecoveryHeld = value;
+  for (const listener of recoveryListeners) listener();
+}
+
+/** Call once on App mount, before exposing editors or starting reconciliation. */
+export function initializeWorkspaceRecoveryStartupHold() {
+  if (writer.isPaused() || recoveryRemembered()) {
+    void writer
+      .pause()
+      .catch((error) =>
+        useStudio
+          .getState()
+          .notify(`Workspace saving remains paused for recovery: ${messageOf(error)}`),
+      );
+    setStartupRecoveryHeld(true);
+  }
+  return startupRecoveryHeld;
+}
+export const workspaceRecoveryStartupHeld = () => startupRecoveryHeld;
+export function subscribeWorkspaceRecovery(listener: () => void) {
+  recoveryListeners.add(listener);
+  return () => {
+    recoveryListeners.delete(listener);
+  };
+}
+export const workspaceRecoveryHeld = () => writer.isPaused();
+
+export function pauseWorkspaceForRecovery() {
+  return writer.pause();
+}
+
+export function discardRecoveryWorkspaceSaves() {
+  writer.discard();
+}
+
+export function resumeWorkspaceAfterRecovery(discard: boolean) {
+  if (discard) writer.discard();
+  writer.resume();
+  setStartupRecoveryHeld(false);
+  if (useStudio.getState().bootstrap) writer.schedule(workspaceSnapshot());
+}
 export function watchWorkspace() {
   if (!desktopAvailable) return () => {};
   let previous = "";
@@ -114,4 +211,9 @@ export function watchWorkspace() {
 }
 export function flushWorkspace() {
   return writer.flush();
+}
+
+/** A paused drain is useful internally, but cannot prove a safe durable close. */
+export function flushWorkspaceForClose() {
+  return writer.flushDurably();
 }

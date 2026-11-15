@@ -66,6 +66,25 @@ export function Preferences({ onClose }: { onClose(): void }) {
     [snippetError, setSnippetError] = useState<string | null>(null),
     [shortcutDrafts, setShortcutDrafts] = useState<Partial<Record<ShortcutActionId, string>>>({}),
     [shortcutError, setShortcutError] = useState<string | null>(null);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  async function setTemporaryStorage(enabled: boolean) {
+    setStorageBusy(true);
+    setStorageError(null);
+    try {
+      const saved = await client.call("set_temporary_result_storage", { enabled });
+      useStudio.setState((current) => ({
+        bootstrap: current.bootstrap
+          ? { ...current.bootstrap, temporaryResultStorage: saved }
+          : null,
+      }));
+    } catch (error) {
+      setStorageError(messageOf(error));
+    } finally {
+      setStorageBusy(false);
+    }
+  }
 
   function applyShortcutInput(actionId: ShortcutActionId, rawValue: string) {
     const trimmed = rawValue.trim();
@@ -202,7 +221,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
       title="Preferences"
       subtitle="Make this space your own."
       onClose={onClose}
-      busy={busy || snippetBusy || formatPending > 0}
+      busy={busy || snippetBusy || formatPending > 0 || storageBusy}
     >
       <div className="modal-body preferences">
         <h3>Appearance</h3>
@@ -631,7 +650,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
           <button
             className="button primary"
             type="submit"
-            disabled={busy || snippetBusy || formatPending > 0 || !desktopAvailable}
+            disabled={busy || snippetBusy || formatPending > 0 || storageBusy || !desktopAvailable}
           >
             {busy && <Loader2 size={14} className="spin" />}
             {state.bootstrap?.passphraseConfigured ? "Update passphrase" : "Set passphrase"}
@@ -641,14 +660,44 @@ export function Preferences({ onClose }: { onClose(): void }) {
         <GroupManager />
         <div className="preference-divider" />
         <h3>Data privacy</h3>
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={state.bootstrap?.temporaryResultStorage ?? false}
+            disabled={
+              busy ||
+              snippetBusy ||
+              formatPending > 0 ||
+              storageBusy ||
+              !state.bootstrap ||
+              !desktopAvailable
+            }
+            onChange={(event) => void setTemporaryStorage(event.target.checked)}
+          />
+          Temporary disk storage for large results
+        </label>
         <p className="form-note">
-          Result rows stay in memory. Passwords use your system credential store. History and draft
-          text follow each connection's opt-in settings. Saved queries and custom snippets are
-          stored explicitly in local metadata and included in its backups; avoid putting secrets in
-          templates.
+          Off by default. When enabled, new query results can spill to private temporary files after
+          the shared 64 MiB memory budget fills. Limits: 1,000,000 rows per result and 8 GiB of
+          temporary storage shared by all results. Reaching a limit marks the result as truncated.
+          Close results to release their files; quitting also releases them. Rows are never restored
+          after restart. Turning this off affects new results; close existing results to remove
+          their temporary data. Temporary files are not encrypted by Joinery and use your system's
+          disk protection.
+        </p>
+        <InlineError message={storageError} />
+        {storageBusy && <p role="status">Saving result storage preference…</p>}
+        <p className="form-note">
+          Result rows stay in memory unless temporary storage is enabled or you export them.
+          Passwords use your system credential store. History and draft text follow each
+          connection's opt-in settings. Saved queries and custom snippets are stored explicitly in
+          local metadata and included in its backups; avoid putting secrets in templates.
         </p>
         <div className="preference-divider" />
-        <fieldset className="preference-recovery-lock" disabled={snippetBusy || formatPending > 0}>
+        <fieldset
+          className="preference-recovery-lock"
+          disabled={snippetBusy || formatPending > 0 || storageBusy}
+        >
           <MetadataRecovery onBusy={setBusy} />
         </fieldset>
       </div>
@@ -656,7 +705,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
         <button
           className="button ghost"
           onClick={onClose}
-          disabled={busy || snippetBusy || formatPending > 0}
+          disabled={busy || snippetBusy || formatPending > 0 || storageBusy}
         >
           Done
         </button>

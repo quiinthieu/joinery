@@ -169,32 +169,72 @@ impl Mysql {
         after: Option<Vec<Option<String>>>,
     ) -> AppResult<BrowseRows> {
         let schema = schema.clone();
-        self.metadata(move |conn|Box::pin(async move {
-            let current=schema_on(conn,&schema.table).await?;
-            unchanged(&schema,&current)?;
-            let (sql,built)=browse_sql(&schema,&query,after.as_deref())?;
-            let params=built.binds.iter().cloned().map(bind).collect::<Vec<_>>();
-            let mut query=conn.exec_iter(sql,Params::Positional(params)).await.map_err(mysql_error)?;
-            let names=query.columns_ref().iter().map(|c|c.name_str().into_owned()).collect::<Vec<_>>();
-            if names!=schema.columns.iter().map(|c|c.name.clone()).collect::<Vec<_>>() {return Err(AppError::new(ErrorCode::Conflict,"The table schema changed. Refresh before browsing."));}
-            let mut rows=Vec::new();let mut bytes=0;let mut limited=false;
-            while let Some(row)=query.next().await.map_err(mysql_error)? {
-                let row=text_row(row)?;let size=row.iter().map(|v|v.as_ref().map_or(5,|v|v.len()+5)).sum::<usize>();
-                if rows.len()==500||bytes+size>2*1024*1024 {
-                    if rows.is_empty() {return Err(AppError::new(ErrorCode::ResultLimitReached,"A table row exceeds the 2 MiB page budget. Use a smaller projection."));}
-                    limited=true;break;
-                }
-                bytes+=size;rows.push(row);
+        let raw = query.has_raw_clauses();
+        let submitted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let submitted_query = submitted.clone();
+        let outcome = self.metadata(move |conn| Box::pin(async move {
+            let current = schema_on(conn, &schema.table).await?;
+            unchanged(&schema, &current)?;
+            let (sql, built) = browse_sql(&schema, &query, after.as_deref())?;
+            let params = built.binds.iter().cloned().map(bind).collect::<Vec<_>>();
+            submitted_query.store(true, std::sync::atomic::Ordering::Release);
+            let mut query = conn.exec_iter(sql, Params::Positional(params)).await.map_err(mysql_error)?;
+            let names = query.columns_ref().iter().map(|column| column.name_str().into_owned()).collect::<Vec<_>>();
+            if names != schema.columns.iter().map(|column| column.name.clone()).collect::<Vec<_>>() {
+                return Err(AppError::new(ErrorCode::Conflict, "The table schema changed. Refresh before browsing."));
             }
-            let has_more=limited&&built.pageable;
-            let next_key=if has_more {rows.last().map(|r|built.cursor(r))}else{None};
-            Ok(BrowseRows {rows,next_key,has_more,truncated:limited&&!has_more})
-        })).await
+            let mut rows = Vec::new();
+            let mut bytes = 0;
+            let mut limited = false;
+            let mut display_error = None;
+            // The SQL itself is bounded to 501 rows. Retain a bounded prefix,
+            // but always observe the terminal server response: approved raw
+            // functions can fail (or commit effects) after the retained prefix.
+            while let Some(row) = query.next().await.map_err(mysql_error)? {
+                if limited { continue; }
+                let row = match text_row(row) {
+                    Ok(row) => row,
+                    Err(error) => { display_error = Some(error); limited = true; continue; }
+                };
+                let size = row.iter().map(|value| value.as_ref().map_or(5, |value| value.len() + 5)).sum::<usize>();
+                if rows.len() == 500 || bytes + size > 2 * 1024 * 1024 {
+                    if rows.is_empty() {
+                        display_error = Some(AppError::new(ErrorCode::ResultLimitReached, "A table row exceeds the 2 MiB page budget. Use a smaller projection."));
+                    }
+                    limited = true;
+                    continue;
+                }
+                bytes += size;
+                rows.push(row);
+            }
+            if let Some(error) = display_error { return Err(error); }
+            let has_more = limited && built.pageable;
+            let next_key = if has_more { rows.last().map(|row| built.cursor(row)) } else { None };
+            Ok(BrowseRows { rows, next_key, has_more, truncated: limited && !has_more })
+        })).await;
+        if raw
+            && submitted.load(std::sync::atomic::Ordering::Acquire)
+            && outcome.as_ref().is_err_and(|error| {
+                matches!(
+                    error.code,
+                    ErrorCode::ConnectionClosed | ErrorCode::ConnectionFailed
+                )
+            })
+        {
+            self.closed.cancel();
+            self.guards.close();
+            return Err(AppError::new(
+                ErrorCode::OutcomeUnknown,
+                "The table browse connection closed before its outcome could be observed. Verify any function effects before retrying this operation.",
+            ));
+        }
+        outcome
     }
     pub(super) async fn apply_rows(
         &self,
         schema: &TableSchema,
         rows: &[RowMutation],
+        guard: &guard::MysqlGuardHandle,
     ) -> AppResult<()> {
         if !schema.editable || self.read_only {
             return Err(AppError::new(
@@ -218,7 +258,7 @@ impl Mysql {
                 });
                 *self.edit.lock() = Some(lease.clone());
                 let mut conn = lease.connection.lock().await;
-                apply_on(&mut conn, schema, rows, &self.cancel_requested).await
+                apply_on(&mut conn, schema, rows, guard, self).await
             })
             .await;
         self.edit.lock().take();
@@ -257,7 +297,7 @@ pub(crate) fn browse_sql(
     Ok((sql, built))
 }
 
-fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
+pub(super) fn unchanged(expected: &TableSchema, current: &TableSchema) -> AppResult<()> {
     // Read-only Safe Mode masks editability on the expected schema. Masking
     // may narrow, never widen, what the current table allows.
     let narrowed = |expected: bool, current: bool| !expected || current;
@@ -455,7 +495,7 @@ async fn schema_diagram_on(conn: &mut Conn, schema: &str) -> AppResult<SchemaDia
     ))
 }
 
-async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> {
+pub(super) async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> {
     identifier(&table.schema)?;
     identifier(&table.name)?;
     let params = || {
@@ -464,28 +504,40 @@ async fn schema_on(conn: &mut Conn, table: &TableRef) -> AppResult<TableSchema> 
             bind(Some(table.name.clone())),
         ]
     };
-    let metadata=fetch(conn,"SELECT TABLE_TYPE,COALESCE(ENGINE,'') FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",params(),1,4096).await?;
+    let metadata=fetch(conn,"SELECT TABLE_TYPE,COALESCE(ENGINE,''),TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND (@@lower_case_table_names<>0 OR (BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ?))",[params(),params()].concat(),1,4096).await?;
     let table_info = metadata.first().ok_or_else(|| {
         AppError::new(
             ErrorCode::NotFound,
             "The table is missing or its metadata is unavailable",
         )
     })?;
+    // Use server spelling for wire-origin comparisons and registry reuse.
+    let canonical = TableRef {
+        schema: cell(table_info, 2).into(),
+        name: cell(table_info, 3).into(),
+    };
+    let table = &canonical;
+    let params = || {
+        vec![
+            bind(Some(table.schema.clone())),
+            bind(Some(table.name.clone())),
+        ]
+    };
     let transactional =
         cell(table_info, 0) == "BASE TABLE" && cell(table_info, 1).eq_ignore_ascii_case("InnoDB");
-    let rows=fetch(conn,"SELECT COLUMN_NAME,COLUMN_TYPE,DATA_TYPE,IS_NULLABLE,EXTRA,COLLATION_NAME,CASE WHEN COLUMN_DEFAULT IS NOT NULL AND (IS_NULLABLE='NO' OR COLUMN_DEFAULT<>'NULL') THEN '1' ELSE '0' END FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
+    let rows=fetch(conn,"SELECT COLUMN_NAME,COLUMN_TYPE,DATA_TYPE,IS_NULLABLE,EXTRA,COLLATION_NAME,CASE WHEN COLUMN_DEFAULT IS NOT NULL AND (IS_NULLABLE='NO' OR COLUMN_DEFAULT<>'NULL') THEN '1' ELSE '0' END FROM INFORMATION_SCHEMA.COLUMNS WHERE BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ? ORDER BY ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
     if rows.is_empty() {
         return Err(AppError::new(
             ErrorCode::NotFound,
             "No column metadata is available",
         ));
     }
-    let keys=fetch(conn,"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION",params(),4096,1024*1024).await?;
+    let keys=fetch(conn,"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION",params(),4096,1024*1024).await?;
     let primary_key = keys
         .iter()
         .map(|r| cell(r, 0).to_owned())
         .collect::<Vec<_>>();
-    let foreign=fetch(conn,"SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
+    let foreign=fetch(conn,"SELECT CONSTRAINT_NAME,COLUMN_NAME,REFERENCED_TABLE_SCHEMA,REFERENCED_TABLE_NAME,REFERENCED_COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE BINARY TABLE_SCHEMA=BINARY ? AND BINARY TABLE_NAME=BINARY ? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME,ORDINAL_POSITION LIMIT 4097",params(),4096,2*1024*1024).await?;
     let foreign_keys = ForeignKey::group(foreign.iter().map(|r| {
         (
             cell(r, 0).into(),
@@ -710,30 +762,55 @@ async fn completion_fks_on(
 }
 
 async fn apply_on(
-    conn: &mut Conn,
+    conn: &mut Connection,
     schema: &TableSchema,
     rows: &[RowMutation],
-    cancel: &CancellationToken,
+    guard: &guard::MysqlGuardHandle,
+    driver: &Mysql,
 ) -> AppResult<()> {
+    let cancel = &driver.cancel_requested;
     if cancel.is_cancelled() {
         return Err(AppError::new(
             ErrorCode::Cancelled,
             "The edit was cancelled before submission",
         ));
     }
+    let lock_timeout = driver.guards.policy().writer_lock_timeout;
+    // Row-lock timeouts do not bound metadata locks. This disposable writer
+    // needs both the server MDL timeout and an independent client-side bound.
+    conn.query_drop(format!(
+        "SET SESSION lock_wait_timeout={}",
+        lock_timeout.as_secs().max(1)
+    ))
+    .await
+    .map_err(mysql_error)?;
     conn.query_drop("START TRANSACTION")
         .await
         .map_err(mysql_error)?;
+    let mut interrupted_lock = false;
     let outcome = async {
         // Acquire the table metadata lock before rechecking engine and schema;
         // concurrent ALTER TABLE cannot switch the engine during this commit.
-        conn.query_drop(format!(
+        let lock = conn.query_drop(format!(
             "SELECT {} FROM {} WHERE 1=0 FOR UPDATE",
             projection(schema),
             qualified(&schema.table)
-        ))
-        .await
-        .map_err(mysql_error)?;
+        ));
+        match tokio::time::timeout(lock_timeout + Duration::from_secs(1), lock).await {
+            Ok(result) => result.map_err(mysql_error)?,
+            Err(_) => {
+                interrupted_lock = true;
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "The table is busy. Refresh before retrying these edits.",
+                ));
+            }
+        }
+        // The writer owns MDL now. Fresh I/O must prove this exact retained
+        // generation still protects the original table before any DML.
+        guard
+            .verify(&driver.session_id, &schema.table, cancel, &driver.closed)
+            .await?;
         unchanged_for_apply(schema, &schema_on(conn, &schema.table).await?)?;
         for row in rows {
             if cancel.is_cancelled() {
@@ -792,6 +869,14 @@ async fn apply_on(
     }
     .await;
     if let Err(error) = outcome {
+        if interrupted_lock {
+            if let Some(conn) = conn.0.take() {
+                let _ =
+                    tokio::time::timeout(driver.guards.policy().close_timeout, conn.disconnect())
+                        .await;
+            }
+            return Err(error);
+        }
         let _ = conn.query_drop("ROLLBACK").await;
         return Err(error);
     }

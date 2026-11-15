@@ -1,5 +1,14 @@
 # Joinery
 
+The active DataGrip replacement Goal, required workflow questions, and migration
+walkthrough are in [daily replacement acceptance](docs/replacement-acceptance.md).
+Use the [migration guide](docs/migration-from-datagrip.md) for local setup and
+hands-on evaluation.
+The [query history guide](docs/query-history.md) covers paged browsing, full-text
+search and explicit reopening, along with current retention and recovery limits.
+See the [verification ledger](docs/replacement-verification.md) for the current
+local run; historical feature completion does not establish replacement readiness.
+
 A desktop database studio built with Tauri v2, Rust, React, CodeMirror, and a Canvas data grid.
 
 The private [Joinery project hub](https://joinery-project-hub.otohime-nokimi.chatgpt.site)
@@ -17,24 +26,79 @@ provides blank inventory fields. Transfer these manually into the app; the
 frontend does not load or automatically import them.
 
 In New connection, choose Snowflake and enter the account hostname, username,
-database, uppercase role, warehouse, and schema. Joinery opens the system browser
-using local-application OAuth; no password or token is entered in Joinery. The
-account must enable `SNOWFLAKE$LOCAL_APPLICATION`. Use a database-enforced
-read-only role and a bounded warehouse/query budget.
+database, uppercase role, warehouse, and schema. New profiles select **External
+browser SSO (Snowflake SDK)**; existing profiles retain **Local application OAuth
+(SQL API)** unless explicitly changed. The SDK route needs the prepared runtime
+and opt-in macOS ARM64 resource build in the [runtime guide](docs/snowflake-runtime.md).
+Current application integration has [separate evidence and open gates](docs/snowflake-sdk-integration.md).
+Neither route accepts a password/token in the form. Use a database-enforced
+read-only role and a bounded warehouse/query budget. Actual account qualification
+for the SDK route remains open.
 
-Snowflake supports read-only SQL, catalog discovery, lazy column completion,
+Local source also implements an explicitly opted-in
+[reviewed retained SQL console](docs/snowflake-sdk-console-workflow.md) for mixed
+owner-written SQL and explicit boundaries across runs. It permanently suppresses
+automatic metadata/probe SQL on that physical session and provides SQL-free
+receipts. Local synthetic checks pass; account/native acceptance remains open;
+use the walkthrough and current ledger before evaluating this route.
+
+The local-application OAuth route requires the account to enable
+`SNOWFLAKE$LOCAL_APPLICATION`. It supports read-only SQL, catalog discovery, lazy column completion,
 structure inspection, and unordered table previews capped at 500 rows or 2 MiB.
 Use SQL for larger or ordered results. Catalog discovery covers the configured
 database and rejects inventories beyond 10,000 objects. Editing stays disabled.
 The live canary covered browser SSO, context verification and `SELECT 1`;
 catalog/table tests use synthetic fixtures and live table qualification is open.
 
-Snowflake refreshes expiring OAuth credentials under a shared lock and retains
+This OAuth route refreshes expiring credentials under a shared lock and retains
 rotated refresh tokens in memory. Expired or revoked sign-ins retire the session
 and require reconnecting; statements are never replayed automatically. Cancelled
 sessions also require reconnecting. Disconnect interrupts local HTTP work;
 already submitted remote reads may continue until Snowflake's statement timeout
 if the connection closes before a statement handle can be cancelled.
+
+The stateful SDK route supports read-only SQL, cancellation and bounded
+same-session relation/column completion in the observed current database. The
+[completion contract](docs/snowflake-sdk-metadata-design.md) records local evidence
+and remaining account qualification. Local source also provides revision-bound
+[relation browsing, column inspection and read-only preview](docs/snowflake-sdk-browsing-design.md),
+generated table/view DDL, [declared key inspection](docs/snowflake-sdk-constraints-design.md)
+and [ordered key column mappings](docs/snowflake-sdk-key-mappings-design.md),
+including local [selection of a retained referenced table](docs/snowflake-sdk-key-mappings-design.md#referenced-table-selection),
+independent [CHECK-clause inspection](docs/snowflake-sdk-check-constraints-design.md)
+(current local verification tracked in the ledger),
+explicit [session observations](docs/snowflake-sdk-session-observation.md), and
+[guarded schema selection](docs/snowflake-sdk-session-design.md), whose local
+application qualification passes. Separately reviewed
+[explicit transaction controls](docs/snowflake-sdk-transactions-design.md) are
+implemented with one-use authority and rollback recovery; their integrated local
+qualification passes on `929ae06`. They preserve command acknowledgement separately
+from verified data effects. The separately opted-in
+[reviewed SQL DML workflow](docs/snowflake-sdk-dml-design.md) now admits bounded
+single INSERT/UPDATE/DELETE statements and scalar binds, preserving exact count
+strings and durable outcomes. It reviews fully qualified SQL names without an
+immutable object-identity guarantee; defaults, policies, temporary shadows and
+concurrent DDL can change effects. unknown outcomes retire without replay, and
+metadata stays paused until explicit coherent refresh. Schema-8 local SDK
+workflows now also cover lossless `RelationBrowser` grid editing up to `1,000`
+columns, `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
+browsing, frame-bounded multi-batch CSV imports up to `100,000` rows,
+`ObjectExplorer` / `ObjectInspector`, 8 reviewed DDL actions (`CREATE TABLE`,
+`ADD COLUMN`, `ALTER COLUMN` nullability, `RENAME COLUMN`, `DROP COLUMN`,
+`DROP TABLE`, `CREATE VIEW`, `DROP VIEW`), guarded `ROLE` / `WAREHOUSE` /
+`DATABASE` / `SCHEMA` switching, live `inspection_schema` column diagnostics, and
+observed `EXPLAIN USING JSON` plan snapshots. DDL cannot be rolled back, and
+account-level DML/DDL/transaction/million-row qualification remains gated on
+explicit owner approval of the
+[`SANDBOX.BILLIE_TESTING` qualification plan](docs/snowflake-sandbox-qualification-plan.md).
+The earlier
+[disposable setup](docs/snowflake-disposable-setup.md) ran once: initial SSO and
+observations passed, CREATE DATABASE was rejected, and no schema/table was
+created. A fresh plan targets only new tables in the owner-permitted schema.
+The [submission guard](docs/snowflake-sdk-submit-guard-design.md) bounds SDK query
+submissions for pinned sources and retires on ambiguity. A lost acknowledgement
+can still mean the server executed a request; local tests do not establish remote
+exactly-once behavior. Neither route automatically falls back to the other mode.
 
 ## Development
 
@@ -78,6 +142,17 @@ never rewrite `main` to repair author metadata.
 
 ### Validation and local packaging
 
+Development and test builds use line-table debug information and disable Rust
+incremental caches to limit disk growth. File/line backtraces remain available;
+full debugger variable/type inspection requires a temporary debug-info override.
+Recompiling edited Rust code can take longer. Release settings are unchanged.
+See [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html).
+Before and after substantial validation or packaging, check free space with
+`df -h .` and generated output with `du -sh src-tauri/target`. Stop starting builds
+when fewer than 20 GiB are free. Build caches still grow across configurations;
+this is a smaller default, not automatic garbage collection. Remove generated
+output only after reviewing its scope and confirming no build or app uses it.
+
 GitHub Actions validates pull requests and pushes to `main` using standard
 Linux, Windows, and macOS runners. Jobs only run while the repository is public,
 where standard runner minutes are free. The workflow has no artifact uploads,
@@ -115,12 +190,25 @@ steps below. Rust integration tests marked ignored do not run in `pnpm validate`
 ```sh
 python3 scripts/mysql-tls-fixture.py
 docker compose --profile mysql --profile mysql-folded --profile redis up -d --wait
-cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test redis -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --test postgres --test ssh --test mysql --test mysql_guard --test redis --test transaction_transport --test postgres_protocol --test postgres_identity_permissions -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml --no-default-features --example table_identity_probe -- --ignored --test-threads=1
 pnpm exec playwright install chromium --only-shell
 pnpm test:e2e
 ```
 
 The disposable PostgreSQL fixture listens on `127.0.0.1:55432`; database/user `joinery`, password `joinery-local-only`. Select **Local**, disable TLS for this fixture, and use these credentials. `docker compose down` stops the fixture while retaining its volume; `docker compose down -v` also deletes its test data.
+
+The table identity example tests include actual PostgreSQL replacement checks
+and MySQL/MariaDB lease-expiry replacement checks. The latter use an explicit
+Rust-only four-second fixture policy, with fresh-edit controls and verified
+cleanup. Normal application leases expire after 60 seconds; this diagnostic
+does not change profile settings or qualify external databases.
+MySQL/MariaDB edits and CSV imports must retain their original target generation;
+expired or disconnected targets require a fresh read/preview and review. The
+application retains at most 32 live guards per session, rejects acquisition when
+full, and releases them on expiry, last-owner release or shutdown. External DDL
+may wait for a live guard; approved application DDL releases retained guards
+before submission. See [the guard contract](docs/mysql-table-identity-design.md).
 
 The optional `mysql` Compose profile adds MySQL 8.4 on `127.0.0.1:53306` and
 MariaDB 11.4 on `127.0.0.1:53307`, with the same disposable database/user/password.
@@ -224,19 +312,36 @@ query analysis, design, productivity and release/qualification gates in the
 
 - PostgreSQL and MySQL/MariaDB profiles, verified TLS/custom CAs, system credential storage, hierarchical environment groups, and connection health.
 - SSH bastions with password, encrypted OpenSSH key, or agent authentication; explicit host fingerprint trust; shared tunnels and loopback-only forwarding. Database TLS verifies the original database hostname through the tunnel.
-- Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans for the current statement or selection, with bounded tree/raw views and normal Rust Safe Mode authorization; PostgreSQL and capability-checked MySQL/MariaDB Analyze require explicit review even on Silent profiles. Explicit plan snapshots compare compatible executions without rerunning SQL, within ten-capture / 2 MiB shared payload bounds. Execution timing separates queue wait, backend active/total, first nonempty row batch and client elapsed; missing metrics remain unavailable. Plan context is observed on the execution lane. MySQL actual plans use TREE without changing JSON settings; Snowflake logical plans preserve step-local shared operators and pruning estimates; raw JSON stays exact. Snowflake snapshots remain unavailable until warehouse/session context can be observed and qualified.
+- Estimated PostgreSQL/MySQL/MariaDB/Snowflake plans for the current statement or selection, with bounded tree/raw views and normal Rust Safe Mode authorization; PostgreSQL and capability-checked MySQL/MariaDB Analyze require explicit review even on Silent profiles. Explicit plan snapshots compare compatible executions without rerunning SQL, within ten-capture / 2 MiB shared payload bounds. Execution timing separates queue wait, backend active/total, first nonempty row batch and client elapsed; missing metrics remain unavailable. Plan context is observed on the execution lane. MySQL actual plans use TREE without changing JSON settings; Snowflake logical plans preserve step-local shared operators and pruning estimates; raw JSON stays exact. Snowflake `EXPLAIN USING JSON` plan snapshots compare compatible observed SDK executions locally; live account qualification remains gated on the sandbox plan.
 - CodeMirror SQL tabs, current-statement/selection execution, complete-batch execution, schema-aware and FK JOIN completion, typed query parameters with explicit NULL and reviewed values, structured backend Unicode diagnostics, worker-based selection/document formatting, persisted formatting preferences and dialect-scoped snippets with keyboard placeholders, cancellation, process inspection, and template-only metadata history. Parameter values remain transient in memory; inline Unicode diagnostics, error jumps, statement navigation, SQL definitions/usages and quick metadata documentation are integrated locally. Formatting preserves named/positional binds, comments and quoted text in covered dialect cases; template expansion never executes SQL.
 - Canvas grid, exact integer/decimal text, explicit NULLs, keyset table browsing, PK/FK structure, sparse edits, atomic multi-cell TSV paste, draft row inserts (`<default>` / `<required>`), row deletes with `FOR UPDATE` full-row conflict checks, generated SQL/bindings review, and atomic conflict-checked commits across pages in one transaction. Binary columns open in a 16-byte-per-row Hex/ASCII viewer, PostgreSQL arrays open in an indexed element viewer distinguishing SQL `NULL` from `"NULL"`, and JSON/JSONB values format losslessly without rounding 64-bit integers or reordering numeric keys.
 - PostgreSQL and MySQL/MariaDB table tabs sort on the server (click a header; Shift+click adds a key), filter with typed bound predicates, and accept optional raw `WHERE` and `ORDER BY` clauses classified through Rust Safe Mode (non-read or unparseable clauses are blocked in `ReadOnly` and require one-use review approval in writable modes). Paging keeps a primary-key tie-breaker and a fixed NULL order (ascending last, descending first); sort and filter lock while edits are pending. Column hide (non-PK), order and widths persist locally per connection/schema/table and purge when a connection is deleted. Select a foreign-key cell and press ⇧⌘B to open referenced rows, or press ⇧⌘G on a primary/target key to open referencing rows in a new filtered tab; composite keys pair columns by constraint order and NULL keys reference nothing. PostgreSQL text search is case-insensitive; MySQL follows the column collation.
 - Data movement workflows preserve exact numeric text, explicit SQL `NULL` vs `""`, and Rust capability boundaries: Copy-as formats selections as `CSV`, `TSV`, `JSON`, `NDJSON`, `SQL INSERT`, or `Markdown` (up to 5,000 rows / 2 MiB) across visible/reordered columns; streaming exports write `CSV`, `TSV`, `JSON`, or `NDJSON` through native save-dialog capability grants to `<dest>.partial` (`0600`) without retaining streamed pages in `ResultStore`, atomically renaming on completion or appending an explicit `INCOMPLETE` trailer on cancellation/error; CSV/TSV imports validate regular files upfront (up to 16 MiB / 5,000 rows), support column remapping, and route 500-row insert batches through `ReviewDialog` and one atomic transaction; and key-aware data comparison diffs bounded live tables or retained result snapshots (including cross-engine) while separating duplicate-key and `NULL`-key anomalies.
 - Categorized database explorer and cross-connection Search Everywhere: schemas group `Tables` (including PostgreSQL partitioned tables), `Views`, `Materialized views`, `Functions`, `Procedures` (disambiguating PostgreSQL overloads by identity arguments), `Sequences` (including MariaDB sequences), `Triggers`, and `Indexes` with WAI-ARIA keyboard tree navigation (`ArrowRight`/`ArrowLeft`/`ArrowDown`/`ArrowUp`/`Home`/`End`/`Enter`) and object-kind filter chips (`All`/`Tables`/`Views`/`Routines`/`Other`). Table/view tabs include a `DDL` sub-view alongside `Constraints`, `Indexes` (key expressions, partial `WHERE` predicates, prefix lengths), and `Triggers` in `Structure`; routines, sequences, triggers, and indexes open dedicated inspector tabs with bounded 256 KiB read-only DDL (`Copy DDL`, `Open in SQL editor`, explicit `Unavailable` privilege fallback) and bounded 200-edge `Uses` / `Used by` dependency navigation. Press ⌘K (`All`) or ⇧⌘O (`Objects`) to jump across commands, open tabs, all connected sessions' objects (without auto-connecting offline profiles), saved queries, and recent query history.
-- Multi-console session pool, transaction controls, capability-gated `.sql` files, and local query/bookmark library: PostgreSQL and MySQL/MariaDB consoles can attach to named secondary sessions (up to four total sessions per connection) or share the primary session, switch active schema (`search_path`) or database (`USE`) per session with immediate live completion refresh (Snowflake verifies request-scoped schema switches statelessly), and toggle `Auto-commit` vs `Manual commit` with wire-observed transaction state (`In transaction` / `Failed transaction`) and explicit `Commit` / `Rollback` controls while keeping table-grid edits isolated. Query tabs open (`⌘O`), save (`⌘S`), and save-as (`⇧⌘S`) regular UTF-8 `.sql` files up to 4 MiB via reusable capability tokens (`GrantKind::SqlFile`, atomic sibling temp-file rename, dirty indicator and unsaved-close guard, zero raw paths over IPC, excluded from workspace drafts). Reusable SQL can be stored in the local Saved Queries library (max 256 entries, privacy-safe detached default when `storeQueryText` is off), objects and saved queries can be bookmarked (`⌘D`), and visited items are navigable via Recent locations (`⇧⌘E`).
+- Multi-console session pool, transaction controls, capability-gated `.sql` files, and local query/bookmark library: PostgreSQL and MySQL/MariaDB consoles can attach to named secondary sessions (up to four total sessions per connection) or share the primary session, switch active schema (`search_path`) or database (`USE`) per session with immediate live completion refresh (Snowflake OAuth verifies request-scoped schema switches statelessly, while Snowflake externalBrowser SDK sessions switch `ROLE`, `WAREHOUSE`, `DATABASE`, and `SCHEMA` on the live connection), and toggle `Auto-commit` vs `Manual commit` with wire-observed transaction state (`In transaction` / `Failed transaction`) and explicit `Commit` / `Rollback` controls while keeping table-grid edits isolated. Query tabs open (`⌘O`), save (`⌘S`), and save-as (`⇧⌘S`) regular UTF-8 `.sql` files up to 4 MiB via reusable capability tokens (`GrantKind::SqlFile`, atomic sibling temp-file rename, dirty indicator and unsaved-close guard, zero raw paths over IPC, excluded from workspace drafts). Reusable SQL can be stored in the local Saved Queries library (max 256 entries, privacy-safe detached default when `storeQueryText` is off), objects and saved queries can be bookmarked (`⌘D`), and visited items are navigable via Recent locations (`⇧⌘E`).
 - Rust-enforced Safe Mode, production password gates, one-use expiring approvals, a hash-only audit viewer, and uncertain commit outcomes.
 - Dark/light/high-contrast themes, keyboard commands, inspector, and bounded in-memory result storage.
 
 Grid browsing and commits use login credentials independently of SQL-editor transactions and session settings. A grid commit never commits an editor transaction. Tables without a supported primary key have a bounded first page and cannot be edited.
 
-Results are never written to disk unless explicitly exported through a native save-dialog capability grant (which writes no row values or file paths to SQLite): Rust retains at most 64 MiB in total and 100,000 rows per query result, the display cache retains at most 32 MiB / 512 pages, and pending edits have an 8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB and the frontend adapts page sizes for wide results. SQL history text is opt-in per connection; passwords stay in memory or the operating-system credential store.
+Results stay in memory by default, unless explicitly exported through a native
+save-dialog capability grant. To retain large query results, enable **Preferences
+→ Temporary disk storage for large results** before running the query. New
+results can then spill to private anonymous temporary files after the shared
+64 MiB result-memory budget fills. Limits are 1,000,000 rows per result and 8 GiB
+of temporary storage globally. Reaching a limit marks the retained snapshot as
+truncated; export cannot recover rows that were not retained. The status bar
+shows result memory and temporary storage separately. Closing a result or quitting
+releases its files; results never restore after restart. Disabling the preference
+affects new results, so close existing results to release their temporary data.
+Joinery does not encrypt these files; they use the system's disk protection.
+See the [large-result walkthrough](docs/large-results.md) for bounds and checks.
+
+The display cache retains at most 32 MiB / 512 pages, and pending edits have an
+8 MiB budget. A table page stops at 500 rows or 2 MiB. IPC frames stop at 4 MiB
+and the frontend adapts page sizes for wide results. Exported rows, result rows
+and export paths are not written to SQLite. SQL history text is opt-in per
+connection; passwords stay in memory or the operating-system credential store.
 
 Cancellation discards the affected SQL session after a native PostgreSQL cancel request or MySQL/MariaDB owned-query cancellation to prevent a late request from cancelling a subsequent query. Reconnect before running another query. A lost connection during commit requires checking database state before retrying.
 
@@ -287,6 +392,42 @@ RSS sums can double-count shared pages; physical footprint is reported separatel
 These samples do not qualify representative idle RAM, cold visible startup or FPS.
 
 This separate feature build opens a hidden system WebView, uses disposable application data, and checks native binary IPC, Arrow decoding, workers, editor/grid mounting, and close protection. It also checks ten tab/result cleanup cycles with Arrow requests in flight and records shell/loading/release checkpoints with main-process memory samples. Its executable is copied to `.cache/native-smoke/` before a normal build can overwrite it; the runner verifies the binary digest. It does not use the operating-system credential store or any database credentials. Build provenance records the source revision, tree, and whether the working tree was dirty. The shell checkpoint is hidden DOM readiness; WebView helper memory, visible paint, and display FPS remain unqualified.
+
+To test actual close/reopen against the disposable PostgreSQL fixture on port
+55432, start that fixture first, then run:
+
+```sh
+pnpm desktop:smoke:build
+pnpm test:native:recovery:runner
+pnpm test:native:recovery
+```
+
+The recovery mode uses the same hidden test executable, isolated workspace and
+in-memory secret store. Each pair of processes creates its own fixture table,
+cancels a close with a pending transaction, then confirms close with a draft save
+still inside its 400 ms debounce window. The second process checks the latest
+draft/preferences, empty session/result state and actual PostgreSQL rollback
+without executing the recovered draft, then drops its table. The runner requires
+observed process exit before that debounce deadline and records local evidence
+in `.cache/native-smoke/recovery-runs.json`. `--runs 1` runs one pair;
+`--fixture-port PORT` selects another loopback synthetic fixture with the same
+fixed test database and credentials. This does not qualify the normal installed
+bundle, the OS credential store, other engines or an owner's live database.
+
+Encrypted metadata recovery has a separate hidden WebView close/reopen test:
+
+```sh
+pnpm desktop:snowflake:smoke:build
+pnpm test:native:encrypted-recovery:runner
+pnpm test:native:encrypted-recovery
+```
+
+It uses only a fresh local metadata root and synthetic keys, with production
+encryption strength and actual main-window command permissions. The
+[recovery guide](docs/encrypted-metadata-recovery.md) explains the workflow,
+scope, deadlines and separate browser import/export checks. Consult the
+[verification ledger](docs/replacement-verification.md) for actual run status;
+this does not qualify native picker interaction or the normal installed app.
 
 To explicitly qualify the native credential store with one disposable random entry:
 

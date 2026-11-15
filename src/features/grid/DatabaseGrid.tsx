@@ -191,6 +191,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });
   model.current = { tab, result };
+  const selectionTarget = useRef<CellTarget | null>(null);
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+  const selectTarget = useCallback((target: CellTarget | null) => {
+    selectionTarget.current = target;
+    onSelectRef.current(target);
+  }, []);
   const rawColumnsInfo =
     tab.kind === "benchmark"
       ? benchmarkColumns
@@ -300,16 +307,15 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       for (const x of columns) cells.push({ cell: [x, y] });
     grid.current?.updateCells(cells);
   }, []);
-  useEffect(() => resultCache.subscribe(redraw), [redraw]);
   useEffect(() => dirtyStore.subscribe(redraw), [redraw]);
   useEffect(() => {
     const empty = { rows: CompactSelection.empty(), columns: CompactSelection.empty() };
     selectionRef.current = empty;
     setSelection(empty);
     onSelectedRowsChange?.([]);
-    onSelect(null);
+    selectTarget(null);
     redraw();
-  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw]);
+  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw, selectTarget]);
 
   const locate = useCallback((row: number) => {
     const { tab, result } = model.current;
@@ -410,7 +416,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     pendingCanvasFocus.current = true;
     setSelection(nextSelection);
     onSelectedRowsChange?.([targetRow]);
-    onSelect(targetAt([targetCol, targetRow], true));
+    selectTarget(targetAt([targetCol, targetRow], true));
   }, [focusRowRequest?.seq]);
 
   useLayoutEffect(() => {
@@ -430,12 +436,12 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       selectionRef.current = empty;
       setSelection(empty);
       onSelectedRowsChange?.([]);
-      onSelect(null);
+      selectTarget(null);
       return;
     }
     const activeCell = selectionRef.current.current?.cell;
-    if (activeCell) onSelect(targetAt(activeCell, true));
-  }, [dirtyVersion, rowCount, targetAt]);
+    if (activeCell) selectTarget(targetAt(activeCell, true));
+  }, [dirtyVersion, rowCount, targetAt, selectTarget]);
 
   const getCellContent = useCallback(
     ([col, row]: Item): GridCell => {
@@ -629,7 +635,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
               );
             }
           }
-          onSelect(targetAt(cell, true));
+          selectTarget(targetAt(cell, true));
           return;
         }
         const value =
@@ -649,18 +655,30 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           original: resultCache.read(target.resultId, target.column.id, target.row, true)!.value,
           value,
         });
-        onSelect(targetAt(cell, true));
+        selectTarget(targetAt(cell, true));
       } catch (error) {
         useStudio
           .getState()
           .notify(error instanceof Error ? error.message : "Could not edit this value");
       }
     },
-    [onSelect, targetAt, isGridEditable],
+    [selectTarget, targetAt, isGridEditable],
   );
 
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+
+  useEffect(
+    () =>
+      resultCache.subscribe(() => {
+        redraw();
+        const activeCell = selectionRef.current.current?.cell;
+        if (!activeCell || selectionTarget.current) return;
+        const target = targetAt(activeCell, true);
+        if (target) selectTarget(target);
+      }),
+    [redraw, selectTarget, targetAt],
+  );
 
   const applyPaste = useCallback(
     (anchor: Item, values: readonly (readonly string[])[]) => {
@@ -714,14 +732,14 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       try {
         dirtyStore.applyBatch(outcome.cells, outcome.insertCells);
         const activeCell = selectionRef.current.current?.cell;
-        if (activeCell) onSelect(targetAt(activeCell, true));
+        if (activeCell) selectTarget(targetAt(activeCell, true));
       } catch (error) {
         useStudio
           .getState()
           .notify(error instanceof Error ? error.message : "Could not paste these cells");
       }
     },
-    [connected, isGridEditable, locate, onSelect, targetAt, visibleColumns],
+    [connected, isGridEditable, locate, selectTarget, targetAt, visibleColumns],
   );
 
   const applyPasteRef = useRef(applyPaste);
@@ -1030,14 +1048,14 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                 ?.querySelector<HTMLElement>('[data-testid="data-grid-canvas"]')
                 ?.focus({ preventScroll: true });
             }
-            onSelect(targetAt(cell, true));
+            selectTarget(targetAt(cell, true));
           }}
           gridSelection={selection}
           onGridSelectionChange={(nextSelection) => {
             selectionRef.current = nextSelection;
             setSelection(nextSelection);
             onSelectedRowsChange?.(selectedVisualRows(nextSelection));
-            onSelect(nextSelection.current ? targetAt(nextSelection.current.cell, true) : null);
+            selectTarget(nextSelection.current ? targetAt(nextSelection.current.cell, true) : null);
           }}
           onCellActivated={(cell) => {
             const target = targetAt(cell, true);

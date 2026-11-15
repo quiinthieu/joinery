@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import type { QueryEvent } from "../../src/ipc/generated";
 
 for (const [engine, port] of [

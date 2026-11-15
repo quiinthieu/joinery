@@ -1,4 +1,4 @@
-import { expect, test, type Page, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "./fixtures";
 import { tableFromIPC } from "apache-arrow";
 
 async function connect(page: Page, engine: "PostgreSQL" | "MySQL" | "MariaDB") {

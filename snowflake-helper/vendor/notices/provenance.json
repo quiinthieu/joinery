@@ -1,0 +1,395 @@
+{
+  "format": "joinery-snowflake-notices-v1",
+  "packageLockSha256": "e23933ecb16badf5e9621cb089796193388493f9230976fa4b8c48efa9f13098",
+  "scope": "Original notice text and bounded source mapping for the exact locked packages. No legal clearance, signature verification or authentication of all dependency files is asserted.",
+  "packages": [
+    {
+      "lockPath": "node_modules/@aws-sdk/credential-provider-http",
+      "name": "@aws-sdk/credential-provider-http",
+      "version": "3.972.84",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.84.tgz",
+      "integrity": "sha512-6xFe7tGPZedfak01TLUxuExU2Xhqw0VtoVvcS/+1OLjPB8If5vulTpCaR0TKTA/J6sAhTOjZHb6+4R1e1KRMKg==",
+      "declaredLicense": "Apache-2.0",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "43081ced3aaecd62ebc1d997c2813fdbc36f3e058c90fa1f77c5ed07c1af494a",
+        "README.md": "27ef1d7518b40bb68d188dc925e6499fa5fc403e89b3c44eb8b61554980163e3"
+      },
+      "source": {
+        "repository": "https://github.com/aws/aws-sdk-js-v3",
+        "commit": "ea82eac3afd74c15510e427b91a9eff8292f178b",
+        "mapping": "AWS v3.1164.0 annotated tag resolves to this commit. Same-commit subpackage manifest matches the exact npm name/version and declares Apache-2.0; the original repository-root license is supplied. Compiled npm files are not claimed byte-identical to TypeScript sources.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE",
+            "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/packages-internal/credential-provider-http/package.json",
+            "sha256": "a194dab482998da25a45151ea8f0ae023c6a3c272be45237ebb995f79fb36db0"
+          }
+        ]
+      },
+      "notes": [],
+      "registryEvidence": {
+        "url": "https://registry.npmjs.org/@aws-sdk%2fcredential-provider-http/3.972.84",
+        "sha256": "6593c5df17c4ff6f50ad291d3e9c4ec69bc01821c9bba1bc619f6d286c85d02e",
+        "gitHead": null
+      },
+      "notice": {
+        "file": "aws-sdk-LICENSE",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+        "sourceUrl": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/@aws-sdk/credential-provider-login",
+      "name": "@aws-sdk/credential-provider-login",
+      "version": "3.972.89",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.89.tgz",
+      "integrity": "sha512-5kcIZkMMs6eYvU6psqZkmeWsS3EGES53S6xUJFCC6eoJak3BQCCaF8yLU1bN6LTAOr2a9RWw+m1XBGen7Jcq+Q==",
+      "declaredLicense": "Apache-2.0",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "51993593a7b491474472cacc09eee871b7f77ffa40d9df7605b9eb2f3916af4c",
+        "README.md": "a33261115ded62f80ada337b9ed2193392837a6dd49d3ce89ec81fc48fbe33fd"
+      },
+      "source": {
+        "repository": "https://github.com/aws/aws-sdk-js-v3",
+        "commit": "ea82eac3afd74c15510e427b91a9eff8292f178b",
+        "mapping": "AWS v3.1164.0 annotated tag resolves to this commit. Same-commit subpackage manifest matches the exact npm name/version and declares Apache-2.0; the original repository-root license is supplied. Compiled npm files are not claimed byte-identical to TypeScript sources.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE",
+            "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/packages-internal/credential-provider-login/package.json",
+            "sha256": "3f4eed376ffc6e7ed326d905adbadd1540b50ab00788462cf271938b1a9f74bc"
+          }
+        ]
+      },
+      "notes": [],
+      "registryEvidence": {
+        "url": "https://registry.npmjs.org/@aws-sdk%2fcredential-provider-login/3.972.89",
+        "sha256": "f66681ca99c4b40f99913c56ffb956802b40859d37d7be7b3b64a4d25d2db840",
+        "gitHead": null
+      },
+      "notice": {
+        "file": "aws-sdk-LICENSE",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+        "sourceUrl": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/@aws-sdk/nested-clients",
+      "name": "@aws-sdk/nested-clients",
+      "version": "3.998.1",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.1.tgz",
+      "integrity": "sha512-KPw5W6LN3waUskfDCRXRcyBEHAev5PVlMOjMq74OIivFYbgPvq39QeFege7IOFPncO425/AQK0qxdfaoeGejYQ==",
+      "declaredLicense": "Apache-2.0",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "76ae277af932a308b36d23638e870b6464e7b9ac66bb2231cb4b338eecc4b0cc",
+        "README.md": "92cdad5ce2f6c085d7b65ee8c701340a75799ae6045f1b526b49a28caad27c30"
+      },
+      "source": {
+        "repository": "https://github.com/aws/aws-sdk-js-v3",
+        "commit": "ea82eac3afd74c15510e427b91a9eff8292f178b",
+        "mapping": "AWS v3.1164.0 annotated tag resolves to this commit. Same-commit subpackage manifest matches the exact npm name/version and declares Apache-2.0; the original repository-root license is supplied. Compiled npm files are not claimed byte-identical to TypeScript sources.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE",
+            "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/packages-internal/nested-clients/package.json",
+            "sha256": "1871daa00a64acae3e9781848063e0f601993cbc380443587e5c1e4270fa2e83"
+          }
+        ]
+      },
+      "notes": [],
+      "registryEvidence": {
+        "url": "https://registry.npmjs.org/@aws-sdk%2fnested-clients/3.998.1",
+        "sha256": "9ee9507d5700677f4d24130647de56d1e499c547c8a8dc1b0fecdc25bd84fc0d",
+        "gitHead": null
+      },
+      "notice": {
+        "file": "aws-sdk-LICENSE",
+        "sha256": "edea91454b811f127fbdea3d86f378f6719bd372ed440abf82b232f6fca06c3d",
+        "sourceUrl": "https://raw.githubusercontent.com/aws/aws-sdk-js-v3/ea82eac3afd74c15510e427b91a9eff8292f178b/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/@nodable/entities",
+      "name": "@nodable/entities",
+      "version": "3.1.0",
+      "resolved": "https://registry.npmjs.org/@nodable/entities/-/entities-3.1.0.tgz",
+      "integrity": "sha512-LsS/DjHr+uDM647Gru/cA8+J3a3HfhttwCKLyuoyN7yXTFCxKBtSgMQBvrW9yNPa2/zDRUNuGPaH5QUFoa4arQ==",
+      "declaredLicense": "MIT",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "81fc13661f9431f9f72ae5a1723482a1bcb473af463b93ca0b27c42461a6c6c9",
+        "README.md": "7e3484a07c208b5c5813290a993244c6841efc3d4241c29a07ef948e8129a758"
+      },
+      "source": {
+        "repository": "https://github.com/nodable/val-parsers",
+        "commit": "ac48e7ea591da372be023a481875c747535812b3",
+        "mapping": "The exact npm 3.1.0 metadata gitHead identifies this commit and the package repository. Its root MIT license is supplied. The source subpackage manifest at this commit still says 3.0.0; matching source version or byte-identical build output is not claimed.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/nodable/val-parsers/ac48e7ea591da372be023a481875c747535812b3/LICENSE",
+            "sha256": "750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/nodable/val-parsers/ac48e7ea591da372be023a481875c747535812b3/Entity/package.json",
+            "sha256": "548526ce0e1cad9ffe904fba19067013c9fea336eafd3cd52a337ec44406c9ed"
+          }
+        ]
+      },
+      "notes": [],
+      "registryEvidence": {
+        "url": "https://registry.npmjs.org/@nodable%2fentities/3.1.0",
+        "sha256": "cd4da47c204cb1f8e78e8e1d779df058edd1c079a3beac2d464e8ae37ad1ba8a",
+        "gitHead": "ac48e7ea591da372be023a481875c747535812b3"
+      },
+      "notice": {
+        "file": "entities-LICENSE",
+        "sha256": "750cb3fb6362804957ef52caaf9b5c824015be44d494637330d7cd8834d31d40",
+        "sourceUrl": "https://raw.githubusercontent.com/nodable/val-parsers/ac48e7ea591da372be023a481875c747535812b3/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/asn1.js-rfc2560",
+      "name": "asn1.js-rfc2560",
+      "version": "5.0.1",
+      "resolved": "https://registry.npmjs.org/asn1.js-rfc2560/-/asn1.js-rfc2560-5.0.1.tgz",
+      "integrity": "sha512-1PrVg6kuBziDN3PGFmRk3QrjpKvP9h/Hv5yMrFZvC1kpzP6dQRzf5BpKstANqHBkaOUmTpakJWhicTATOA/SbA==",
+      "declaredLicense": "MIT",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "979f2ae9663058a7920dc628220e47826d2217a14ccdf7f45677859a1cf84adb",
+        "index.js": "241664c15e87a1587bc8e06a4e46385c18300a2472059849fe29bb4118bed0f1"
+      },
+      "source": {
+        "repository": "https://github.com/indutny/asn1.js",
+        "commit": "9f900421adf931f1d75b71baa6dbc1f07b6b9c77",
+        "mapping": "Both files in the exact npm tarball byte-match the subpackage release commit (2560: 5.0.1). The root MIT notice at the same commit is supplied. No signed publisher-to-commit attestation is claimed.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/9f900421adf931f1d75b71baa6dbc1f07b6b9c77/rfc/2560/index.js",
+            "sha256": "241664c15e87a1587bc8e06a4e46385c18300a2472059849fe29bb4118bed0f1"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/9f900421adf931f1d75b71baa6dbc1f07b6b9c77/rfc/2560/package.json",
+            "sha256": "979f2ae9663058a7920dc628220e47826d2217a14ccdf7f45677859a1cf84adb"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/9f900421adf931f1d75b71baa6dbc1f07b6b9c77/LICENSE",
+            "sha256": "251ecdcdb2bafa7b106187a8cce96f322d0074c66e557c3c94cb49c769970408"
+          }
+        ]
+      },
+      "notes": [],
+      "notice": {
+        "file": "asn1-LICENSE",
+        "sha256": "251ecdcdb2bafa7b106187a8cce96f322d0074c66e557c3c94cb49c769970408",
+        "sourceUrl": "https://raw.githubusercontent.com/indutny/asn1.js/9f900421adf931f1d75b71baa6dbc1f07b6b9c77/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/asn1.js-rfc5280",
+      "name": "asn1.js-rfc5280",
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/asn1.js-rfc5280/-/asn1.js-rfc5280-3.0.0.tgz",
+      "integrity": "sha512-Y2LZPOWeZ6qehv698ZgOGGCZXBQShObWnGthTrIFlIQjuV1gg2B8QOhWFRExq/MR1VnPpIIe7P9vX2vElxv+Pg==",
+      "declaredLicense": "MIT",
+      "kind": "supplement",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "c70c4f0b7792b4d89d4160f35f4d6a64fc31cd781dd5ae32b83c0ff2616664c7",
+        "index.js": "7b326b36f071ef80a9e7657e6bf2866a09634854f3e7c8719fd7896771977a6d"
+      },
+      "source": {
+        "repository": "https://github.com/indutny/asn1.js",
+        "commit": "b99ce086320e0123331e6272f6de75548c6855fa",
+        "mapping": "The exact npm index.js byte-matches the source at this commit, resolved from annotated v5.0.1 tag. The same-commit subpackage manifest has the exact name/version and declares MIT; the repository-root original MIT notice is supplied. No signed publisher-to-commit attestation is claimed.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/b99ce086320e0123331e6272f6de75548c6855fa/rfc/5280/index.js",
+            "sha256": "7b326b36f071ef80a9e7657e6bf2866a09634854f3e7c8719fd7896771977a6d"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/b99ce086320e0123331e6272f6de75548c6855fa/rfc/5280/package.json",
+            "sha256": "c70c4f0b7792b4d89d4160f35f4d6a64fc31cd781dd5ae32b83c0ff2616664c7"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/indutny/asn1.js/b99ce086320e0123331e6272f6de75548c6855fa/LICENSE",
+            "sha256": "251ecdcdb2bafa7b106187a8cce96f322d0074c66e557c3c94cb49c769970408"
+          }
+        ]
+      },
+      "notes": [],
+      "notice": {
+        "file": "asn1-LICENSE",
+        "sha256": "251ecdcdb2bafa7b106187a8cce96f322d0074c66e557c3c94cb49c769970408",
+        "sourceUrl": "https://raw.githubusercontent.com/indutny/asn1.js/b99ce086320e0123331e6272f6de75548c6855fa/LICENSE"
+      }
+    },
+    {
+      "lockPath": "node_modules/axios/node_modules/agent-base",
+      "name": "agent-base",
+      "version": "6.0.2",
+      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-6.0.2.tgz",
+      "integrity": "sha512-RZNwNclF7+MS/8bDg70amg32dyeZGZxiDuQmZxKLAlQjr3jGyLx+4Kkk58UO7D2QdgFIQCovuSuZESne6RG6XQ==",
+      "declaredLicense": "MIT",
+      "kind": "complete-readme",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "05daa619e51686fd21d15f987f943f6692c56b9f489f555cbaf42a4263d5c5e8",
+        "README.md": "f1425c3b72330fe4fb2aa5a2fb152e939bdf534692a32b5f0b38f74147b98556"
+      },
+      "source": {
+        "repository": "https://github.com/TooTallNate/node-agent-base",
+        "commit": "c4b8ea2e1a11bae023bb09b708050a50418204e9",
+        "mapping": "The exact installed package README byte-matches this immutable upstream README and contains the complete MIT grant, copyright notice and disclaimer; preserved as package evidence, not a supplemental license.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/node-agent-base/c4b8ea2e1a11bae023bb09b708050a50418204e9/README.md",
+            "sha256": "f1425c3b72330fe4fb2aa5a2fb152e939bdf534692a32b5f0b38f74147b98556"
+          }
+        ]
+      },
+      "notes": []
+    },
+    {
+      "lockPath": "node_modules/axios/node_modules/https-proxy-agent",
+      "name": "https-proxy-agent",
+      "version": "5.0.1",
+      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-5.0.1.tgz",
+      "integrity": "sha512-dFcAjpTQFgoLMzC2VwU+C/CbS7uRL0lWmxDITmqm7C+7F0Odmj6s9l6alZc6AELXhrnggM2CeWSXHGOdX2YtwA==",
+      "declaredLicense": "MIT",
+      "kind": "complete-readme",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "d41d9127cbed43df8e2d404bfaf41361942a8afeb82eb57ccf8515e04eb33d1d",
+        "README.md": "32f0856d2c43df7d05cca960fdee84e1e38ab545bd7b2186433dfa41aa90a712"
+      },
+      "source": {
+        "repository": "https://github.com/TooTallNate/node-https-proxy-agent",
+        "commit": "d0d80cc0482f20495aa8595f802e1a9f3b1b3409",
+        "mapping": "The exact installed package README byte-matches this immutable upstream README and contains the complete MIT grant, copyright notice and disclaimer; preserved as package evidence, not a supplemental license.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/node-https-proxy-agent/d0d80cc0482f20495aa8595f802e1a9f3b1b3409/README.md",
+            "sha256": "32f0856d2c43df7d05cca960fdee84e1e38ab545bd7b2186433dfa41aa90a712"
+          }
+        ]
+      },
+      "notes": []
+    },
+    {
+      "lockPath": "node_modules/data-uri-to-buffer",
+      "name": "data-uri-to-buffer",
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/data-uri-to-buffer/-/data-uri-to-buffer-4.0.1.tgz",
+      "integrity": "sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A==",
+      "declaredLicense": "MIT",
+      "kind": "complete-readme",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "ad4f90a737ab5d8af4dad265e9218456e3779ca5beb70df38dd5feecf80121dd",
+        "README.md": "a7cc4332acfa1f9b6530e01aac77fefe74f2efa32579215fddaa473013f9a25c"
+      },
+      "source": {
+        "repository": "https://github.com/TooTallNate/node-data-uri-to-buffer",
+        "commit": "85cd8c854aefbf1bb636789d80364cfac8ea1583",
+        "mapping": "The exact installed package README byte-matches this immutable upstream README and contains the complete MIT grant, copyright notice and disclaimer; preserved as package evidence, not a supplemental license.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/node-data-uri-to-buffer/85cd8c854aefbf1bb636789d80364cfac8ea1583/README.md",
+            "sha256": "a7cc4332acfa1f9b6530e01aac77fefe74f2efa32579215fddaa473013f9a25c"
+          }
+        ]
+      },
+      "notes": []
+    },
+    {
+      "lockPath": "node_modules/generic-pool",
+      "name": "generic-pool",
+      "version": "3.9.0",
+      "resolved": "https://registry.npmjs.org/generic-pool/-/generic-pool-3.9.0.tgz",
+      "integrity": "sha512-hymDOu5B53XvN4QT9dBmZxPX4CWhBPPLguTZ9MMFeFa/Kg0xWVfylOVNlJji/E7yTZWFd/q9GO5TxDLq156D7g==",
+      "declaredLicense": "MIT",
+      "kind": "complete-readme",
+      "complete": true,
+      "installedFiles": {
+        "package.json": "9a74fa102542e3fdaeb2fb2db19707ded893b0f60d7c27edc3a85db5dce4c7cd",
+        "README.md": "c1b1ef7d747dc3ad3e6a598acb45845e1a8f9fa567faf67885c9ce02b2f32cfb"
+      },
+      "source": {
+        "repository": "https://github.com/coopernurse/node-pool",
+        "commit": "89080aea76252728aeabd28d36ef3e2e77fc950b",
+        "mapping": "The exact installed package README byte-matches this immutable upstream README and contains the complete MIT grant, copyright notice and disclaimer; preserved as package evidence, not a supplemental license.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/coopernurse/node-pool/89080aea76252728aeabd28d36ef3e2e77fc950b/README.md",
+            "sha256": "c1b1ef7d747dc3ad3e6a598acb45845e1a8f9fa567faf67885c9ce02b2f32cfb"
+          }
+        ]
+      },
+      "notes": []
+    },
+    {
+      "lockPath": "node_modules/proxy-agent-negotiate",
+      "name": "proxy-agent-negotiate",
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz",
+      "integrity": "sha512-N8IBcM3UgCVzz2L2Lqv8DVntDnnC8/hiV4nEDUPkqq72TPUgYWjQc+bdZlBPZK9LzPAvOY//gAt0S0DApoOXWQ==",
+      "declaredLicense": "MIT",
+      "kind": "supplement",
+      "complete": false,
+      "installedFiles": {
+        "package.json": "7b7c2579ea138d20d4f7699ca78ef16c526f35168dbf694f1d47cc861b0954d4"
+      },
+      "source": {
+        "repository": "https://github.com/TooTallNate/proxy-agents",
+        "commit": "b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16",
+        "mapping": "Registry provenance/release evidence associates this version/tarball with the commit. The package source directory and tarball contain no license text. The copied original text is from the same-commit https-proxy-agent sibling, with matching declared author; applicability to negotiate is unresolved.",
+        "artifacts": [
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16/packages/https-proxy-agent/LICENSE",
+            "sha256": "8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16/packages/negotiate/package.json",
+            "sha256": "22afa667fffb3ada1f7d56955ed59f396936f80c55ce09a229fe0afb3247c77a"
+          },
+          {
+            "url": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16/packages/negotiate/src/index.ts",
+            "sha256": "e236e82f1e25a1aa4177b9ef5f697044e9e8f843a3fc82b0e8a84011d0c0b475"
+          }
+        ]
+      },
+      "notes": [
+        "The package declares MIT but ships no notice. A same-commit sibling MIT notice is included as original upstream evidence only; its applicability to this package remains unresolved."
+      ],
+      "registryEvidence": {
+        "url": "https://registry.npmjs.org/proxy-agent-negotiate/1.1.0",
+        "sha256": "41807d237c09eff6120e33932015c4ff9c230872c2df119010db48aa4ae0731e",
+        "attestationUrl": "https://registry.npmjs.org/-/npm/v1/attestations/proxy-agent-negotiate@1.1.0",
+        "attestationSha256": "e109fa690f2e23184f9a2cb0c00b0132a6339685ac9acceb26ef0d1d353af2a3"
+      },
+      "notice": {
+        "file": "proxy-agents-shared-LICENSE",
+        "sha256": "8d8c55319c7729d57be811c747452636688d54f19701ee0752b6b15ad3771d9a",
+        "sourceUrl": "https://raw.githubusercontent.com/TooTallNate/proxy-agents/b7e5f7ccce1a3ac5b339cc4c587974e8989cbc16/packages/https-proxy-agent/LICENSE"
+      }
+    }
+  ]
+}

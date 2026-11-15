@@ -800,6 +800,7 @@ pub fn build_csv_import_preview(
     };
     let can_prepare = analyzed.total_rows > 0 && analyzed.total_issues == 0;
     Ok(CsvImportPreview {
+        preview_token: None,
         file_name,
         headers: analyzed.headers,
         mappings: analyzed.mappings,

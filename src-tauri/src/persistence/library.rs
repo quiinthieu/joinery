@@ -362,7 +362,14 @@ fn write_sql_snippets(connection: &Connection, items: &[SqlSnippet]) -> AppResul
 
 fn profile_exists(connection: &Connection, id: &str) -> AppResult<bool> {
     let exists: Option<i64> = connection
-        .query_row("SELECT 1 FROM profiles WHERE id=?1", [id], |r| r.get(0))
+        .query_row(
+            &format!(
+                "SELECT 1 FROM {} WHERE id=?1",
+                super::metadata_table(connection, "profiles")?
+            ),
+            [id],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(db_error)?;
     Ok(exists.is_some())

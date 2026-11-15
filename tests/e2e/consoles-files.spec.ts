@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "./fixtures";
 
 const BRIDGE_URL = "http://127.0.0.1:1422";
 const BRIDGE_TOKEN = "joinery-disposable-browser-tests-only";
@@ -280,7 +280,7 @@ for (const [engineLabel, engineKind, port] of [
         .locator("..")
         .getByRole("button", { name: /^Close / })
         .click();
-      await expect(page.getByRole("dialog")).toContainText("transactions");
+      await expect(page.getByRole("dialog")).toContainText("open or unknown transaction");
       await page.getByRole("button", { name: "Continue", exact: true }).click();
       await expect(page.locator(`#${txTabBId}`)).toHaveCount(0);
       await expect

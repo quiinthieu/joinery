@@ -21,9 +21,19 @@ path = "src/bin/test-harness.rs"
 required-features = ["test-harness"]
 
 [[bin]]
+name = "snowflake-table-qualification"
+path = "src/bin/snowflake-table-qualification.rs"
+required-features = ["test-harness"]
+
+[[bin]]
 name = "export-contracts"
 path = "src/bin/export-contracts.rs"
 required-features = ["contracts"]
+
+[[bin]]
+name = "snowflake-protocol-fixture"
+path = "tests/support/snowflake_protocol_fixture.rs"
+required-features = ["test-harness"]
 
 [features]
 default = ["desktop"]
@@ -33,6 +43,7 @@ native-smoke = ["desktop"]
 contracts = []
 
 [build-dependencies]
+serde_json = "1"
 tauri-build = { version = "2", optional = true, features = [] }
 
 [dependencies]
@@ -41,7 +52,7 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["arbitrary_precision"] }
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "io-std", "sync", "time", "fs", "signal"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 futures-util = "0.3"
 async-trait = "0.1"
@@ -59,12 +70,14 @@ rustls-pemfile = "2"
 arrow-array = "60"
 arrow-schema = "60"
 arrow-ipc = "60"
-rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", default-features = false, features = ["bundled", "backup", "hooks", "limits"] }
+age = { version = "=0.11.5", default-features = false }
 keyring-core = "1"
 argon2 = "0.5"
 rand_core = { version = "0.6", features = ["getrandom"] }
 zeroize = "1"
 parking_lot = "0.12"
+tempfile = "3"
 sha2 = "0.10"
 base64 = "0.22"
 hex = "0.4"
@@ -75,8 +88,16 @@ russh = { version = "0.64", default-features = false, features = ["ring", "rsa"]
 axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+# sha2 0.10 otherwise uses its software backend on ARM64. Its accelerated
+# backend detects CPU support and retains the software fallback.
+sha2 = { version = "0.10", features = ["asm"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1"
@@ -86,12 +107,21 @@ dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", 
 
 [dev-dependencies]
 flate2 = "1"
-tempfile = "3"
 rand = "0.10"
 rcgen = "0.14"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+
+# Bound development/test artifacts while retaining file/line backtraces.
+# The test profile inherits dev. Full symbols/incremental caches are opt-in.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
 
 [profile.release]
 codegen-units = 1
 lto = "thin"
 strip = true
+
+# Keep direct and TLS-adapter clients on the same reviewed upstream patch.
+[patch.crates-io]
+tokio-postgres = { path = "vendor/tokio-postgres" }

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { Table, Utf8, vectorFromArray, tableToIPC } from "apache-arrow";
 import type { ConnectionProfile, TableSchema } from "../../src/ipc/generated";
 
@@ -20,6 +20,8 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         primaryKey: false,
         foreignKey: false,
         editable: false,
+        insertable: false,
+        hasDefault: false,
       },
       {
         id: "c1",
@@ -30,6 +32,8 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         primaryKey: false,
         foreignKey: false,
         editable: false,
+        insertable: false,
+        hasDefault: false,
       },
     ],
     primaryKey: [],
@@ -48,7 +52,10 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
         profile = route.request().postDataJSON().profile;
         result = profile;
         break;
-      case "connect":
+      case "prepare_connection":
+        result = "sf-attempt";
+        break;
+      case "connect_prepared":
         result = {
           id: "sf-session",
           connectionId: profile.id,
@@ -142,6 +149,7 @@ test("Snowflake catalog, lazy completion and read-only preview work together", a
   await page.goto("/");
   await page.getByRole("button", { name: "Connect a database" }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection name", { exact: true }).fill("Snowflake fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
   await page.getByLabel("Database", { exact: true }).fill("DB");
@@ -234,7 +242,9 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
     if (command === "save_profile") {
       profile = route.request().postDataJSON().profile;
       await route.fulfill({ json: { result: profile } });
-    } else if (command === "connect") {
+    } else if (command === "prepare_connection") {
+      await route.fulfill({ json: { result: "approved-sso-attempt" } });
+    } else if (command === "connect_prepared") {
       await route.fulfill({
         json: {
           result: {
@@ -286,6 +296,7 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
   await page.goto("/");
   await page.getByRole("button", { name: "New connection", exact: true }).click();
   await page.getByLabel("Database engine").selectOption("snowflake");
+  await page.getByLabel("Snowflake authentication").selectOption("localApplicationOauth");
   await page.getByLabel("Connection group").selectOption("production");
   await page.getByLabel("Connection name", { exact: true }).fill("Approved SSO fixture");
   await page.getByLabel("Snowflake account hostname").fill("org-account.snowflakecomputing.com");
@@ -305,6 +316,7 @@ test("approved Snowflake sign-in remains connected when table discovery fails", 
   await page.getByRole("button", { name: "Refresh schema", exact: true }).click();
   await page.getByRole("button", { name: /^PUBLIC/ }).click();
   await expect(page.getByRole("button", { name: "ORDERS", exact: true })).toBeVisible();
-  expect(calls.filter((command) => command === "connect")).toHaveLength(1);
+  expect(calls.filter((command) => command === "prepare_connection")).toHaveLength(1);
+  expect(calls.filter((command) => command === "connect_prepared")).toHaveLength(1);
   expect(calls).not.toContain("prepare_execution");
 });

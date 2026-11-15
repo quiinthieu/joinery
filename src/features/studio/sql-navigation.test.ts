@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
+import { ensureSyntaxTree } from "@codemirror/language";
 import { sql } from "@codemirror/lang-sql";
 import type {
   EngineKind,
@@ -604,6 +605,7 @@ describe("resolveDocumentErrorRange and appErrorOf", () => {
     const structured = {
       code: "policyBlocked" as const,
       message: "Expected expression",
+      completionInvalidated: true,
       location: {
         span: { startUtf16: 7, endUtf16: 11, line: 1, column: 8 },
         sqlState: "42601",
@@ -1257,6 +1259,8 @@ test("does not conflate output aliases with base columns or catalog names", () =
 test("bounds local usage results explicitly and preserves Unicode locations", () => {
   const text = "SELECT '🧪日本語', * FROM |orders;\n" + "SELECT * FROM orders;\n".repeat(504);
   const state = stateWithCaret(text);
+  // This tests usage bounds and locations, independently of the interactive parse budget.
+  expect(ensureSyntaxTree(state, state.doc.length, 1000)).not.toBeNull();
   const symbol = resolveSymbolAt(state, state.selection.main.head, samplePgSymbolContext());
   expect(symbol?.occurrences).toHaveLength(500);
   expect(symbol?.usagesLimited).toBe(true);

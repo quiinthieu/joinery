@@ -20,6 +20,11 @@ fn profile() -> ConnectionProfile {
         store_query_text: false,
         store_drafts: false,
         snowflake: Some(SnowflakeConfig {
+            authentication: SnowflakeAuthentication::LocalApplicationOauth,
+            reviewed_dml: false,
+            reviewed_ddl: false,
+            reviewed_console: false,
+            reviewed_console_timeout_seconds: None,
             role: "ANALYST_READ_ONLY".into(),
             warehouse: "ANALYST_WH".into(),
             schema: "PUBLIC".into(),
@@ -28,7 +33,7 @@ fn profile() -> ConnectionProfile {
 }
 
 #[test]
-fn studio_accepts_only_read_only_verified_snowflake_profiles() {
+fn studio_accepts_only_read_only_verified_snowflake_oauth_profiles() {
     let root = tempfile::tempdir().unwrap();
     let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
     assert!(
@@ -283,4 +288,381 @@ async fn studio_exports_retained_results_reports_truncation_and_cancels_cleanly(
         std::fs::read_to_string(sandbox.root().join("warehouse-cancel.csv.partial")).unwrap();
     assert!(partial.contains("# JOINERY EXPORT INCOMPLETE"));
     studio.shutdown();
+}
+
+#[test]
+fn snowflake_authentication_defaults_legacy_and_rejects_unknown_modes() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("authentication");
+    let legacy: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        legacy.snowflake.unwrap().authentication,
+        SnowflakeAuthentication::LocalApplicationOauth
+    );
+    encoded["snowflake"]["authentication"] = serde_json::json!("externalBrowser");
+    let sdk: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        sdk.snowflake.unwrap().authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    for unknown in [
+        serde_json::json!("externalbrowser"),
+        serde_json::Value::Null,
+        serde_json::json!({"executable":"/tmp/node"}),
+    ] {
+        encoded["snowflake"]["authentication"] = unknown;
+        assert!(serde_json::from_value::<ConnectionProfile>(encoded.clone()).is_err());
+    }
+}
+
+#[test]
+fn authentication_survives_restart_and_metadata_restore() {
+    let root = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let studio = Studio::with_secrets(root.path(), secrets.clone()).unwrap();
+    let mut sdk = profile();
+    sdk.group_id = "local".into();
+    sdk.environment = Environment::Local;
+    sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    let saved = studio.save_profile(sdk, None).unwrap();
+    let backup = studio.create_metadata_backup().unwrap();
+    drop(studio);
+    let studio = Studio::with_secrets(root.path(), secrets).unwrap();
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    let mut legacy = saved;
+    legacy.snowflake.as_mut().unwrap().authentication =
+        SnowflakeAuthentication::LocalApplicationOauth;
+    studio.save_profile(legacy, None).unwrap();
+    studio
+        .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+        .unwrap();
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+}
+
+#[test]
+fn explicit_boundary_policies_survive_restart_and_backup_without_elevating_read_only() {
+    for mode in [
+        SafeMode::ReadOnly,
+        SafeMode::Confirm,
+        SafeMode::Silent,
+        SafeMode::Guard,
+        SafeMode::PasswordGated,
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(MemorySecrets::default());
+        let studio = Studio::with_secrets(root.path(), secrets.clone()).unwrap();
+        let mut sdk = profile();
+        sdk.group_id = "local".into();
+        sdk.environment = Environment::Local;
+        sdk.safe_mode = mode;
+        sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+        let saved = studio.save_profile(sdk, None).unwrap();
+        let backup = studio.create_metadata_backup().unwrap();
+        drop(studio);
+        let studio = Studio::with_secrets(root.path(), secrets).unwrap();
+        assert_eq!(studio.bootstrap().unwrap().profiles[0].safe_mode, mode);
+        let mut read_only = saved;
+        read_only.safe_mode = SafeMode::ReadOnly;
+        studio.save_profile(read_only.clone(), None).unwrap();
+        studio
+            .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+            .unwrap();
+        let restored = studio.bootstrap().unwrap().profiles.remove(0);
+        assert_eq!(restored.safe_mode, mode);
+        assert_eq!(
+            restored.snowflake.unwrap().authentication,
+            SnowflakeAuthentication::ExternalBrowser
+        );
+        if mode != SafeMode::ReadOnly {
+            let mut production = read_only;
+            production.id = new_id();
+            production.group_id = "production".into();
+            production.safe_mode = mode;
+            let saved = studio.save_profile(production, None).unwrap();
+            assert_eq!(saved.environment, Environment::Production);
+            assert_eq!(saved.safe_mode, SafeMode::PasswordGated);
+        }
+    }
+}
+
+#[tokio::test]
+async fn unavailable_sdk_rejects_explicit_mode_without_oauth_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut sdk = profile();
+    sdk.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    let sdk = studio.save_profile(sdk, None).unwrap();
+    let error = studio
+        .connect(&sdk.id, ConnectionSecrets::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unsupported);
+    assert!(error.message.contains("runtime is unavailable"));
+    // The failed mode does not close global admission or alter its saved mode.
+    let reservation = studio.prepare_connection(&sdk.id).unwrap();
+    studio.cancel_connection_attempt(&reservation);
+    assert_eq!(
+        studio.bootstrap().unwrap().profiles[0]
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .authentication,
+        SnowflakeAuthentication::ExternalBrowser
+    );
+    let error = joinery_core::drivers::snowflake::Snowflake::open(&sdk, "test-session")
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code, ErrorCode::InvalidInput);
+}
+
+#[test]
+fn reviewed_ddl_is_independent_defaults_false_and_requires_non_read_only_sdk() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewedDdl");
+    let decoded: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+    assert!(!decoded.snowflake.as_ref().unwrap().reviewed_ddl);
+
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+
+    // OAuth + reviewed_ddl rejected even if non-ReadOnly
+    let mut oauth_ddl = profile();
+    oauth_ddl.group_id = "local".into();
+    oauth_ddl.environment = Environment::Local;
+    oauth_ddl.safe_mode = SafeMode::Confirm;
+    oauth_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    assert_eq!(
+        studio.save_profile(oauth_ddl, None).unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+
+    // ExternalBrowser + ReadOnly + reviewed_ddl rejected
+    let mut ro_ddl = profile();
+    ro_ddl.group_id = "local".into();
+    ro_ddl.environment = Environment::Local;
+    ro_ddl.safe_mode = SafeMode::ReadOnly;
+    ro_ddl.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    ro_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    assert_eq!(
+        studio.save_profile(ro_ddl, None).unwrap_err().code,
+        ErrorCode::InvalidInput
+    );
+
+    // ExternalBrowser + Confirm + reviewed_ddl accepted without implying reviewed_dml
+    let mut sdk_ddl = profile();
+    sdk_ddl.group_id = "local".into();
+    sdk_ddl.environment = Environment::Local;
+    sdk_ddl.safe_mode = SafeMode::Confirm;
+    sdk_ddl.snowflake.as_mut().unwrap().authentication = SnowflakeAuthentication::ExternalBrowser;
+    sdk_ddl.snowflake.as_mut().unwrap().reviewed_ddl = true;
+    sdk_ddl.snowflake.as_mut().unwrap().reviewed_dml = false;
+    let saved = studio.save_profile(sdk_ddl, None).unwrap();
+    assert!(saved.snowflake.as_ref().unwrap().reviewed_ddl);
+    assert!(!saved.snowflake.as_ref().unwrap().reviewed_dml);
+}
+
+#[test]
+fn reviewed_console_consent_is_independent_persisted_and_sdk_only() {
+    let mut encoded = serde_json::to_value(profile()).unwrap();
+    encoded["snowflake"]
+        .as_object_mut()
+        .unwrap()
+        .remove("reviewedConsole");
+    let legacy: ConnectionProfile = serde_json::from_value(encoded).unwrap();
+    assert!(!legacy.snowflake.as_ref().unwrap().reviewed_console);
+
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    for (authentication, safe_mode) in [
+        (
+            SnowflakeAuthentication::LocalApplicationOauth,
+            SafeMode::Confirm,
+        ),
+        (
+            SnowflakeAuthentication::LocalApplicationOauth,
+            SafeMode::ReadOnly,
+        ),
+        (SnowflakeAuthentication::ExternalBrowser, SafeMode::ReadOnly),
+    ] {
+        let mut denied = profile();
+        denied.group_id = "local".into();
+        denied.safe_mode = safe_mode;
+        let config = denied.snowflake.as_mut().unwrap();
+        config.authentication = authentication;
+        config.reviewed_console = true;
+        assert_eq!(
+            studio.save_profile(denied, None).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    let mut generated_only = profile();
+    generated_only.group_id = "local".into();
+    generated_only.safe_mode = SafeMode::Confirm;
+    let config = generated_only.snowflake.as_mut().unwrap();
+    config.authentication = SnowflakeAuthentication::ExternalBrowser;
+    config.reviewed_dml = true;
+    config.reviewed_ddl = true;
+    let saved = studio.save_profile(generated_only.clone(), None).unwrap();
+    assert!(!saved.snowflake.as_ref().unwrap().reviewed_console);
+
+    let config = generated_only.snowflake.as_mut().unwrap();
+    config.reviewed_dml = false;
+    config.reviewed_ddl = false;
+    config.reviewed_console = true;
+    let saved = studio.save_profile(generated_only, None).unwrap();
+    drop(studio);
+    let reopened = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let persisted = reopened
+        .bootstrap()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.id == saved.id)
+        .unwrap();
+    let config = persisted.snowflake.unwrap();
+    assert!(config.reviewed_console);
+    assert!(!config.reviewed_dml);
+    assert!(!config.reviewed_ddl);
+}
+
+#[test]
+fn reviewed_console_timeout_strict_values_legacy_default_and_native_validation() {
+    let encoded = serde_json::to_value(profile()).unwrap();
+    let legacy: ConnectionProfile = serde_json::from_value(encoded.clone()).unwrap();
+    assert_eq!(
+        legacy
+            .snowflake
+            .unwrap()
+            .effective_console_timeout_seconds()
+            .unwrap(),
+        65
+    );
+    for value in [
+        serde_json::json!(null),
+        serde_json::json!(0),
+        serde_json::json!(-1),
+        serde_json::json!(1.5),
+        serde_json::json!(86401),
+        serde_json::json!(4294967296u64),
+        serde_json::json!("120"),
+        serde_json::json!({}),
+        serde_json::json!(true),
+    ] {
+        let mut invalid = encoded.clone();
+        invalid["snowflake"]["reviewedConsoleTimeoutSeconds"] = value;
+        assert!(serde_json::from_value::<ConnectionProfile>(invalid).is_err());
+    }
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    for seconds in [0, 86401, u32::MAX] {
+        let mut invalid = profile();
+        invalid
+            .snowflake
+            .as_mut()
+            .unwrap()
+            .reviewed_console_timeout_seconds = Some(seconds);
+        assert_eq!(
+            studio.save_profile(invalid, None).unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+    for seconds in [1, 65, 120, 86400] {
+        let mut valid = encoded.clone();
+        valid["snowflake"]["reviewedConsoleTimeoutSeconds"] = serde_json::json!(seconds);
+        let valid: ConnectionProfile = serde_json::from_value(valid).unwrap();
+        assert_eq!(
+            valid
+                .snowflake
+                .unwrap()
+                .effective_console_timeout_seconds()
+                .unwrap(),
+            seconds
+        );
+    }
+}
+
+#[test]
+fn reviewed_console_timeout_persists_reload_backup_and_rejects_malformed_storage() {
+    let root = tempfile::tempdir().unwrap();
+    let studio = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut configured = profile();
+    configured.environment = Environment::Local;
+    configured.group_id = "local".into();
+    configured.safe_mode = SafeMode::Confirm;
+    let config = configured.snowflake.as_mut().unwrap();
+    config.authentication = SnowflakeAuthentication::ExternalBrowser;
+    config.reviewed_console = true;
+    config.reviewed_console_timeout_seconds = Some(86400);
+    let saved = studio.save_profile(configured, None).unwrap();
+    let backup = studio.create_metadata_backup().unwrap();
+    drop(studio);
+    let reopened = Studio::with_secrets(root.path(), Arc::new(MemorySecrets::default())).unwrap();
+    let mut restored = reopened
+        .bootstrap()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.id == saved.id)
+        .unwrap();
+    assert_eq!(
+        restored
+            .snowflake
+            .as_ref()
+            .unwrap()
+            .reviewed_console_timeout_seconds,
+        Some(86400)
+    );
+    restored
+        .snowflake
+        .as_mut()
+        .unwrap()
+        .reviewed_console_timeout_seconds = Some(120);
+    reopened.save_profile(restored, None).unwrap();
+    reopened
+        .restore_metadata_backup(&backup.id, &backup.digest, "RESTORE", None)
+        .unwrap();
+    assert_eq!(
+        reopened
+            .bootstrap()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|p| p.id == saved.id)
+            .unwrap()
+            .snowflake
+            .unwrap()
+            .reviewed_console_timeout_seconds,
+        Some(86400)
+    );
+    let mut malformed = serde_json::to_value(saved.clone()).unwrap();
+    malformed["snowflake"]["reviewedConsoleTimeoutSeconds"] = serde_json::Value::Null;
+    let db = rusqlite::Connection::open(root.path().join("joinery.sqlite")).unwrap();
+    db.execute(
+        "UPDATE profiles_v8 SET json=?1 WHERE id=?2",
+        rusqlite::params![malformed.to_string(), saved.id],
+    )
+    .unwrap();
+    assert!(reopened.bootstrap().is_err());
 }

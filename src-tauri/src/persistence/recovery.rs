@@ -1,6 +1,9 @@
 //! App-owned metadata snapshots. Paths never cross IPC; result buffers and OS secrets
 //! are not part of this SQLite store. An incomplete SQLite backup rolls back on drop.
-use super::{Persistence, SCHEMA_VERSION, db_error, schema_version, validate_schema};
+use super::{
+    Persistence, SCHEMA_VERSION, db_error, initialize_schema, metadata_table, schema_version,
+    snowflake_console, validate_schema,
+};
 use crate::domain::*;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension,
@@ -56,8 +59,9 @@ fn copy(source: &Connection, destination: &mut Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn validate(connection: &Connection) -> AppResult<()> {
-    if schema_version(connection)? != SCHEMA_VERSION {
+pub(super) fn validate(connection: &Connection) -> AppResult<()> {
+    let version = schema_version(connection)?;
+    if !(1..=SCHEMA_VERSION).contains(&version) {
         return Err(AppError::invalid(
             "This backup needs a compatible Joinery version",
         ));
@@ -76,13 +80,48 @@ fn validate(connection: &Connection) -> AppResult<()> {
     super::library::read_bookmarks(connection)?;
     super::library::read_sql_format_settings(connection)?;
     super::library::read_sql_snippets(connection)?;
-    let unexpected: i64 = connection.query_row("SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' AND (type != 'table' OR name NOT IN ('profiles','groups','history','audit','settings'))", [], |r| r.get(0)).map_err(db_error)?;
-    if unexpected != 0 {
-        return Err(AppError::invalid(
-            "The metadata backup contains unexpected schema objects",
-        ));
+    if version >= 2 {
+        snowflake_console::validate_records(connection)?;
+    }
+    let mut allowed_objects = ["profiles", "groups", "history", "audit", "settings"]
+        .into_iter()
+        .map(|name| {
+            let table = if matches!(name, "profiles" | "history" | "audit") {
+                metadata_table(connection, name)?
+            } else {
+                name
+            };
+            Ok(("table".to_owned(), table.to_owned()))
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    // Journal validation above verifies exact version-specific definitions.
+    // Admit only that same version's known objects. Legacy names or a schema
+    // object's name alone cannot establish schema compatibility.
+    if version >= 2 {
+        allowed_objects.extend(snowflake_console::schema_objects(version)?);
+    }
+    allowed_objects.extend(super::history::schema_objects(version)?);
+    let mut objects = connection
+        .prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")
+        .map_err(db_error)?;
+    let rows = objects
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(db_error)?;
+    for object in rows {
+        if !allowed_objects.contains(&object.map_err(db_error)?) {
+            return Err(AppError::invalid(
+                "The metadata backup contains unexpected schema objects",
+            ));
+        }
     }
     for (table, kind) in [("profiles", 0), ("groups", 1), ("history", 2)] {
+        let table = if table == "groups" {
+            table
+        } else {
+            metadata_table(connection, table)?
+        };
         let mut statement = connection
             .prepare(&format!("SELECT json FROM {table}"))
             .map_err(db_error)?;
@@ -94,7 +133,8 @@ fn validate(connection: &Connection) -> AppResult<()> {
             let valid = match kind {
                 0 => serde_json::from_str::<ConnectionProfile>(&row).is_ok(),
                 1 => serde_json::from_str::<ConnectionGroup>(&row).is_ok(),
-                _ => serde_json::from_str::<HistoryEntry>(&row).is_ok(),
+                _ => serde_json::from_str::<HistoryEntry>(&row)
+                    .is_ok_and(|entry| entry.validate_lifecycle().is_ok()),
             };
             if !valid {
                 return Err(AppError::invalid(
@@ -102,6 +142,9 @@ fn validate(connection: &Connection) -> AppResult<()> {
                 ));
             }
         }
+    }
+    if version >= 5 {
+        super::history::validate_records(connection)?;
     }
     Ok(())
 }
@@ -270,7 +313,12 @@ impl Persistence {
         id: &str,
         digest: &str,
     ) -> AppResult<MetadataBackup> {
+        // The process-held lease prevents restore from replacing the journal
+        // while another application instance still owns an executing console.
+        let _console_owner = snowflake_console::claim_migration_lease(&self.root)?;
+        let _history_gate = super::history_owner::AdmissionGate::claim(&self.root, true)?;
         let mut current = self.connection.lock();
+        let history_owners = super::history_owner::RestoreOwners::prove(&self.root, &current)?;
         let path = self.backup_path(id)?;
         let before = info(&path, id)?;
         if before.digest != digest {
@@ -302,6 +350,13 @@ impl Persistence {
                 "The backup changed during validation",
             ));
         }
+        // Upgrade a legacy snapshot privately. Unresolved restored attempts are
+        // sealed before replacement, so copying cannot create replayable work.
+        initialize_schema(&mut pinned, None)?;
+        snowflake_console::merge_for_restore(&current, &mut pinned)?;
+        history_owners.recover(&mut pinned)?;
+        snowflake_console::interrupt_records(&mut pinned)?;
+        validate(&pinned)?;
         // The verifier lives in the OS store, which is intentionally never backed up.
         let configured = current
             .query_row(
@@ -324,6 +379,166 @@ mod tests {
     use super::*;
     pub(super) static PAUSE_RESTORE: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
+
+    #[test]
+    fn history_lifecycle_backup_validation_accepts_legacy_and_pending_and_rejects_inconsistency() {
+        use serde_json::json;
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let backup = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&backup.id).unwrap();
+        legacy_empty_backup(&path, 4);
+        let connection = Connection::open(path).unwrap();
+        let legacy = json!({
+            "id": "history-fixture", "connectionId": "fixture", "connectionName": "Fixture",
+            "startedAt": 1, "sql": "SELECT 'exact original'", "statementCount": 1,
+            "status": "completed", "elapsedMs": 7
+        });
+        let mut pending = legacy.clone();
+        pending["provenance"] = json!("admitted");
+        pending["status"] = serde_json::Value::Null;
+        pending["elapsedMs"] = serde_json::Value::Null;
+        let mut recovered = pending.clone();
+        recovered["provenance"] = json!("restoreRecovered");
+        let cases = [
+            (legacy.clone(), true),
+            (pending.clone(), true),
+            (recovered, true),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["provenance"] = serde_json::Value::Null;
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["provenance"] = json!("unknown");
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = legacy.clone();
+                    v["status"] = serde_json::Value::Null;
+                    v["elapsedMs"] = serde_json::Value::Null;
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = pending.clone();
+                    v["elapsedMs"] = json!(0);
+                    v
+                },
+                false,
+            ),
+            (
+                {
+                    let mut v = pending;
+                    v["status"] = json!("completed");
+                    v
+                },
+                false,
+            ),
+        ];
+        for (raw, expected) in cases {
+            let encoded = serde_json::to_string(&raw).unwrap();
+            connection.execute(
+                "INSERT INTO history(id,started_at,json) VALUES('history-fixture',1,?1) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
+                [&encoded],
+            ).unwrap();
+            assert_eq!(validate(&connection).is_ok(), expected, "{raw}");
+            let after: String = connection
+                .query_row(
+                    "SELECT json FROM history WHERE id='history-fixture'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                after, encoded,
+                "validation must not repair or discard history"
+            );
+        }
+    }
+
+    // These fixtures start with an empty current journal. Rebuild an actual
+    // legacy schema, rather than changing only user_version on newer tables.
+    fn legacy_empty_backup(path: &Path, version: i64) {
+        assert!((1..=7).contains(&version));
+        let old = Connection::open(path).unwrap();
+        if version >= 5 {
+            super::super::batch_outcomes::drop_schema(&old);
+        }
+        if version == 7 {
+            old.execute_batch("ALTER TABLE profiles_v8 RENAME TO profiles_v7; ALTER TABLE history_v8 RENAME TO history_v7; ALTER TABLE audit_v8 RENAME TO audit_v7; PRAGMA user_version=7;").unwrap();
+            validate(&old).unwrap();
+            return;
+        }
+        if version == 6 {
+            old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; ALTER TABLE profiles_v8 RENAME TO profiles_v6; ALTER TABLE history_v8 RENAME TO history_v6; ALTER TABLE audit_v8 RENAME TO audit_v6; PRAGMA user_version=6;").unwrap();
+            validate(&old).unwrap();
+            return;
+        }
+        if version == 5 {
+            old.execute_batch("DROP TABLE outcome_bindings_v7; DROP TABLE outcome_operations_v7; DROP TABLE history_owners_v6; ALTER TABLE profiles_v8 RENAME TO profiles_v5; ALTER TABLE history_v8 RENAME TO history_v5; ALTER TABLE audit_v8 RENAME TO audit_v5; PRAGMA user_version=5;").unwrap();
+            validate(&old).unwrap();
+            return;
+        }
+        old.pragma_update(None, "foreign_keys", false).unwrap();
+        let mut objects = snowflake_console::schema_objects(SCHEMA_VERSION).unwrap();
+        for (kind, name) in &objects {
+            if kind == "table" && name != "snowflake_console_retention_v5" {
+                let count: i64 = old
+                    .query_row(&format!("SELECT count(*) FROM \"{name}\""), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, 0, "legacy fixture must not discard journal evidence");
+            }
+        }
+        // Publisher guards belong to history's schema but attach to console
+        // tables. Drop every known trigger before any table, since SQLite
+        // implicitly removes attached triggers when a table is dropped.
+        objects.extend(super::super::history::schema_objects(SCHEMA_VERSION).unwrap());
+        for kind in ["trigger", "index", "table"] {
+            for (object_kind, name) in &objects {
+                if object_kind == kind {
+                    old.execute_batch(&format!("DROP {kind} \"{name}\";"))
+                        .unwrap();
+                }
+            }
+        }
+        for base in ["profiles", "history", "audit"] {
+            old.execute_batch(&format!("ALTER TABLE {base}_v8 RENAME TO {base};"))
+                .unwrap();
+        }
+        if version >= 2 {
+            old.execute_batch(snowflake_console::SCHEMA_SQL).unwrap();
+        }
+        if version >= 3 {
+            old.execute_batch(
+                "ALTER TABLE snowflake_console_runs RENAME TO snowflake_console_runs_v3;
+                 ALTER TABLE snowflake_console_steps RENAME TO snowflake_console_steps_v3;",
+            )
+            .unwrap();
+            old.execute_batch(snowflake_console::REJECTION_SCHEMA_SQL)
+                .unwrap();
+            for (_, sql) in snowflake_console::DECISION_TRIGGERS {
+                old.execute_batch(sql).unwrap();
+            }
+        }
+        if version == 4 {
+            snowflake_console::migrate_v4(&old).unwrap();
+        }
+        old.pragma_update(None, "user_version", version).unwrap();
+        validate(&old).unwrap();
+    }
 
     #[test]
     #[ignore = "subprocess helper for killed_restore_keeps_complete_live_metadata"]
@@ -458,6 +673,309 @@ mod tests {
     }
 
     #[test]
+    fn version_one_backup_upgrades_privately_and_restores_existing_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        db.set_setting("legacy-marker", "before").unwrap();
+        let snapshot = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&snapshot.id).unwrap();
+        legacy_empty_backup(&path, 1);
+        let legacy = info(&path, &snapshot.id).unwrap();
+        let snapshot_bytes = fs::read(&path).unwrap();
+        db.set_setting("legacy-marker", "after").unwrap();
+        db.restore_metadata_backup(&legacy.id, &legacy.digest)
+            .unwrap();
+        assert_eq!(
+            db.setting("legacy-marker").unwrap().as_deref(),
+            Some("before")
+        );
+        assert_eq!(
+            schema_version(&db.connection.lock()).unwrap(),
+            SCHEMA_VERSION
+        );
+        snowflake_console::validate_schema(&db.connection.lock()).unwrap();
+        // Upgrading the private copy must not rewrite the user's backup.
+        assert_eq!(fs::read(path).unwrap(), snapshot_bytes);
+    }
+
+    #[test]
+    fn version_four_backup_accepts_exact_indexes_and_rejects_schema_substitutions() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        assert_eq!(
+            schema_version(&db.connection.lock()).unwrap(),
+            SCHEMA_VERSION
+        );
+        db.set_setting("v4-recovery", "snapshot").unwrap();
+        let snapshot = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&snapshot.id).unwrap();
+        legacy_empty_backup(&path, 4);
+        let snapshot = info(&path, &snapshot.id).unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let index = snowflake_console::schema_objects(4)
+            .unwrap()
+            .into_iter()
+            .find(|(kind, _)| kind == "index")
+            .expect("v4 backup must exercise its explicit browsing indexes")
+            .1;
+        db.set_setting("v4-recovery", "live").unwrap();
+        let undo = db
+            .restore_metadata_backup(&snapshot.id, &snapshot.digest)
+            .unwrap();
+        assert_ne!(undo.id, snapshot.id);
+        assert_eq!(
+            db.setting("v4-recovery").unwrap().as_deref(),
+            Some("snapshot")
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        db.set_setting("v4-recovery", "preserved").unwrap();
+        for sql in [
+            "CREATE INDEX unexpected_backup_index ON profiles(id);".to_owned(),
+            "CREATE VIEW unexpected_backup_view AS SELECT id FROM profiles;".to_owned(),
+            "CREATE TABLE snowflake_console_runs_v3(run_id TEXT);".to_owned(),
+            format!("DROP INDEX \"{index}\"; CREATE INDEX \"{index}\" ON profiles(id);"),
+        ] {
+            let changed = Connection::open(&path).unwrap();
+            changed.execute_batch(&sql).unwrap();
+            drop(changed);
+            let changed = info(&path, &snapshot.id).unwrap();
+            assert!(
+                db.restore_metadata_backup(&changed.id, &changed.digest)
+                    .is_err()
+            );
+            assert_eq!(
+                db.setting("v4-recovery").unwrap().as_deref(),
+                Some("preserved")
+            );
+            fs::write(&path, &bytes).unwrap();
+        }
+        assert_eq!(db.metadata_backups().unwrap().len(), 2);
+        validate(&db.connection.lock()).unwrap();
+    }
+
+    #[test]
+    fn console_journal_old_and_legacy_restore_preserve_live_ack_and_client_identity() {
+        use snowflake_console::{
+            ConsoleAcknowledgement, ConsoleContext, ConsoleObservations, ConsoleRunMetadata,
+            ConsoleStatement, ConsoleStepOutcome, ConsoleStopReason,
+        };
+        for legacy in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let db = Persistence::open(root.path()).unwrap();
+            db.set_setting("restore-marker", "before").unwrap();
+            let snapshot = db.create_metadata_backup().unwrap();
+            let path = db.backup_path(&snapshot.id).unwrap();
+            if legacy {
+                legacy_empty_backup(&path, 1);
+            }
+            let snapshot = info(&path, &snapshot.id).unwrap();
+            let backup_bytes = fs::read(&path).unwrap();
+            let owner = db.claim_console_journal_owner().unwrap();
+            let metadata = ConsoleRunMetadata {
+                run_id: new_id(),
+                client_request_id: new_id(),
+                session_id: new_id(),
+                connection_id: new_id(),
+                plan_digest: "a".repeat(64),
+                step_count: 1,
+                created_at: 1000,
+            };
+            let run = db
+                .console_prepare_run(&owner, metadata.clone())
+                .unwrap()
+                .run;
+            let pending = db
+                .console_step_intent(&owner, &metadata.run_id, run.revision, 0, 1001)
+                .unwrap();
+            let acknowledged = db
+                .console_step_outcome(
+                    &owner,
+                    &metadata.run_id,
+                    pending.revision,
+                    0,
+                    ConsoleStepOutcome::Acknowledged(ConsoleAcknowledgement {
+                        statement: ConsoleStatement {
+                            sdk_request_id: new_id(),
+                            query_id: Some(new_id()),
+                        },
+                        context: ConsoleContext::default(),
+                    }),
+                    ConsoleObservations::default(),
+                )
+                .unwrap();
+            let terminal = db
+                .console_finish(
+                    &owner,
+                    &metadata.run_id,
+                    acknowledged.revision,
+                    ConsoleStopReason::Completed,
+                    2000,
+                )
+                .unwrap();
+            db.set_setting("restore-marker", "after").unwrap();
+            // Even an idle retained console owns this journal across runs.
+            assert!(
+                db.restore_metadata_backup(&snapshot.id, &snapshot.digest)
+                    .is_err()
+            );
+            assert_eq!(
+                db.console_run(&metadata.run_id).unwrap(),
+                Some(terminal.clone())
+            );
+            assert_eq!(
+                db.setting("restore-marker").unwrap().as_deref(),
+                Some("after")
+            );
+            drop(owner);
+
+            db.restore_metadata_backup(&snapshot.id, &snapshot.digest)
+                .unwrap();
+            assert_eq!(
+                db.setting("restore-marker").unwrap().as_deref(),
+                Some("before")
+            );
+            assert_eq!(
+                db.console_run(&metadata.run_id).unwrap(),
+                Some(terminal.clone())
+            );
+            assert_eq!(
+                db.console_run_by_client_request(&metadata.client_request_id)
+                    .unwrap(),
+                Some(terminal.clone())
+            );
+            let owner = db.claim_console_journal_owner().unwrap();
+            let mut retry = metadata;
+            retry.run_id = new_id();
+            retry.created_at = 3000;
+            let existing = db.console_prepare_run(&owner, retry).unwrap();
+            assert!(!existing.created);
+            assert_eq!(existing.run, terminal);
+            assert_eq!(fs::read(path).unwrap(), backup_bytes);
+        }
+    }
+
+    #[test]
+    fn console_negative_versions_one_through_six_restore_preserve_live_refusals() {
+        use snowflake_console::{ConsoleAdmissionRejection, ConsoleRunMetadata};
+        for version in 1..=SCHEMA_VERSION {
+            let root = tempfile::tempdir().unwrap();
+            let db = Persistence::open(root.path()).unwrap();
+            db.set_setting("refusal-restore", "before").unwrap();
+            let backup = db.create_metadata_backup().unwrap();
+            let path = db.backup_path(&backup.id).unwrap();
+            if version < SCHEMA_VERSION {
+                legacy_empty_backup(&path, version);
+            }
+            let backup = info(&path, &backup.id).unwrap();
+            let bytes = fs::read(&path).unwrap();
+            let owner = db.claim_console_journal_owner().unwrap();
+            let refused = ConsoleAdmissionRejection {
+                client_request_id: new_id(),
+                session_id: new_id(),
+                plan_digest: "a".repeat(64),
+                code: ErrorCode::ApprovalRequired,
+                recorded_at: 1000,
+            };
+            db.console_record_rejection(&owner, &refused).unwrap();
+            db.set_setting("refusal-restore", "after").unwrap();
+            drop(owner);
+            db.restore_metadata_backup(&backup.id, &backup.digest)
+                .unwrap();
+            assert_eq!(
+                db.setting("refusal-restore").unwrap().as_deref(),
+                Some("before")
+            );
+            assert_eq!(
+                db.console_rejection_by_client_request(&refused.client_request_id)
+                    .unwrap(),
+                Some(refused.clone())
+            );
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                bytes,
+                "private migration must preserve backup bytes"
+            );
+            let owner = db.claim_console_journal_owner().unwrap();
+            assert_eq!(
+                db.console_prepare_run(
+                    &owner,
+                    ConsoleRunMetadata {
+                        run_id: new_id(),
+                        client_request_id: refused.client_request_id,
+                        session_id: refused.session_id,
+                        connection_id: new_id(),
+                        plan_digest: refused.plan_digest,
+                        step_count: 1,
+                        created_at: 2000,
+                    }
+                )
+                .err()
+                .unwrap()
+                .code,
+                ErrorCode::Conflict
+            );
+        }
+    }
+
+    #[test]
+    fn console_negative_backup_conflicts_and_changed_guards_never_replace_live_store() {
+        use snowflake_console::ConsoleAdmissionRejection;
+        let root = tempfile::tempdir().unwrap();
+        let db = Persistence::open(root.path()).unwrap();
+        let owner = db.claim_console_journal_owner().unwrap();
+        let refused = ConsoleAdmissionRejection {
+            client_request_id: new_id(),
+            session_id: new_id(),
+            plan_digest: "a".repeat(64),
+            code: ErrorCode::PolicyBlocked,
+            recorded_at: 1000,
+        };
+        db.console_record_rejection(&owner, &refused).unwrap();
+        drop(owner);
+        let backup = db.create_metadata_backup().unwrap();
+        let path = db.backup_path(&backup.id).unwrap();
+        db.set_setting("live-refusal", "preserved").unwrap();
+        let copy = Connection::open(&path).unwrap();
+        copy.execute("UPDATE snowflake_console_rejections_v5 SET recorded_at=2000 WHERE client_request_id=?1", [&refused.client_request_id]).unwrap();
+        drop(copy);
+        let changed = info(&path, &backup.id).unwrap();
+        assert_eq!(
+            db.restore_metadata_backup(&changed.id, &changed.digest)
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+        assert_eq!(
+            db.console_rejection_by_client_request(&refused.client_request_id)
+                .unwrap(),
+            Some(refused.clone())
+        );
+        let copy = Connection::open(&path).unwrap();
+        let guard = snowflake_console::schema_objects(SCHEMA_VERSION)
+            .unwrap()
+            .into_iter()
+            .find(|(kind, _)| kind == "trigger")
+            .unwrap()
+            .1;
+        copy.execute_batch(&format!("DROP TRIGGER \"{guard}\"; CREATE TRIGGER \"{guard}\" BEFORE INSERT ON snowflake_console_runs_v5 BEGIN SELECT 1; END;")).unwrap();
+        drop(copy);
+        let tampered = info(&path, &backup.id).unwrap();
+        assert!(
+            db.restore_metadata_backup(&tampered.id, &tampered.digest)
+                .is_err()
+        );
+        assert_eq!(
+            db.setting("live-refusal").unwrap().as_deref(),
+            Some("preserved")
+        );
+        assert_eq!(
+            db.console_rejection_by_client_request(&refused.client_request_id)
+                .unwrap(),
+            Some(refused)
+        );
+    }
+
+    #[test]
     fn corrupt_newer_changed_and_traversal_backups_never_replace_live_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let db = Persistence::open(dir.path()).unwrap();
@@ -497,14 +1015,14 @@ mod tests {
         let path = db.backup_path(&snapshot.id).unwrap();
         let edited = Connection::open(&path).unwrap();
         edited
-            .execute("INSERT INTO profiles VALUES('bad','{}')", [])
+            .execute("INSERT INTO profiles_v8 VALUES('bad','{}')", [])
             .unwrap();
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(
             db.restore_metadata_backup(&snapshot.id, &changed.digest)
                 .is_err()
         );
-        edited.execute_batch("DELETE FROM profiles; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles; END;").unwrap();
+        edited.execute_batch("DELETE FROM profiles_v8; CREATE TRIGGER surprise AFTER INSERT ON settings BEGIN DELETE FROM profiles_v8; END;").unwrap();
         drop(edited);
         let changed = info(&path, &snapshot.id).unwrap();
         assert!(
