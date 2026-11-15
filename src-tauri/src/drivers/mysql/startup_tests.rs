@@ -75,6 +75,7 @@ impl MysqlPeer {
                                     error.kind(),
                                     io::ErrorKind::UnexpectedEof
                                         | io::ErrorKind::ConnectionReset
+                                        | io::ErrorKind::ConnectionAborted
                                         | io::ErrorKind::BrokenPipe
                                 ),
                                 _ => false,
@@ -95,6 +96,7 @@ impl MysqlPeer {
                             error.kind(),
                             io::ErrorKind::UnexpectedEof
                                 | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionAborted
                                 | io::ErrorKind::BrokenPipe
                         );
                         (false, eof, format!("socket closed: {error}"))

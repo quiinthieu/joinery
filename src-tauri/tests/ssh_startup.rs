@@ -48,7 +48,14 @@ impl StalledKeyExchange {
             let mut remainder = Vec::new();
             match stream.read_to_end(&mut remainder).await {
                 Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::BrokenPipe
+                    ) => {}
                 Err(error) => panic!("SSH peer failed before EOF: {error}"),
             }
             closed_tx.send(()).unwrap();

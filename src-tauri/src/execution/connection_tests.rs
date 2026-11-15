@@ -83,7 +83,10 @@ fn assert_peer_closed(result: std::io::Result<usize>) {
             || result.is_err_and(|error| {
                 matches!(
                     error.kind(),
-                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+                    std::io::ErrorKind::UnexpectedEof
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
                 )
             })
     );
@@ -121,7 +124,13 @@ impl Endpoint {
                         stream.write_all(b"+PONG\r\n").await
                     }.await;
                     if let Err(error) = handshake_result {
-                        assert!(matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe));
+                        assert!(matches!(
+                            error.kind(),
+                            std::io::ErrorKind::UnexpectedEof
+                                | std::io::ErrorKind::ConnectionReset
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::BrokenPipe
+                        ));
                         let _ = closed_tx.send(());
                         return;
                     }

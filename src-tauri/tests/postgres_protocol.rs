@@ -123,7 +123,15 @@ mod startup_cleanup {
                         match stream.read(&mut bytes).await {
                             Ok(0) => return true,
                             Ok(_) => {}
-                            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::UnexpectedEof
+                                        | std::io::ErrorKind::ConnectionReset
+                                        | std::io::ErrorKind::ConnectionAborted
+                                        | std::io::ErrorKind::BrokenPipe
+                                ) =>
+                            {
                                 return true;
                             }
                             Err(_) => return false,
