@@ -17,7 +17,8 @@ implementation, verification, merge, and release milestones. The detailed
 engineering blueprint is also recorded in [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md).
 
 The [latest macOS preview](https://github.com/quiinthieu/joinery/releases)
-includes PostgreSQL, MySQL/MariaDB, standalone Redis, the read-only Snowflake
+includes PostgreSQL, MySQL/MariaDB, standalone Redis, local/in-memory SQLite
+(in current `feat/datagrip-2026-3-workflows` source), the read-only Snowflake
 local-application OAuth route, and the locally verified schema-8 Snowflake
 `externalbrowser` SDK workflow (`snowflake-sdk` `3.4.1` with bundled Node
 `24.22.2`). See GitHub Releases and the Site for the exact published version
@@ -83,10 +84,15 @@ immutable object-identity guarantee; defaults, policies, temporary shadows and
 concurrent DDL can change effects. unknown outcomes retire without replay, and
 metadata stays paused until explicit coherent refresh. Schema-8 local SDK
 workflows now also cover lossless `RelationBrowser` grid editing up to `1,000`
-columns, `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
+columns (including writable `GEOGRAPHY` and `GEOMETRY` WKT/EWKT/RFC-7946 GeoJSON
+codecs with `TO_GEOGRAPHY`/`TO_GEOMETRY` binds and `ST_ASEWKB` conflict checks),
+`<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
 browsing, DataGrip 2026.3 column pinning/freezing + `Transpose`/`Record` views +
 row `Clone` + detached `"result"` tabs, frame-bounded multi-batch CSV imports up
-to `100,000` rows, `ObjectExplorer` / `ObjectInspector`, user-defined Virtual
+to `100,000` rows, `ObjectExplorer` / `ObjectInspector` (including `DYNAMIC`,
+`EXTERNAL`, `HYBRID`, `EVENT`, `ICEBERG`, `TRANSIENT`, and `TEMPORARY` table
+subtypes, `SHOW DYNAMIC TABLES` / `SHOW EXTERNAL TABLES` attributes, and Dynamic
+Table upstream lineage), user-defined Virtual
 Foreign Keys across ER diagrams, SQL `JOIN` completion, and row navigation,
 bounded Snowflake `SchemaDiagram` ER views (PK and composite physical/virtual FK
 layout with `ObjectInspector` navigation), Snowflake `SchemaDiff` live/snapshot
@@ -96,15 +102,20 @@ across tables with `CLUSTER BY` and `IDENTITY`, views, sequences, and
 table disclosures and `Open in SQL editor` handoff), cross-source Workspace SQL
 (`workspace_sql.rs` joining retained result snapshots in sandboxed read-only
 in-memory SQLite), bounded parameterized full-text data search (`data_search.rs`),
-privacy-safe SQL Local History (`local_history.rs` with diff and restore), rich
+privacy-safe SQL Local History (`local_history.rs` with diff and restore),
+AST-aware workspace SQL `Find Usages` (`sql_refactor.rs` across open tabs and
+saved queries) plus `Extract CTE` and `Expand Wildcard (* / alias.*)`
+refactorings, rich
 cell value inspection across `ValueDialog` and Snowflake `RelationBrowser`
 (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON formatter + staged cell
 apply, raw hex `BINARY` Hex/ASCII dump, and `GEOGRAPHY`/`GEOMETRY`
-GeoJSON/EWKT/WKT 2D SVG plots), 8 reviewed DDL actions (`CREATE TABLE`,
+GeoJSON/EWKT/WKT 2D SVG plots + staged spatial edits), 8 reviewed DDL actions (`CREATE TABLE`,
 `ADD COLUMN`, `ALTER COLUMN` nullability, `RENAME COLUMN`, `DROP COLUMN`,
 `DROP TABLE`, `CREATE VIEW`, `DROP VIEW`), guarded `ROLE` / `WAREHOUSE` /
-`DATABASE` / `SCHEMA` switching, live `inspection_schema` column diagnostics, and
-observed `EXPLAIN USING JSON` plan snapshots. DDL cannot be rolled back, and
+`DATABASE` / `SCHEMA` switching, live `inspection_schema` column diagnostics,
+observed `EXPLAIN USING JSON` plan snapshots, and post-execution
+`INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION` + `GET_QUERY_OPERATOR_STATS`
+operator profiling (`SnowflakeQueryProfileModal`). DDL cannot be rolled back, and
 account-level DML/DDL/transaction/million-row qualification remains gated on
 explicit owner approval of the
 [`SANDBOX.BILLIE_TESTING` qualification plan](docs/snowflake-sandbox-qualification-plan.md).

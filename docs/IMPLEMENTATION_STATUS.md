@@ -1,11 +1,12 @@
 # Implementation and release status
 
-## DataGrip 2026.3 grid layouts, virtual foreign keys, Workspace SQL/data search, and SQL Local History (16 November 2026)
+## DataGrip 2026.3 grid layouts, virtual foreign keys, Workspace SQL/data search, SQL Local History, AST SQL refactoring, Snowflake spatial/special-table/profiler workflows, and local SQLite engine (16 November 2026)
 
 Following PR #73 (`1cb44de`, shipped and installed on macOS ARM64 as GitHub
 pre-release `v0.1.0-preview.18`), branch `feat/datagrip-2026-3-workflows`
 implements the remaining local DataGrip 2026.3 (`263.7307.216`) daily workflow
-surfaces across PostgreSQL, MySQL/MariaDB, and Snowflake SDK sessions:
+surfaces across PostgreSQL, MySQL/MariaDB, local SQLite, and Snowflake SDK
+sessions:
 
 - **Column Pinning, Transpose & Record Views, Row Clone, Cell/Row Revert, and Detached Result Tabs (`32b2d15`)**:
   Extended `SavedTableLayout` (`pinned_columns`, disjoint from `hidden_columns`,
@@ -65,46 +66,109 @@ surfaces across PostgreSQL, MySQL/MariaDB, and Snowflake SDK sessions:
   `recovery::validate` and `recovery_stream::validate`. Added Myers line-diff
   comparison (`local-diff.ts`) and `LocalHistoryModal.tsx` (`Restore to editor`
   and `Open in new tab` without automatic execution).
+- **Round 1 Verification Hardening & E2E / Docker Specs (`8bad89f`, `49c9590`, `2493654`)**:
+  Fixed `DataSearchView.tsx` `openMatch` 3-part Snowflake database qualification
+  (resolving active Snowflake session database / `profile.snowflake?.database`)
+  and preserved multi-column PG/MySQL `OR` match filters (`FilterMode: "raw"`);
+  projected `ST_ASEWKT("col") AS "col"` for Snowflake `GEOGRAPHY`/`GEOMETRY`
+  columns in `data_search.rs` so WKT coordinate searches populate
+  `matched_columns`; replaced panicking `row.get` with fallible `row.try_get`
+  and added per-table session-closure / cancellation checks across
+  `Postgres::search_data`, `Mysql::search_rows`, and
+  `SnowflakeExternal::search_data`; quoted SQLite mount aliases in
+  `WorkspaceSqlView.tsx` `defaultSql` and subscribed `discoverMountableDatasets`
+  to reactive `sessions`/`consoleStates`; guarded `TransposeGridView`,
+  `RecordCardView`, and `DatabaseGrid` table editability with
+  `!readOnlyProfile && !consoleMode`; and added Playwright E2E coverage
+  (`tests/e2e/datagrip-2026-3-workflows.spec.ts`) plus disposable PostgreSQL and
+  MySQL integration tests (`src-tauri/tests/postgres.rs`,
+  `src-tauri/tests/mysql.rs`).
+- **Writable Snowflake Spatial `GEOGRAPHY` and `GEOMETRY` Grid Codecs (`44fcbac`)**:
+  Extended `drivers/snowflake_mutations.rs`, `drivers/snowflake_edit_codec.rs`,
+  `snowflake-grid-staging.ts`, and `RelationBrowser.tsx` (`SnowflakeCellInspectorModal`)
+  to validate WKT, EWKT (`SRID=n;...`), and RFC-7946 GeoJSON payloads, compute
+  canonical IEEE-754 + SRID fingerprints across GeoJSON vs WKT representations,
+  bind parameterized `TO_GEOGRAPHY(CAST(? AS VARCHAR))` /
+  `TO_GEOMETRY(CAST(? AS VARCHAR))` DML expressions, and verify exact whole-row
+  conflict predicates via `ST_ASEWKB(...) IS NOT DISTINCT FROM ST_ASEWKB(...)`.
+- **Snowflake Special-Table Inspector & Post-Execution Query Profiler (`8e1b5f1`)**:
+  Added `SnowflakeTableSubtype` (`Standard`, `Dynamic`, `External`, `Hybrid`,
+  `Event`, `Iceberg`, `Transient`, `Temporary`), `SnowflakeTableDetails`
+  (`SHOW DYNAMIC TABLES` `target_lag`/`warehouse`/`refresh_mode`/`scheduling_state`,
+  `SHOW EXTERNAL TABLES` `location`/`file_format_name`/`file_format_type`/`auto_refresh`,
+  and Dynamic Table upstream `dynamic table source` dependency extraction via
+  `sqlparser` AST + top-level `AS` tokenizer fallback), and post-execution
+  `snowflake_query_history` (`INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION` with
+  SQL text redaction when `!store_query_text`) + `snowflake_operator_profile`
+  (`GET_QUERY_OPERATOR_STATS(?)` operator DAG, row counts, partition pruning,
+  local/remote disk spill bytes, and bottleneck breakdown) surfaced in
+  `ObjectInspectorView.tsx`, `Workbench.tsx`, and
+  `SnowflakeQueryProfileModal.tsx`.
+- **AST-Aware SQL `Find Usages`, `Extract CTE`, and `Expand Wildcard` Refactorings (`a7a1e4e`)**:
+  Added `src-tauri/src/sql_refactor.rs` (`find_sql_usages` across PostgreSQL,
+  MySQL/MariaDB, Snowflake, and SQLite open tabs + persisted `saved_queries`,
+  resolving table/view/CTE shadowing, aliases, single-table unqualified columns,
+  `INSERT`/`UPDATE` targets, and routines while resiliently recovering from
+  broken sibling statements), plus `src/features/studio/sql-refactor.ts` and
+  `SqlRefactorDialog.tsx` (`Extract CTE` distinguishing `derivedTable` vs scalar
+  /`IN`/`EXISTS` `expressionSubquery` `(SELECT * FROM cte)` vs `wrapStatement`
+  and non-recursive CTE ordering, and `Expand Wildcard` for `*`, `alias.*`, and
+  local CTE projections), wired into `SqlEditor.tsx`,
+  `SqlNavigationOverlay.tsx`, and `ObjectInspectorView.tsx`.
+- **First-Class Local SQLite Database Engine (`b8a3d1d`)**:
+  Added `EngineKind::Sqlite` (`src-tauri/src/drivers/sqlite.rs` backed by
+  bundled `rusqlite`) supporting `:memory:` and local `.sqlite`/`.db` files,
+  `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` in `SafeMode::ReadOnly`,
+  `PRAGMA foreign_keys = ON` + `busy_timeout = 5000` in writable sessions,
+  `sqlite_master` + `PRAGMA table_xinfo`/`index_list`/`index_info`/`foreign_key_list`
+  catalog/explorer/inspector/DDL/ER `schema_diagram`/`schema_snapshot` diff,
+  server-sorted/filtered/paged `TableView` (supporting tables with explicit PKs
+  and fallback `rowid`), conflict-checked `SAVEPOINT` grid edits/inserts/deletes,
+  manual `BEGIN`/`COMMIT`/`ROLLBACK` transactions, `EXPLAIN QUERY PLAN` tree
+  visualization, parameterized `search_data`, and `ConnectionDialog.tsx` SQLite
+  profile setup, verified end-to-end by `src-tauri/tests/sqlite.rs`.
 
 Local verification recorded on `feat/datagrip-2026-3-workflows`:
 
 - Frontend, formatting, contracts & build: `pnpm format:check` clean,
-  `pnpm contracts && tsc -b` clean, `vitest run` **`1,080/1,080` tests passed
-  across `77` test files** (`0` failed), and `pnpm build` (`vite build`) clean
-  with `DatabaseGrid` code-split (`0` chunk warnings).
-- Rust static analysis & unit/integration suites: `pnpm check:rust`
-  (`cargo fmt --check`, `cargo check`, and strict
-  `cargo clippy --all-targets --all-features -- -D warnings` with `0` warnings),
-  `732` non-socket `--lib` unit tests passed (`0` regressions across all new
-  `workspace`, `library`, `execution`, `workspace_sql`, `data_search`,
-  `recovery_stream`, and `local_history` unit tests, including `36/36`
-  `execution::snowflake_connection_tests`), plus `111/111` non-socket
-  integration tests (`43/43` `tests/snowflake_process.rs`, `33/33`
-  `tests/snowflake_external.rs` including real child-process
-  `SnowflakeExternal::search_data` with `OBJECT` `TO_JSON` & `BINARY` exclusion,
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,090/1,090` tests passed
+  across `79` test files** (`0` failed), and `pnpm build` (`vite build`) clean
+  with `DatabaseGrid` and `SqlEditor` code-split (`0` errors).
+- Rust static analysis & unit/integration suites: `cargo fmt --check`,
+  `cargo check`, and strict
+  `cargo clippy --all-targets --all-features -- -D warnings` clean (`0`
+  warnings), `736` non-socket `--lib` unit tests passed (`0` failed, `5`
+  ignored, including new `sql_refactor`, `snowflake_mutations`,
+  `snowflake_explorer`, `data_search`, `workspace_sql`, and `local_history`
+  tests), plus `112/112` non-socket integration tests (`43/43`
+  `tests/snowflake_process.rs`, `33/33` `tests/snowflake_external.rs` including
+  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`
+  and `special_snowflake_tables_and_post_execution_query_profile_round_trip`,
   `11/11` `tests/snowflake_profile.rs`, `9/9`
-  `tests/snowflake_table_qualification_cli.rs` (`--features test-harness`),
-  `8/8` `tests/history_lifecycle.rs`, `2/2` `tests/groups.rs`, `2/2`
-  `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, and `1/1`
-  `tests/recovery.rs`) passed (`843` Rust tests total).
+  `tests/snowflake_table_qualification_cli.rs`, `8/8`
+  `tests/history_lifecycle.rs`, `2/2` `tests/groups.rs`, `2/2`
+  `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, `1/1`
+  `tests/recovery.rs`, and `1/1` end-to-end `tests/sqlite.rs` against a real
+  embedded SQLite 3 database) passed (`848` Rust tests total).
 - Node & Python verification suites: `165/165` non-loopback `snowflake-helper`
-  unit tests, `136/136` `pnpm test:snowflake:qualification`, `59/59`
+  unit tests, `136/136` `pnpm test:snowflake:qualification`, `23/23`
   `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
   `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
   `pnpm test:native:recovery:runner`, `11/11`
-  `pnpm test:native:encrypted-recovery:runner` (`401` Node/Python cases total),
-  `verify-snowflake-package.mjs` (`entryCount: 15111`, `symlinkCount: 5`), and
-  guarded `verify-snowflake-runtime.mjs` (`sdkVersion: "3.4.1"`,
-  `authenticationRequests: 0`, `sqlRequests: 0`) passed.
+  `pnpm test:native:encrypted-recovery:runner`, and
+  `verify-snowflake-package.mjs` (`passed: true`, `entryCount: 15111`,
+  `symlinkCount: 5`) passed.
 - Sandbox-blocked checks (not executed inside the offline socket-restricted
   agent sandbox; require host CI / non-sandboxed execution before shipping):
   `127.0.0.1` loopback TCP listener tests (Playwright E2E `test-harness` browser
-  suite, `61` Rust loopback mock-socket `--lib` tests, and loopback HTTP/TLS
-  `snowflake-helper` tests), `1` setuid `chmod 0o4755` test
+  suite including `tests/e2e/datagrip-2026-3-workflows.spec.ts`, `61` Rust
+  loopback mock-socket `--lib` tests, and loopback HTTP/TLS `snowflake-helper`
+  tests), `1` sticky-bit/setuid `chmod` test
   (`snowflake_runtime::tests::unsafe_modes_and_non_executable_node_are_rejected`),
   Docker `/var/run/docker.sock` disposable PG/MySQL/MariaDB/Redis container
-  integration fixtures (`#[ignore]`), and hidden native macOS WebView smoke
-  (`pnpm test:native` / `pnpm test:native:encrypted-recovery`).
+  integration fixtures (`#[ignore]`, including the new `tests/postgres.rs` and
+  `tests/mysql.rs` Round 1 workflow tests), and hidden native macOS WebView
+  smoke (`pnpm test:native` / `pnpm test:native:encrypted-recovery`).
 
 External replacement gates remain explicitly open: zero live Snowflake account
 queries have been executed pending owner approval of
