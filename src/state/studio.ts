@@ -617,27 +617,27 @@ export function sessionHasOpenTransaction(
   );
 }
 function sessionInfoById(
-  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
+  state: Partial<Pick<StudioState, "sessions" | "sessionPool" | "tabs">>,
   sessionId: string,
 ): SessionInfo | undefined {
   return (
-    Object.values(state.sessions).find((session) => session.id === sessionId) ??
-    Object.values(state.sessionPool)
+    Object.values(state.sessions ?? {}).find((session) => session.id === sessionId) ??
+    Object.values(state.sessionPool ?? {})
       .flat()
       .find((entry) => entry.info.id === sessionId)?.info ??
-    state.tabs.find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
+    (state.tabs ?? []).find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
       ?.querySession ??
     undefined
   );
 }
 /** Retired console IDs remain sealed so stale mounted handlers cannot probe. */
 export function isSnowflakeConsoleSession(
-  state: Pick<StudioState, "consoleSessions" | "sessions" | "sessionPool" | "tabs">,
+  state: Partial<Pick<StudioState, "consoleSessions" | "sessions" | "sessionPool" | "tabs">>,
   sessionId: string | null | undefined,
 ): boolean {
   return (
     !!sessionId &&
-    (state.consoleSessions[sessionId] === true ||
+    (state.consoleSessions?.[sessionId] === true ||
       sessionInfoById(state, sessionId)?.consoleMode === true)
   );
 }

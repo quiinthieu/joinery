@@ -25,7 +25,12 @@ import "@glideapps/glide-data-grid/dist/index.css";
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
-import { querySessionForTab, useStudio, type StudioTab } from "../../state/studio";
+import {
+  isSnowflakeConsoleSession,
+  querySessionForTab,
+  useStudio,
+  type StudioTab,
+} from "../../state/studio";
 import {
   copyFormatLabel,
   formatGridCells,
@@ -189,10 +194,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       tab.kind === "query"
         ? querySessionForTab(tab, state.sessions)
         : state.sessions[tab.connectionId];
-    return Boolean(
-      activeSession?.consoleMode === true ||
-      (activeSession?.id && state.consoleSessions?.[activeSession.id] === true) ||
-      (tab.dataSessionId && state.consoleSessions?.[tab.dataSessionId] === true),
+    return (
+      isSnowflakeConsoleSession(state, activeSession?.id) ||
+      isSnowflakeConsoleSession(state, tab.dataSessionId)
     );
   });
   const isGridEditable =

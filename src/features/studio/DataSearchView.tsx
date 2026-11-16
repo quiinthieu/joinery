@@ -27,7 +27,7 @@ function escapeLikePattern(value: string): string {
 }
 
 function buildSqlWhereForColumns(
-  engine: "postgres" | "mysql",
+  engine: "postgres" | "mysql" | "sqlite",
   columns: readonly string[],
   query: string,
   matchMode: DataSearchMatchMode,
@@ -48,15 +48,28 @@ function buildSqlWhereForColumns(
         ? `CAST(${quoteBacktick(col)} AS CHAR)`
         : `CAST(${quoteDouble(col)} AS TEXT)`;
     if (matchMode === "exact") {
-      return caseSensitive ? `${castExpr} = '${lit}'` : `LOWER(${castExpr}) = LOWER('${lit}')`;
+      if (!caseSensitive) {
+        return `LOWER(${castExpr}) = LOWER('${lit}')`;
+      }
+      return engine === "mysql"
+        ? `${castExpr} COLLATE utf8mb4_bin = '${lit}'`
+        : `${castExpr} = '${lit}'`;
     }
     if (engine === "postgres") {
       return caseSensitive
         ? `${castExpr} LIKE '${likePattern}' ESCAPE '!'`
         : `${castExpr} ILIKE '${likePattern}' ESCAPE '!'`;
     }
+    if (engine === "sqlite") {
+      if (!caseSensitive) {
+        return `LOWER(${castExpr}) LIKE LOWER('${likePattern}') ESCAPE '!'`;
+      }
+      return matchMode === "startsWith"
+        ? `SUBSTR(${castExpr}, 1, LENGTH('${lit}')) = '${lit}'`
+        : `INSTR(${castExpr}, '${lit}') > 0`;
+    }
     return caseSensitive
-      ? `${castExpr} LIKE '${likePattern}' ESCAPE '!'`
+      ? `${castExpr} COLLATE utf8mb4_bin LIKE '${likePattern}' ESCAPE '!'`
       : `LOWER(${castExpr}) LIKE LOWER('${likePattern}') ESCAPE '!'`;
   });
 
@@ -108,7 +121,7 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
   async function runSearch(event?: React.FormEvent) {
     event?.preventDefault();
     if (!session) {
-      setError("Connect to a PostgreSQL, MySQL/MariaDB, or Snowflake SDK database first.");
+      setError("Connect to a PostgreSQL, MySQL/MariaDB, SQLite, or Snowflake SDK database first.");
       return;
     }
     if (!query) {
@@ -144,7 +157,11 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
     const effectiveCols =
       distinctMatchedCols.length > 0 ? distinctMatchedCols : tableMatch.searchableColumns;
 
-    if (session?.engine === "postgres" || session?.engine === "mysql") {
+    if (
+      session?.engine === "postgres" ||
+      session?.engine === "mysql" ||
+      session?.engine === "sqlite"
+    ) {
       const op: FilterOp =
         report.matchMode === "exact"
           ? "eq"
@@ -155,14 +172,16 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
       const singleColInfo = singleCol
         ? tableMatch.columns.find((c) => c.name === singleCol)
         : undefined;
+      const supportedTypedKind =
+        singleColInfo !== undefined &&
+        singleColInfo.kind !== "json" &&
+        singleColInfo.kind !== "binary" &&
+        singleColInfo.kind !== "unknown";
       const canUseTypedSingleFilter =
         singleCol !== null &&
-        (report.matchMode !== "exact" ||
-          (report.caseSensitive &&
-            singleColInfo !== undefined &&
-            singleColInfo.kind !== "json" &&
-            singleColInfo.kind !== "binary" &&
-            singleColInfo.kind !== "unknown"));
+        supportedTypedKind &&
+        ((!report.caseSensitive && report.matchMode !== "exact" && session.engine !== "mysql") ||
+          (report.caseSensitive && report.matchMode === "exact" && session.engine === "postgres"));
 
       const filters =
         canUseTypedSingleFilter && singleCol
@@ -192,12 +211,15 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
     const colPredicates = effectiveCols.map((colName) => {
       const matchedColInfo = tableMatch.columns.find((c) => c.name === colName);
       const upperType = (matchedColInfo?.databaseType ?? "").trim().toUpperCase();
+      const qCol = quoteDouble(colName);
       const colExpr =
         upperType.startsWith("OBJECT") || upperType.startsWith("ARRAY")
-          ? `TO_JSON(${quoteDouble(colName)})`
-          : upperType.startsWith("GEOGRAPHY") || upperType.startsWith("GEOMETRY")
-            ? `ST_ASEWKT(${quoteDouble(colName)})`
-            : `TO_VARCHAR(${quoteDouble(colName)})`;
+          ? `TO_JSON(${qCol})`
+          : upperType.startsWith("VARIANT")
+            ? `IFF(IS_OBJECT(${qCol}) OR IS_ARRAY(${qCol}), TO_JSON(${qCol}), TO_VARCHAR(${qCol}))`
+            : upperType.startsWith("GEOGRAPHY") || upperType.startsWith("GEOMETRY")
+              ? `ST_ASEWKT(${qCol})`
+              : `TO_VARCHAR(${qCol})`;
       if (report.matchMode === "exact") {
         return report.caseSensitive
           ? `${colExpr} = '${escapedLiteral}'`
@@ -368,8 +390,8 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
             <Database size={28} />
             <h3>Connect to search table data</h3>
             <p>
-              Open a PostgreSQL, MySQL/MariaDB, or ordinary Snowflake SDK connection to scan column
-              values across schemas.
+              Open a PostgreSQL, MySQL/MariaDB, SQLite, or ordinary Snowflake SDK connection to scan
+              column values across schemas.
             </p>
           </div>
         ) : !report ? (

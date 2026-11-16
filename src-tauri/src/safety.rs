@@ -743,11 +743,53 @@ impl Visitor for Classification {
                     "utc_timestamp",
                 ]
                 .contains(&builtin);
+            let sqlite_builtin = self.engine == Some(EngineKind::Sqlite)
+                && [
+                    "sqlite_version",
+                    "sqlite_source_id",
+                    "instr",
+                    "substr",
+                    "replace",
+                    "ltrim",
+                    "rtrim",
+                    "typeof",
+                    "ifnull",
+                    "iif",
+                    "hex",
+                    "unhex",
+                    "quote",
+                    "unicode",
+                    "char",
+                    "printf",
+                    "format",
+                    "date",
+                    "time",
+                    "datetime",
+                    "julianday",
+                    "unixepoch",
+                    "strftime",
+                    "total",
+                    "group_concat",
+                    "json",
+                    "json_extract",
+                    "json_type",
+                    "json_valid",
+                    "json_array",
+                    "json_object",
+                    "json_group_array",
+                    "json_group_object",
+                ]
+                .contains(&builtin);
             let snowflake_observer = self.engine == Some(EngineKind::Snowflake)
                 && is_snowflake_zero_argument_observer(function);
             let snowflake_data =
                 self.engine == Some(EngineKind::Snowflake) && is_snowflake_data_function(function);
-            if !(common_builtin || mysql_builtin || snowflake_observer || snowflake_data) {
+            if !(common_builtin
+                || mysql_builtin
+                || sqlite_builtin
+                || snowflake_observer
+                || snowflake_data)
+            {
                 self.raise(StatementKind::Unknown);
             }
         }
@@ -2197,5 +2239,24 @@ mod tests {
                 reason: "Projection repeats column \"status\"".into(),
             }
         );
+    }
+
+    #[test]
+    fn sqlite_readonly_allows_pure_scalar_builtins_and_blocks_load_extension() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Local);
+        p.engine = EngineKind::Sqlite;
+        p.database = ":memory:".into();
+
+        let plan = prepare(
+            "sqlite-ro",
+            &p,
+            "SELECT sqlite_version(), datetime('now'), instr('Ada', 'A'), substr('Ada', 1, 2);",
+        )
+        .unwrap();
+        assert!(!plan.requires_approval);
+        assert_eq!(plan.statements[0].kind, StatementKind::Read);
+
+        let blocked = prepare("sqlite-ro", &p, "SELECT load_extension('./evil');").unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
     }
 }

@@ -6496,10 +6496,10 @@ mod browse_classification_tests {
         };
         TableSchema {
             table: TableRef {
-                schema: if engine == EngineKind::Mysql {
-                    "joinery".into()
-                } else {
-                    "public".into()
+                schema: match engine {
+                    EngineKind::Mysql => "joinery".into(),
+                    EngineKind::Sqlite => "main".into(),
+                    _ => "public".into(),
                 },
                 name: "orders".into(),
             },
@@ -6550,7 +6550,7 @@ mod browse_classification_tests {
 
     #[test]
     fn pure_read_raw_clauses_with_typed_filters_need_no_approval_on_pg_and_mysql() {
-        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql, EngineKind::Sqlite] {
             let schema = schema(engine);
             let query = BrowseQuery {
                 sort: vec![SortKey {
@@ -6589,27 +6589,36 @@ mod browse_classification_tests {
                 classify_browse_sql("s", &profile(engine, SafeMode::ReadOnly), &sql).unwrap();
             assert!(!needs_review, "{engine:?} custom order: {sql}");
 
-            let data_search_or_where = match engine {
-                EngineKind::Postgres => {
-                    "(CAST(\"label\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!' OR CAST(\"bucket\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!')"
-                }
-                EngineKind::Mysql => {
-                    "(LOWER(CAST(`label` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!' OR LOWER(CAST(`bucket` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!')"
-                }
+            let data_search_clauses = match engine {
+                EngineKind::Postgres => vec![
+                    "(CAST(\"label\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!' OR CAST(\"bucket\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!')",
+                    "CAST(\"label\" AS TEXT) LIKE '%Ada%' ESCAPE '!'",
+                ],
+                EngineKind::Mysql => vec![
+                    "(LOWER(CAST(`label` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!' OR LOWER(CAST(`bucket` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!')",
+                    "CAST(`label` AS CHAR) COLLATE utf8mb4_bin LIKE '%Ada%' ESCAPE '!'",
+                ],
+                EngineKind::Sqlite => vec![
+                    "(LOWER(CAST(\"label\" AS TEXT)) LIKE LOWER('%ada!%@%') ESCAPE '!' OR LOWER(CAST(\"bucket\" AS TEXT)) LIKE LOWER('%ada!%@%') ESCAPE '!')",
+                    "INSTR(CAST(\"label\" AS TEXT), 'Ada') > 0",
+                    "SUBSTR(CAST(\"label\" AS TEXT), 1, LENGTH('Ada')) = 'Ada'",
+                ],
                 _ => unreachable!(),
             };
-            let multi_col = BrowseQuery {
-                where_clause: Some(data_search_or_where.into()),
-                ..Default::default()
-            };
-            let multi_sql = browse_sql_for_engine(engine, &schema, &multi_col, None).unwrap();
-            for mode in [SafeMode::ReadOnly, SafeMode::Confirm, SafeMode::Silent] {
-                let (_, needs_review) =
-                    classify_browse_sql("s", &profile(engine, mode), &multi_sql).unwrap();
-                assert!(
-                    !needs_review,
-                    "{engine:?} {mode:?} multi-col search: {multi_sql}"
-                );
+            for clause in data_search_clauses {
+                let multi_col = BrowseQuery {
+                    where_clause: Some(clause.into()),
+                    ..Default::default()
+                };
+                let multi_sql = browse_sql_for_engine(engine, &schema, &multi_col, None).unwrap();
+                for mode in [SafeMode::ReadOnly, SafeMode::Confirm, SafeMode::Silent] {
+                    let (_, needs_review) =
+                        classify_browse_sql("s", &profile(engine, mode), &multi_sql).unwrap();
+                    assert!(
+                        !needs_review,
+                        "{engine:?} {mode:?} data search clause: {multi_sql}"
+                    );
+                }
             }
         }
     }

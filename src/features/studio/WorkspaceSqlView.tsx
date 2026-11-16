@@ -103,7 +103,10 @@ export function discoverMountableDatasets(
         ? querySessionForTab(t, studioState.sessions)
         : studioState.sessions[t.connectionId]
       : null;
-    if (tabSession && isSnowflakeConsoleSession(studioState, tabSession.id)) {
+    if (
+      (tabSession && isSnowflakeConsoleSession(studioState, tabSession.id)) ||
+      isSnowflakeConsoleSession(studioState, t.dataSessionId)
+    ) {
       continue;
     }
     const connName = t.connectionId ? (profileNames.get(t.connectionId) ?? "Connection") : "Local";
@@ -265,8 +268,8 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
           <span className="eyebrow">CROSS-SOURCE WORKSPACE SQL</span>
           <h1>Query across retained results</h1>
           <p>
-            Join, filter, and aggregate snapshots across PostgreSQL, MySQL/MariaDB, and Snowflake in
-            a sandboxed read-only in-memory SQLite engine — zero remote database load.
+            Join, filter, and aggregate snapshots across PostgreSQL, MySQL/MariaDB, SQLite, and
+            Snowflake in a sandboxed read-only in-memory SQLite engine — zero remote database load.
           </p>
         </div>
         <div className="diagram-toolbar">

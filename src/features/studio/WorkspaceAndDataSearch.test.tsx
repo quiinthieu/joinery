@@ -622,4 +622,73 @@ describe("WorkspaceSqlView and DataSearchView", () => {
       "SELECT 1 AS ready;",
     );
   });
+
+  it("opens filtered TableView on SQLite matches and preserves case-sensitive contains predicates", async () => {
+    const sqliteProfile: ConnectionProfile = {
+      ...pgProfile,
+      id: "55555555-5555-4555-8555-555555555555",
+      name: "Local SQLite",
+      engine: "sqlite",
+      host: "",
+      port: 0,
+      database: "/tmp/app.sqlite",
+      username: "",
+    };
+    useStudio.setState((s) => ({
+      bootstrap: s.bootstrap ? { ...s.bootstrap, profiles: [sqliteProfile] } : null,
+      selectedConnectionId: sqliteProfile.id,
+      sessions: {
+        [sqliteProfile.id]: {
+          ...pgSession,
+          id: "sess-sqlite",
+          connectionId: sqliteProfile.id,
+          engine: "sqlite",
+        },
+      },
+    }));
+
+    useStudio.getState().openUtility("dataSearch");
+    const sqliteTab = useStudio.getState().tabs.find((t) => t.kind === "dataSearch")!;
+    const sqliteCsReport: DataSearchReport = {
+      query: "Ada\\HQ",
+      matchMode: "contains",
+      caseSensitive: true,
+      database: "app.sqlite",
+      scannedTables: 1,
+      skippedTables: 0,
+      totalRowHits: 1,
+      truncated: false,
+      elapsedMs: 1,
+      matches: [
+        {
+          table: { schema: "main", name: "users" },
+          columns: [col("name")],
+          searchableColumns: ["name"],
+          rows: [{ matchedColumns: ["name"], row: ["Ada\\HQ"] }],
+          hasMoreInTable: false,
+        },
+      ],
+    };
+    vi.mocked(client.call).mockResolvedValueOnce(sqliteCsReport);
+    const openTableSpy = vi.spyOn(useStudio.getState(), "openTable").mockResolvedValue(undefined);
+
+    render(<DataSearchView tab={sqliteTab} />);
+    fireEvent.change(screen.getByLabelText("Search database values"), {
+      target: { value: "Ada\\HQ" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Search tables/i }));
+    await screen.findByText("Ada\\HQ");
+
+    fireEvent.click(screen.getByRole("button", { name: /Open table/i }));
+    expect(openTableSpy).toHaveBeenCalledWith(
+      sqliteProfile.id,
+      { schema: "main", name: "users" },
+      {
+        sort: [],
+        filters: [],
+        whereClause: "INSTR(CAST(\"name\" AS TEXT), 'Ada\\HQ') > 0",
+        orderClause: null,
+      },
+    );
+  });
 });

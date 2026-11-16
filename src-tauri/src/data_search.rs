@@ -235,6 +235,8 @@ pub fn snowflake_search_expr(col: &ColumnInfo) -> String {
     let upper = col.database_type.trim().to_ascii_uppercase();
     if upper.starts_with("OBJECT") || upper.starts_with("ARRAY") {
         format!("TO_JSON({q})")
+    } else if upper.starts_with("VARIANT") {
+        format!("IFF(IS_OBJECT({q}) OR IS_ARRAY({q}), TO_JSON({q}), TO_VARCHAR({q}))")
     } else if upper.starts_with("GEOGRAPHY") || upper.starts_with("GEOMETRY") {
         format!("ST_ASEWKT({q})")
     } else {
@@ -524,6 +526,23 @@ mod tests {
         assert!(sf_sql.contains("STARTSWITH(LOWER(TO_JSON(\"payload\")), LOWER(?))"));
         assert!(sf_sql.contains("STARTSWITH(LOWER(ST_ASEWKT(\"coords\")), LOWER(?))"));
         assert_eq!(sf_binds.len(), 4);
+
+        let variant_col = ColumnInfo {
+            id: "doc".into(),
+            name: "doc".into(),
+            database_type: "VARIANT".into(),
+            kind: ColumnKind::Json,
+            nullable: true,
+            primary_key: false,
+            foreign_key: false,
+            editable: false,
+            insertable: false,
+            has_default: false,
+        };
+        assert_eq!(
+            snowflake_search_expr(&variant_col),
+            "IFF(IS_OBJECT(\"doc\") OR IS_ARRAY(\"doc\"), TO_JSON(\"doc\"), TO_VARCHAR(\"doc\"))"
+        );
 
         let spatial_match = build_table_match(
             &sf_schema,
