@@ -126,3 +126,30 @@ it("traverses layers and wraps at the edges", () => {
   expect(neighborNode(layout, customers, "End")).toBe(orders);
   expect(neighborNode(layout, customers, "ArrowUp")).toBe(customers);
 });
+
+it("renders virtual foreign-key edges as dashed with virtual count and tooltip", async () => {
+  vi.mocked(client.call).mockResolvedValueOnce({
+    ...diagram,
+    truncated: false,
+    foreignKeys: [
+      ...diagram.foreignKeys,
+      {
+        name: "vfk_orders_reviewer",
+        source: { schema: "public", name: "orders" },
+        columns: ["customer_id"],
+        target: { schema: "public", name: "customers" },
+        targetColumns: ["id"],
+        virtualRelationship: true,
+      },
+    ],
+  });
+  render(<DiagramView tab={diagramTab} onOpenTable={vi.fn()} />);
+  await screen.findByRole("button", { name: "customers, 1 columns" });
+  expect(screen.getByText("2 relations · 2 foreign keys (1 virtual)")).toBeTruthy();
+  const virtualEdge = document.querySelector('[data-diagram-edge="vfk_orders_reviewer"]');
+  expect(virtualEdge?.getAttribute("data-diagram-edge-virtual")).toBe("true");
+  expect(virtualEdge?.getAttribute("stroke-dasharray")).toBe("5 4");
+  expect(virtualEdge?.querySelector("title")?.textContent).toBe(
+    "vfk_orders_reviewer: orders(customer_id) → public.customers(id) (virtual)",
+  );
+});

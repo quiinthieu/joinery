@@ -230,6 +230,8 @@ fn main() {
         SqlSnippetPlace::decl(),
         SqlSnippet::decl(),
         SqlSnippetInput::decl(),
+        VirtualForeignKey::decl(),
+        VirtualForeignKeyInput::decl(),
         Bootstrap::decl(),
         SavedTableLayout::decl(),
         SavedWorkspace::decl(),

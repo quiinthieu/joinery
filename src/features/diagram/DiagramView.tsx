@@ -10,6 +10,7 @@ import {
   layoutDiagram,
   type DiagramLayout,
 } from "./er-layout";
+import { VirtualForeignKeyDialog } from "../studio/VirtualForeignKeyDialog";
 
 const MIN_SCALE = 0.25;
 const MAX_SCALE = 2;
@@ -54,6 +55,7 @@ export function DiagramView({
   const [filter, setFilter] = useState("");
   const [scale, setScale] = useState(1);
   const [focused, setFocused] = useState<string | null>(null);
+  const [addingVirtualFk, setAddingVirtualFk] = useState(false);
   const request = useRef(0);
   const canvas = useRef<HTMLDivElement>(null);
 
@@ -110,6 +112,12 @@ export function DiagramView({
   const zoom = (factor: number) =>
     setScale((value) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, +(value * factor).toFixed(2))));
 
+  const virtualFkCount = useMemo(
+    () => diagram?.foreignKeys.filter((fk) => fk.virtualRelationship).length ?? 0,
+    [diagram],
+  );
+  const activeNode = active ? (nodeByKey.get(active) ?? null) : null;
+
   return (
     <div className="utility-view diagram-view">
       <header className="utility-header">
@@ -118,7 +126,9 @@ export function DiagramView({
           <h1>{schema || "Schema"}</h1>
           <p>
             {diagram
-              ? `${diagram.tables.length} relations · ${diagram.foreignKeys.length} foreign keys`
+              ? `${diagram.tables.length} relations · ${diagram.foreignKeys.length} foreign keys${
+                  virtualFkCount > 0 ? ` (${virtualFkCount} virtual)` : ""
+                }`
               : "Tables and their foreign-key relationships."}
           </p>
         </div>
@@ -141,6 +151,17 @@ export function DiagramView({
           <button className="icon-button" aria-label="Zoom in" onClick={() => zoom(1.25)}>
             <Plus size={14} />
           </button>
+          {tab.connectionId && (
+            <button
+              type="button"
+              className="button ghost"
+              disabled={loading || !session}
+              onClick={() => setAddingVirtualFk(true)}
+            >
+              <Link2 size={14} />
+              Add virtual FK…
+            </button>
+          )}
           <button
             className="button ghost"
             disabled={loading || !session}
@@ -204,16 +225,19 @@ export function DiagramView({
             {layout.edges.map((edge) => {
               const fk = edge.foreignKey;
               const related = active === edge.source || active === edge.target;
+              const isVirtual = Boolean(fk.virtualRelationship);
               return (
                 <path
                   key={edge.key}
                   d={edge.path}
-                  className={`diagram-edge ${related ? "related" : ""}`}
+                  className={`diagram-edge ${isVirtual ? "virtual" : ""} ${related ? "related" : ""}`}
+                  strokeDasharray={isVirtual ? "5 4" : undefined}
                   markerEnd="url(#diagram-arrow)"
                   data-diagram-edge={fk.name}
+                  data-diagram-edge-virtual={isVirtual ? "true" : undefined}
                 >
                   <title>
-                    {`${fk.name}: ${fk.source.name}(${fk.columns.join(", ")}) → ${fk.target.schema}.${fk.target.name}(${fk.targetColumns.join(", ")})`}
+                    {`${fk.name}: ${fk.source.name}(${fk.columns.join(", ")}) → ${fk.target.schema}.${fk.target.name}(${fk.targetColumns.join(", ")})${isVirtual ? " (virtual)" : ""}`}
                   </title>
                 </path>
               );
@@ -322,6 +346,32 @@ export function DiagramView({
           <Network size={28} />
           <h3>{loading ? "Loading diagram…" : "Diagram unavailable"}</h3>
         </div>
+      )}
+      {addingVirtualFk && tab.connectionId && (
+        <VirtualForeignKeyDialog
+          connectionId={tab.connectionId}
+          initialSource={
+            activeNode && !activeNode.external
+              ? activeNode.table
+              : schema
+                ? { schema, name: "" }
+                : null
+          }
+          sourceColumns={
+            activeNode && !activeNode.external
+              ? (diagram?.tables
+                  .find(
+                    (t) =>
+                      t.table.schema === activeNode.table.schema &&
+                      t.table.name === activeNode.table.name,
+                  )
+                  ?.columns.map((c) => c.name) ?? [])
+              : []
+          }
+          knownTables={diagram?.tables.map((t) => t.table) ?? []}
+          onSaved={() => void refresh()}
+          onClose={() => setAddingVirtualFk(false)}
+        />
       )}
     </div>
   );

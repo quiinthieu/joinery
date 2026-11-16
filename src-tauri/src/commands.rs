@@ -1317,3 +1317,25 @@ pub async fn delete_sql_snippet(studio: State<'_, Arc<Studio>>, id: String) -> A
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn save_virtual_foreign_key(
+    studio: State<'_, Arc<Studio>>,
+    input: VirtualForeignKeyInput,
+) -> AppResult<VirtualForeignKey> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_virtual_foreign_key(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_virtual_foreign_key(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_virtual_foreign_key(&id))
+        .await
+        .map_err(join_error)?
+}

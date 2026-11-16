@@ -866,6 +866,13 @@ async fn rpc(
                 studio.delete_sql_snippet(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
+            "save_virtual_foreign_key" => {
+                json!(studio.save_virtual_foreign_key(arg(&args, "input")?)?)
+            }
+            "delete_virtual_foreign_key" => {
+                studio.delete_virtual_foreign_key(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_open_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

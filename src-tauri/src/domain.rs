@@ -527,6 +527,9 @@ pub struct ForeignKey {
     pub columns: Vec<String>,
     pub target: TableRef,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 impl ForeignKey {
@@ -545,6 +548,7 @@ impl ForeignKey {
                     columns: vec![column],
                     target,
                     target_columns: vec![target_column],
+                    virtual_relationship: false,
                 }),
             }
         }
@@ -562,6 +566,9 @@ pub struct InboundForeignKey {
     pub source: TableRef,
     pub columns: Vec<String>,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 impl InboundForeignKey {
@@ -580,6 +587,7 @@ impl InboundForeignKey {
                     source,
                     columns: vec![column],
                     target_columns: vec![target_column],
+                    virtual_relationship: false,
                 }),
             }
         }
@@ -622,6 +630,9 @@ pub struct DiagramForeignKey {
     pub columns: Vec<String>,
     pub target: TableRef,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 /// Read-only relationship graph for one schema.
@@ -712,6 +723,7 @@ impl SchemaDiagram {
                         columns: vec![row.column],
                         target: row.target,
                         target_columns: vec![row.target_column],
+                        virtual_relationship: false,
                     },
                     row.expected,
                 )),
@@ -1645,6 +1657,33 @@ pub struct SqlSnippetInput {
     pub place: SqlSnippetPlace,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VirtualForeignKey {
+    pub id: String,
+    pub connection_id: String,
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target: TableRef,
+    pub target_columns: Vec<String>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VirtualForeignKeyInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub connection_id: String,
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target: TableRef,
+    pub target_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -1667,6 +1706,9 @@ pub struct Bootstrap {
     pub sql_format_settings: SqlFormatSettings,
     #[serde(default)]
     pub sql_snippets: Vec<SqlSnippet>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<VirtualForeignKey>>")]
+    pub virtual_foreign_keys: Vec<VirtualForeignKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

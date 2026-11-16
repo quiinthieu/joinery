@@ -24,6 +24,8 @@ import type {
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
+  VirtualForeignKey,
+  VirtualForeignKeyInput,
   TableInfo,
   TableRef,
   TableSchema,
@@ -288,6 +290,7 @@ interface StudioState {
   bookmarks: SavedBookmark[];
   sqlFormatSettings: SqlFormatSettings;
   sqlSnippets: SqlSnippet[];
+  virtualForeignKeys: VirtualForeignKey[];
   recentLocations: RecentLocation[];
   shortcuts: Record<string, string>;
   theme: "dark" | "light" | "contrast";
@@ -361,6 +364,8 @@ interface StudioState {
   saveSqlFormatSettings(settings: SqlFormatSettings): Promise<SqlFormatSettings>;
   saveSqlSnippet(input: SqlSnippetInput): Promise<SqlSnippet>;
   deleteSqlSnippet(id: string): Promise<void>;
+  saveVirtualForeignKey(input: VirtualForeignKeyInput): Promise<VirtualForeignKey>;
+  deleteVirtualForeignKey(id: string): Promise<void>;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark"): void;
@@ -910,6 +915,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   bookmarks: [],
   sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
   sqlSnippets: [],
+  virtualForeignKeys: [],
   recentLocations: [],
   shortcuts: {},
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
@@ -959,6 +965,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         bookmarks: bootstrap.bookmarks ?? [],
         sqlFormatSettings: bootstrap.sqlFormatSettings ?? DEFAULT_SQL_FORMAT_SETTINGS,
         sqlSnippets: bootstrap.sqlSnippets ?? [],
+        virtualForeignKeys: bootstrap.virtualForeignKeys ?? [],
         error: null,
         ...(workspace
           ? {
@@ -3246,6 +3253,36 @@ export const useStudio = create<StudioState>((set, get) => ({
       };
     });
   },
+  async saveVirtualForeignKey(input) {
+    const saved = await client.call<VirtualForeignKey>("save_virtual_foreign_key", { input });
+    set((state) => {
+      const virtualForeignKeys = [
+        saved,
+        ...state.virtualForeignKeys.filter((entry) => entry.id !== saved.id),
+      ].sort(
+        (a, b) =>
+          a.source.schema.localeCompare(b.source.schema) ||
+          a.source.name.localeCompare(b.source.name) ||
+          a.name.toLowerCase().localeCompare(b.name.toLowerCase()) ||
+          a.id.localeCompare(b.id),
+      );
+      return {
+        virtualForeignKeys,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
+      };
+    });
+    return saved;
+  },
+  async deleteVirtualForeignKey(id) {
+    await client.call("delete_virtual_foreign_key", { id });
+    set((state) => {
+      const virtualForeignKeys = state.virtualForeignKeys.filter((entry) => entry.id !== id);
+      return {
+        virtualForeignKeys,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
+      };
+    });
+  },
   async openLocation(target) {
     const state = get();
     if (target.kind === "savedQuery") {
@@ -3963,6 +4000,9 @@ export const useStudio = create<StudioState>((set, get) => ({
           return false;
         return true;
       });
+      const virtualForeignKeys = state.virtualForeignKeys.filter(
+        (entry) => entry.connectionId !== id,
+      );
       const recentLocations = state.recentLocations.filter((entry) => {
         if (
           (entry.target.kind === "table" || entry.target.kind === "object") &&
@@ -3977,6 +4017,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         catalog,
         savedQueries,
         bookmarks,
+        virtualForeignKeys,
         recentLocations,
         closedTabs: state.closedTabs.filter((entry) => entry.connectionId !== id),
         tabs:
@@ -3993,6 +4034,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               profiles: state.bootstrap.profiles.filter((p) => p.id !== id),
               savedQueries,
               bookmarks,
+              virtualForeignKeys,
             }
           : null,
         tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),

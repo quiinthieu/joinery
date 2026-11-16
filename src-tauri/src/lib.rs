@@ -276,6 +276,8 @@ pub fn run() {
             commands::set_temporary_result_storage,
             commands::save_sql_snippet,
             commands::delete_sql_snippet,
+            commands::save_virtual_foreign_key,
+            commands::delete_virtual_foreign_key,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

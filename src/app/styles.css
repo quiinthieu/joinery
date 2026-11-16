@@ -713,6 +713,10 @@ kbd {
   stroke: var(--border);
   stroke-width: 1.4;
 }
+.diagram-edge.virtual {
+  stroke-dasharray: 5 4;
+  opacity: 0.9;
+}
 .diagram-edge.related {
   stroke: var(--accent);
   stroke-width: 2;

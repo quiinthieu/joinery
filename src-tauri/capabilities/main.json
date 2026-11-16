@@ -134,6 +134,8 @@
     "allow-save-sql-format-settings",
     "allow-set-temporary-result-storage",
     "allow-save-sql-snippet",
-    "allow-delete-sql-snippet"
+    "allow-delete-sql-snippet",
+    "allow-save-virtual-foreign-key",
+    "allow-delete-virtual-foreign-key"
   ]
 }

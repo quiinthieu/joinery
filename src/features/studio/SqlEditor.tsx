@@ -369,6 +369,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
+  const virtualForeignKeys = useStudio((s) => s.virtualForeignKeys);
+  const virtualForeignKeysRef = useRef(virtualForeignKeys);
+  virtualForeignKeysRef.current = virtualForeignKeys;
   const liveRef = useRef<CompletionCatalog | null>(null);
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
@@ -402,6 +405,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       ...config,
       tables: snapshot?.tables ?? [],
       snippets: snippetsRef.current,
+      virtualForeignKeys: virtualForeignKeysRef.current,
       sessionId: snapshot ? config.sessionId : null,
       database: snapshot?.identity.database,
       searchPath: snapshot?.identity.searchPath,
@@ -1143,6 +1147,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     formatting.current = null;
   }, [props.engine, props.sessionId]);
   useEffect(() => {
+    schemaCacheRef.current = new Map();
+  }, [virtualForeignKeys]);
+  useEffect(() => {
     if (completion.current?.configure(configure()) && view.current) {
       closeCompletion(view.current);
       completion.current.update(view.current.state);
@@ -1155,6 +1162,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.defaultSchema,
     live,
     sqlSnippets,
+    virtualForeignKeys,
   ]);
   useEffect(() => {
     let cancelled = false;

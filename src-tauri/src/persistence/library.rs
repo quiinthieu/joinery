@@ -14,6 +14,10 @@ pub const MAX_SQL_SNIPPET_TRIGGER_CHARS: usize = 32;
 pub const MAX_SQL_SNIPPET_TITLE_CHARS: usize = 120;
 pub const MAX_SQL_SNIPPET_BODY_BYTES: usize = 16 * 1024;
 pub const MAX_SQL_SNIPPETS_TOTAL_BYTES: usize = 512 * 1024;
+pub const MAX_VIRTUAL_FOREIGN_KEYS: usize = 256;
+pub const MAX_VIRTUAL_FK_NAME_CHARS: usize = 120;
+pub const MAX_VIRTUAL_FK_COLUMNS: usize = 16;
+pub const MAX_VIRTUAL_FKS_TOTAL_BYTES: usize = 512 * 1024;
 const MAX_OBJECT_IDENTIFIER_BYTES: usize = 256;
 const MAX_OBJECT_IDENTITY_BYTES: usize = 512;
 
@@ -375,6 +379,150 @@ fn profile_exists(connection: &Connection, id: &str) -> AppResult<bool> {
     Ok(exists.is_some())
 }
 
+fn valid_table_ref(table: &TableRef) -> bool {
+    !table.schema.trim().is_empty()
+        && table.schema.len() <= MAX_OBJECT_IDENTIFIER_BYTES
+        && !table.schema.contains('\0')
+        && !table.name.trim().is_empty()
+        && table.name.len() <= MAX_OBJECT_IDENTIFIER_BYTES
+        && !table.name.contains('\0')
+}
+
+fn valid_virtual_fk_columns(columns: &[String]) -> bool {
+    if !(1..=MAX_VIRTUAL_FK_COLUMNS).contains(&columns.len()) {
+        return false;
+    }
+    let mut seen = HashSet::with_capacity(columns.len());
+    for col in columns {
+        if col.trim().is_empty()
+            || col.len() > MAX_OBJECT_IDENTIFIER_BYTES
+            || col.contains('\0')
+            || !seen.insert(col.as_str())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn validate_virtual_foreign_keys(items: &[VirtualForeignKey]) -> AppResult<()> {
+    if items.len() > MAX_VIRTUAL_FOREIGN_KEYS {
+        return Err(AppError::new(
+            ErrorCode::ResultLimitReached,
+            "At most 256 virtual foreign keys may be stored",
+        ));
+    }
+    let mut ids = HashSet::with_capacity(items.len());
+    let mut names = HashSet::with_capacity(items.len());
+    let mut mappings = HashSet::with_capacity(items.len());
+    let mut total_bytes = 0usize;
+    for item in items {
+        let name_chars = item.name.trim().chars().count();
+        if uuid::Uuid::parse_str(&item.id).is_err()
+            || !ids.insert(item.id.as_str())
+            || uuid::Uuid::parse_str(&item.connection_id).is_err()
+            || item.name.trim().is_empty()
+            || name_chars > MAX_VIRTUAL_FK_NAME_CHARS
+            || item.name.chars().any(char::is_control)
+            || !valid_table_ref(&item.source)
+            || !valid_table_ref(&item.target)
+            || !valid_virtual_fk_columns(&item.columns)
+            || !valid_virtual_fk_columns(&item.target_columns)
+            || item.columns.len() != item.target_columns.len()
+            || (item.source == item.target && item.columns == item.target_columns)
+        {
+            return Err(AppError::invalid("A virtual foreign-key record is invalid"));
+        }
+        if !names.insert((
+            item.connection_id.as_str(),
+            &item.source,
+            item.name.to_ascii_lowercase(),
+        )) {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "A virtual foreign key with that name already exists on this table",
+            ));
+        }
+        if !mappings.insert((
+            item.connection_id.as_str(),
+            &item.source,
+            &item.columns,
+            &item.target,
+            &item.target_columns,
+        )) {
+            return Err(AppError::new(
+                ErrorCode::Conflict,
+                "An identical virtual foreign-key mapping already exists",
+            ));
+        }
+        let col_bytes: usize = item
+            .columns
+            .iter()
+            .chain(item.target_columns.iter())
+            .map(String::len)
+            .sum();
+        total_bytes = total_bytes
+            .saturating_add(item.name.len())
+            .saturating_add(item.source.schema.len())
+            .saturating_add(item.source.name.len())
+            .saturating_add(item.target.schema.len())
+            .saturating_add(item.target.name.len())
+            .saturating_add(col_bytes);
+        if total_bytes > MAX_VIRTUAL_FKS_TOTAL_BYTES {
+            return Err(AppError::new(
+                ErrorCode::ResultLimitReached,
+                "Virtual foreign keys are limited to 512 KiB in total",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn read_virtual_foreign_keys(
+    connection: &Connection,
+) -> AppResult<Vec<VirtualForeignKey>> {
+    let json: Option<String> = connection
+        .query_row(
+            "SELECT value FROM settings WHERE key='virtual-foreign-keys'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_error)?;
+    let Some(json) = json else {
+        return Ok(Vec::new());
+    };
+    if json.len() > MAX_VIRTUAL_FKS_TOTAL_BYTES * 6 + 65_536 {
+        return Err(AppError::invalid("Virtual foreign keys are too large"));
+    }
+    let items: Vec<VirtualForeignKey> = serde_json::from_str(&json)
+        .map_err(|_| AppError::invalid("Virtual foreign keys are invalid"))?;
+    validate_virtual_foreign_keys(&items)?;
+    Ok(items)
+}
+
+fn write_virtual_foreign_keys(
+    connection: &Connection,
+    items: &[VirtualForeignKey],
+) -> AppResult<()> {
+    validate_virtual_foreign_keys(items)?;
+    let value = serde_json::to_string(items)
+        .map_err(|_| AppError::internal("Could not encode virtual foreign keys"))?;
+    if value.len() > MAX_VIRTUAL_FKS_TOTAL_BYTES {
+        return Err(AppError::new(
+            ErrorCode::ResultLimitReached,
+            "Virtual foreign keys are limited to 512 KiB in total",
+        ));
+    }
+    connection
+        .execute(
+            "INSERT INTO settings(key,value) VALUES('virtual-foreign-keys',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![value],
+        )
+        .map_err(db_error)?;
+    Ok(())
+}
+
 pub(super) fn purge_connection(
     connection: &Connection,
     connection_id: &str,
@@ -416,6 +564,13 @@ pub(super) fn purge_connection(
     });
     if bookmarks.len() != before_bookmarks {
         write_bookmarks(connection, &bookmarks)?;
+    }
+
+    let mut virtual_fks = read_virtual_foreign_keys(connection)?;
+    let before_vfks = virtual_fks.len();
+    virtual_fks.retain(|vfk| vfk.connection_id != connection_id);
+    if virtual_fks.len() != before_vfks {
+        write_virtual_foreign_keys(connection, &virtual_fks)?;
     }
     Ok(())
 }
@@ -734,6 +889,145 @@ impl Persistence {
         }
         write_sql_snippets(&tx, &items)?;
         tx.commit().map_err(db_error)
+    }
+
+    pub fn virtual_foreign_keys(&self) -> AppResult<Vec<VirtualForeignKey>> {
+        read_virtual_foreign_keys(&self.connection.lock())
+    }
+
+    pub fn save_virtual_foreign_key(
+        &self,
+        input: VirtualForeignKeyInput,
+    ) -> AppResult<VirtualForeignKey> {
+        let name = clean_single_line(&input.name, MAX_VIRTUAL_FK_NAME_CHARS, "relationship name")?;
+        let connection_id = input.connection_id.trim().to_owned();
+        if uuid::Uuid::parse_str(&connection_id).is_err() {
+            return Err(AppError::invalid("Invalid connection identifier"));
+        }
+        let source = TableRef {
+            schema: input.source.schema.trim().to_owned(),
+            name: input.source.name.trim().to_owned(),
+        };
+        let target = TableRef {
+            schema: input.target.schema.trim().to_owned(),
+            name: input.target.name.trim().to_owned(),
+        };
+        if !valid_table_ref(&source) || !valid_table_ref(&target) {
+            return Err(AppError::invalid(
+                "Provide valid source and target schema and table names",
+            ));
+        }
+        let columns: Vec<String> = input
+            .columns
+            .into_iter()
+            .map(|c| c.trim().to_owned())
+            .collect();
+        let target_columns: Vec<String> = input
+            .target_columns
+            .into_iter()
+            .map(|c| c.trim().to_owned())
+            .collect();
+        if columns.len() != target_columns.len() {
+            return Err(AppError::invalid(
+                "Source and referenced column lists must have the same length",
+            ));
+        }
+        if !valid_virtual_fk_columns(&columns) || !valid_virtual_fk_columns(&target_columns) {
+            return Err(AppError::invalid(
+                "Provide between 1 and 16 distinct non-empty column names on each side",
+            ));
+        }
+        if source == target && columns == target_columns {
+            return Err(AppError::invalid(
+                "A virtual foreign key cannot reference the exact same columns on the same table",
+            ));
+        }
+        let requested_id = input
+            .id
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
+        if let Some(ref id) = requested_id
+            && uuid::Uuid::parse_str(id).is_err()
+        {
+            return Err(AppError::invalid("Invalid virtual foreign-key identifier"));
+        }
+
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        if !profile_exists(&tx, &connection_id)? {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "Choose an existing connection profile for this virtual foreign key",
+            ));
+        }
+        let mut items = read_virtual_foreign_keys(&tx)?;
+        let updated_at_ms = now_ms();
+        let saved = if let Some(ref existing_id) = requested_id
+            && let Some(pos) = items.iter().position(|v| &v.id == existing_id)
+        {
+            let entry = VirtualForeignKey {
+                id: existing_id.clone(),
+                connection_id,
+                name,
+                source,
+                columns,
+                target,
+                target_columns,
+                updated_at_ms,
+            };
+            items[pos] = entry.clone();
+            entry
+        } else {
+            if items.len() >= MAX_VIRTUAL_FOREIGN_KEYS {
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    "At most 256 virtual foreign keys may be stored",
+                ));
+            }
+            let entry = VirtualForeignKey {
+                id: requested_id.unwrap_or_else(new_id),
+                connection_id,
+                name,
+                source,
+                columns,
+                target,
+                target_columns,
+                updated_at_ms,
+            };
+            items.push(entry.clone());
+            entry
+        };
+        items.sort_by(|a, b| {
+            a.source
+                .schema
+                .cmp(&b.source.schema)
+                .then_with(|| a.source.name.cmp(&b.source.name))
+                .then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        write_virtual_foreign_keys(&tx, &items)?;
+        tx.commit().map_err(db_error)?;
+        Ok(saved)
+    }
+
+    pub fn delete_virtual_foreign_key(&self, id: &str) -> AppResult<VirtualForeignKey> {
+        let mut conn = self.connection.lock();
+        let tx = conn.transaction().map_err(db_error)?;
+        let mut items = read_virtual_foreign_keys(&tx)?;
+        let Some(pos) = items.iter().position(|v| v.id == id) else {
+            return Err(AppError::new(
+                ErrorCode::NotFound,
+                "Virtual foreign key no longer exists",
+            ));
+        };
+        let removed = items.remove(pos);
+        write_virtual_foreign_keys(&tx, &items)?;
+        tx.commit().map_err(db_error)?;
+        Ok(removed)
     }
 }
 
@@ -1234,6 +1528,159 @@ mod tests {
         store.save_sql_format_settings(updated_fmt).unwrap();
         store
             .set_setting("sql-snippets", r#"[{"unexpected":true}]"#)
+            .unwrap();
+        assert_eq!(
+            store.create_metadata_backup().unwrap_err().code,
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn virtual_foreign_keys_validate_cascade_and_survive_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Persistence::open(dir.path()).unwrap();
+        let prof_a = make_profile(Environment::Local, true);
+        let prof_b = make_profile(Environment::Staging, true);
+        store.save_profile(&prof_a).unwrap();
+        store.save_profile(&prof_b).unwrap();
+
+        // Missing connection profile rejected.
+        assert_eq!(
+            store
+                .save_virtual_foreign_key(VirtualForeignKeyInput {
+                    id: None,
+                    connection_id: new_id(),
+                    name: "vfk_missing".into(),
+                    source: TableRef {
+                        schema: "public".into(),
+                        name: "orders".into(),
+                    },
+                    columns: vec!["customer_id".into()],
+                    target: TableRef {
+                        schema: "public".into(),
+                        name: "customers".into(),
+                    },
+                    target_columns: vec!["id".into()],
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
+
+        // Self-identical columns on same table rejected, but self-referential hierarchy allowed.
+        assert_eq!(
+            store
+                .save_virtual_foreign_key(VirtualForeignKeyInput {
+                    id: None,
+                    connection_id: prof_a.id.clone(),
+                    name: "vfk_self_same".into(),
+                    source: TableRef {
+                        schema: "public".into(),
+                        name: "employees".into(),
+                    },
+                    columns: vec!["id".into()],
+                    target: TableRef {
+                        schema: "public".into(),
+                        name: "employees".into(),
+                    },
+                    target_columns: vec!["id".into()],
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidInput
+        );
+        let hierarchy = store
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: prof_a.id.clone(),
+                name: "vfk_emp_manager".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "employees".into(),
+                },
+                columns: vec!["manager_id".into()],
+                target: TableRef {
+                    schema: "public".into(),
+                    name: "employees".into(),
+                },
+                target_columns: vec!["id".into()],
+            })
+            .unwrap();
+        assert_eq!(hierarchy.columns, vec!["manager_id"]);
+
+        // Composite virtual FK + duplicate conflict checks.
+        let composite = store
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: prof_a.id.clone(),
+                name: "vfk_line_order".into(),
+                source: TableRef {
+                    schema: "analytics".into(),
+                    name: "line_items".into(),
+                },
+                columns: vec!["tenant_id".into(), "order_id".into()],
+                target: TableRef {
+                    schema: "analytics".into(),
+                    name: "orders".into(),
+                },
+                target_columns: vec!["tenant_id".into(), "id".into()],
+            })
+            .unwrap();
+        assert_eq!(composite.columns.len(), 2);
+
+        assert_eq!(
+            store
+                .save_virtual_foreign_key(VirtualForeignKeyInput {
+                    id: None,
+                    connection_id: prof_a.id.clone(),
+                    name: "vfk_duplicate_mapping".into(),
+                    source: composite.source.clone(),
+                    columns: composite.columns.clone(),
+                    target: composite.target.clone(),
+                    target_columns: composite.target_columns.clone(),
+                })
+                .unwrap_err()
+                .code,
+            ErrorCode::Conflict
+        );
+
+        let other_conn = store
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: prof_b.id.clone(),
+                name: "vfk_other".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "events".into(),
+                },
+                columns: vec!["user_id".into()],
+                target: TableRef {
+                    schema: "public".into(),
+                    name: "users".into(),
+                },
+                target_columns: vec!["id".into()],
+            })
+            .unwrap();
+        assert_eq!(store.virtual_foreign_keys().unwrap().len(), 3);
+
+        // Backup & restore round-trip.
+        let backup = store.create_metadata_backup().unwrap();
+        store.delete_virtual_foreign_key(&hierarchy.id).unwrap();
+        assert_eq!(store.virtual_foreign_keys().unwrap().len(), 2);
+        store
+            .restore_metadata_backup(&backup.id, &backup.digest)
+            .unwrap();
+        assert_eq!(store.virtual_foreign_keys().unwrap().len(), 3);
+
+        // Deleting prof_a cascades its virtual FKs while preserving prof_b's.
+        store.delete_profile(&prof_a.id).unwrap();
+        let remaining = store.virtual_foreign_keys().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, other_conn.id);
+
+        // Corrupt 'virtual-foreign-keys' setting fails backup validation.
+        store
+            .set_setting("virtual-foreign-keys", r#"[{"broken":true}]"#)
             .unwrap();
         assert_eq!(
             store.create_metadata_backup().unwrap_err().code,

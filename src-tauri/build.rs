@@ -191,6 +191,8 @@ fn build_desktop() {
             "set_temporary_result_storage",
             "save_sql_snippet",
             "delete_sql_snippet",
+            "save_virtual_foreign_key",
+            "delete_virtual_foreign_key",
             "native_smoke_fixture",
             "native_smoke_checkpoint",
             "native_smoke_report",

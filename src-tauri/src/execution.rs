@@ -459,6 +459,7 @@ impl Studio {
             bookmarks: self.persistence.bookmarks()?,
             sql_format_settings: self.persistence.sql_format_settings()?,
             sql_snippets: self.persistence.sql_snippets()?,
+            virtual_foreign_keys: self.persistence.virtual_foreign_keys()?,
         })
     }
 
@@ -488,6 +489,19 @@ impl Studio {
     pub fn delete_sql_snippet(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_mutation_guard()?;
         self.persistence.delete_sql_snippet(id)
+    }
+
+    pub fn save_virtual_foreign_key(
+        &self,
+        input: VirtualForeignKeyInput,
+    ) -> AppResult<VirtualForeignKey> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.save_virtual_foreign_key(input)
+    }
+
+    pub fn delete_virtual_foreign_key(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.delete_virtual_foreign_key(id).map(|_| ())
     }
 
     pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
@@ -3053,7 +3067,7 @@ impl Studio {
                 "The table is not visible in this completion context",
             ));
         }
-        let schema = if require_complete {
+        let mut schema = if require_complete {
             session.driver.inspection_schema(table).await
         } else {
             session.driver.completion_schema(table).await
@@ -3080,6 +3094,9 @@ impl Studio {
                 "Completion context changed; refresh suggestions",
             )
             .with_completion_invalidated());
+        }
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
         }
         if schema.columns.len() > 4096
             || serde_json::to_vec(&schema)
@@ -3385,7 +3402,11 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        session.driver.referencing_keys(table).await
+        let mut keys = session.driver.referencing_keys(table).await?;
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_inbound(&mut keys, &vfks, &session.profile.id, table);
+        }
+        Ok(keys)
     }
     pub async fn schema_diagram(&self, session_id: &str, schema: &str) -> AppResult<SchemaDiagram> {
         let _recovery_activity = self.begin_recovery_activity()?;
@@ -3410,11 +3431,15 @@ impl Studio {
             None
         };
         let result = session.driver.schema_diagram(schema).await;
-        if snowflake_dml::sdk_profile(&session.profile) {
-            Self::publish_relation(&session, result)
+        let mut diagram = if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)?
         } else {
-            result
+            result?
+        };
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_diagram(&mut diagram, &vfks, &session.profile.id);
         }
+        Ok(diagram)
     }
     pub async fn schema_snapshot(
         &self,
@@ -3766,6 +3791,9 @@ impl Studio {
         table: &TableRef,
     ) -> AppResult<TableSchema> {
         let mut schema = session.driver.schema(table).await?;
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
+        }
         if safety::effective_mode(&session.profile) == SafeMode::ReadOnly {
             schema.editable = false;
             for c in &mut schema.columns {
@@ -5974,6 +6002,152 @@ impl Output<'_> {
     }
 }
 
+fn merge_virtual_fks_into_table_schema(
+    schema: &mut TableSchema,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+    include_inbound: bool,
+) {
+    let col_names: std::collections::HashSet<&str> =
+        schema.columns.iter().map(|c| c.name.as_str()).collect();
+    let mut newly_fk_columns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for vfk in vfks {
+        if vfk.connection_id != connection_id {
+            continue;
+        }
+        if vfk.source == schema.table && vfk.columns.iter().all(|c| col_names.contains(c.as_str()))
+        {
+            let duplicate = schema.foreign_keys.iter().any(|fk| {
+                fk.target == vfk.target
+                    && fk.columns == vfk.columns
+                    && fk.target_columns == vfk.target_columns
+            });
+            if !duplicate {
+                for col in &vfk.columns {
+                    newly_fk_columns.insert(col.clone());
+                }
+                schema.foreign_keys.push(ForeignKey {
+                    name: vfk.name.clone(),
+                    columns: vfk.columns.clone(),
+                    target: vfk.target.clone(),
+                    target_columns: vfk.target_columns.clone(),
+                    virtual_relationship: true,
+                });
+            }
+        }
+        if include_inbound
+            && vfk.target == schema.table
+            && vfk
+                .target_columns
+                .iter()
+                .all(|c| col_names.contains(c.as_str()))
+        {
+            let duplicate = schema.inbound_foreign_keys.iter().any(|ifk| {
+                ifk.source == vfk.source
+                    && ifk.columns == vfk.columns
+                    && ifk.target_columns == vfk.target_columns
+            });
+            if !duplicate {
+                schema.inbound_foreign_keys.push(InboundForeignKey {
+                    name: vfk.name.clone(),
+                    source: vfk.source.clone(),
+                    columns: vfk.columns.clone(),
+                    target_columns: vfk.target_columns.clone(),
+                    virtual_relationship: true,
+                });
+            }
+        }
+    }
+    if !newly_fk_columns.is_empty() {
+        for col in &mut schema.columns {
+            if newly_fk_columns.contains(&col.name) {
+                col.foreign_key = true;
+            }
+        }
+    }
+}
+
+fn merge_virtual_fks_into_inbound(
+    keys: &mut Vec<InboundForeignKey>,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+    table: &TableRef,
+) {
+    for vfk in vfks {
+        if vfk.connection_id != connection_id || &vfk.target != table {
+            continue;
+        }
+        let duplicate = keys.iter().any(|ifk| {
+            ifk.source == vfk.source
+                && ifk.columns == vfk.columns
+                && ifk.target_columns == vfk.target_columns
+        });
+        if !duplicate {
+            keys.push(InboundForeignKey {
+                name: vfk.name.clone(),
+                source: vfk.source.clone(),
+                columns: vfk.columns.clone(),
+                target_columns: vfk.target_columns.clone(),
+                virtual_relationship: true,
+            });
+        }
+    }
+}
+
+fn merge_virtual_fks_into_diagram(
+    diagram: &mut SchemaDiagram,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+) {
+    let mut table_columns: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::with_capacity(diagram.tables.len());
+    for node in &diagram.tables {
+        table_columns.insert(
+            node.table.name.as_str(),
+            node.columns.iter().map(|c| c.name.as_str()).collect(),
+        );
+    }
+    for vfk in vfks {
+        if vfk.connection_id != connection_id || vfk.source.schema != diagram.schema {
+            continue;
+        }
+        let Some(src_cols) = table_columns.get(vfk.source.name.as_str()) else {
+            continue;
+        };
+        if !vfk.columns.iter().all(|c| src_cols.contains(c.as_str())) {
+            continue;
+        }
+        if vfk.target.schema == diagram.schema {
+            let Some(dst_cols) = table_columns.get(vfk.target.name.as_str()) else {
+                continue;
+            };
+            if !vfk
+                .target_columns
+                .iter()
+                .all(|c| dst_cols.contains(c.as_str()))
+            {
+                continue;
+            }
+        }
+        let duplicate = diagram.foreign_keys.iter().any(|fk| {
+            fk.source == vfk.source
+                && fk.target == vfk.target
+                && fk.columns == vfk.columns
+                && fk.target_columns == vfk.target_columns
+        });
+        if !duplicate {
+            diagram.foreign_keys.push(DiagramForeignKey {
+                name: vfk.name.clone(),
+                source: vfk.source.clone(),
+                columns: vfk.columns.clone(),
+                target: vfk.target.clone(),
+                target_columns: vfk.target_columns.clone(),
+                virtual_relationship: true,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod browse_classification_tests {
     use super::*;
@@ -8001,5 +8175,183 @@ mod browse_classification_tests {
             .prepare_explain(&session_id, "SELECT 1", true)
             .expect_err("prepare_explain(analyze=true) should be rejected when explain_analyze capability is false");
         assert_eq!(analyze_err.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn virtual_foreign_keys_merge_into_schemas_inbound_and_diagrams_without_duplicates() {
+        let conn_id = new_id();
+        let orders = TableRef {
+            schema: "public".into(),
+            name: "orders".into(),
+        };
+        let customers = TableRef {
+            schema: "public".into(),
+            name: "customers".into(),
+        };
+        let audit_events = TableRef {
+            schema: "audit".into(),
+            name: "events".into(),
+        };
+        let vfks = vec![
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_orders_customer".into(),
+                source: orders.clone(),
+                columns: vec!["customer_id".into()],
+                target: customers.clone(),
+                target_columns: vec!["id".into()],
+                updated_at_ms: 1,
+            },
+            // Nonexistent columns should be ignored on schema/diagram merge.
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_missing_col".into(),
+                source: orders.clone(),
+                columns: vec!["ghost_id".into()],
+                target: customers.clone(),
+                target_columns: vec!["ghost_target_id".into()],
+                updated_at_ms: 2,
+            },
+            // Cross-schema target in diagram should be included.
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_orders_audit".into(),
+                source: orders.clone(),
+                columns: vec!["id".into()],
+                target: audit_events.clone(),
+                target_columns: vec!["entity_id".into()],
+                updated_at_ms: 3,
+            },
+        ];
+
+        let mut orders_schema = TableSchema {
+            table: orders.clone(),
+            columns: vec![
+                ColumnInfo {
+                    id: "id".into(),
+                    name: "id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: true,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "customer_id".into(),
+                    name: "customer_id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+            ],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![],
+            inbound_foreign_keys: vec![],
+            editable: true,
+        };
+        merge_virtual_fks_into_table_schema(&mut orders_schema, &vfks, &conn_id, true);
+        assert_eq!(orders_schema.foreign_keys.len(), 2);
+        assert!(
+            orders_schema
+                .foreign_keys
+                .iter()
+                .all(|fk| fk.virtual_relationship)
+        );
+        assert!(
+            orders_schema
+                .columns
+                .iter()
+                .find(|c| c.name == "customer_id")
+                .unwrap()
+                .foreign_key
+        );
+        // Re-merging is idempotent (deduplicates).
+        merge_virtual_fks_into_table_schema(&mut orders_schema, &vfks, &conn_id, true);
+        assert_eq!(orders_schema.foreign_keys.len(), 2);
+
+        let mut customers_schema = TableSchema {
+            table: customers.clone(),
+            columns: vec![ColumnInfo {
+                id: "id".into(),
+                name: "id".into(),
+                database_type: "bigint".into(),
+                kind: ColumnKind::Integer,
+                nullable: false,
+                primary_key: true,
+                foreign_key: false,
+                editable: true,
+                insertable: true,
+                has_default: false,
+            }],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![],
+            inbound_foreign_keys: vec![],
+            editable: true,
+        };
+        merge_virtual_fks_into_table_schema(&mut customers_schema, &vfks, &conn_id, true);
+        assert_eq!(customers_schema.inbound_foreign_keys.len(), 1);
+        assert!(customers_schema.inbound_foreign_keys[0].virtual_relationship);
+        assert_eq!(customers_schema.inbound_foreign_keys[0].source, orders);
+
+        let mut inbound = Vec::new();
+        merge_virtual_fks_into_inbound(&mut inbound, &vfks, &conn_id, &customers);
+        assert_eq!(inbound.len(), 2);
+        assert!(inbound.iter().all(|k| k.virtual_relationship));
+
+        let mut diagram = SchemaDiagram {
+            schema: "public".into(),
+            tables: vec![
+                DiagramTable {
+                    table: orders.clone(),
+                    kind: "r".into(),
+                    columns: vec![
+                        DiagramColumn {
+                            name: "id".into(),
+                            database_type: "bigint".into(),
+                            nullable: false,
+                            primary_key: true,
+                        },
+                        DiagramColumn {
+                            name: "customer_id".into(),
+                            database_type: "bigint".into(),
+                            nullable: false,
+                            primary_key: false,
+                        },
+                    ],
+                },
+                DiagramTable {
+                    table: customers.clone(),
+                    kind: "r".into(),
+                    columns: vec![DiagramColumn {
+                        name: "id".into(),
+                        database_type: "bigint".into(),
+                        nullable: false,
+                        primary_key: true,
+                    }],
+                },
+            ],
+            foreign_keys: vec![],
+            truncated: false,
+            restricted: false,
+        };
+        merge_virtual_fks_into_diagram(&mut diagram, &vfks, &conn_id);
+        assert_eq!(diagram.foreign_keys.len(), 2);
+        assert!(
+            diagram
+                .foreign_keys
+                .iter()
+                .all(|fk| fk.virtual_relationship)
+        );
     }
 }

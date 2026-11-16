@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   History,
+  Link2,
   Lock,
   Plus,
   RefreshCw,
@@ -32,6 +33,7 @@ import {
   isConstraintBackedIndex,
 } from "./IndexConstraintDialog";
 import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectDialog";
+import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
@@ -716,10 +718,12 @@ export function StructureView({
   const catalogTables = useStudio((s) =>
     connectionId ? (s.catalog[connectionId] ?? EMPTY_CATALOG_TABLES) : EMPTY_CATALOG_TABLES,
   );
+  const virtualForeignKeys = useStudio((s) => s.virtualForeignKeys);
   const [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
   const [tableObjectRequest, setTableObjectRequest] = useState<TableObjectDialogRequest | null>(
     null,
   );
+  const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
 
   const openObject =
     onOpenObject ??
@@ -911,27 +915,98 @@ export function StructureView({
           })}
         </tbody>
       </table>
-      {schema.foreignKeys.length > 0 && (
-        <table className="structure-table" aria-label="Foreign keys">
-          <thead>
-            <tr>
-              <th>Foreign key</th>
-              <th>Columns</th>
-              <th>References</th>
-            </tr>
-          </thead>
-          <tbody>
-            {schema.foreignKeys.map((key) => (
-              <tr key={`${key.name}:${key.columns.join(",")}`}>
-                <td className="mono">{key.name}</td>
-                <td className="mono">{key.columns.join(", ")}</td>
-                <td className="mono">
-                  {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {(schema.foreignKeys.length > 0 || connectionId) && (
+        <section className="structure-section" aria-label="Foreign keys section">
+          {connectionId && (
+            <div
+              className="structure-section-header"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 14px 6px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <strong style={{ fontSize: 12 }}>Foreign keys</strong>
+                <span className="schema-count">{schema.foreignKeys.length}</span>
+              </div>
+              <button
+                type="button"
+                className="button ghost small"
+                onClick={() => setVirtualFkDialogOpen(true)}
+              >
+                <Link2 size={12} />
+                Add virtual FK…
+              </button>
+            </div>
+          )}
+          {schema.foreignKeys.length > 0 && (
+            <table className="structure-table" aria-label="Foreign keys">
+              <thead>
+                <tr>
+                  <th>Foreign key</th>
+                  <th>Columns</th>
+                  <th>References</th>
+                  {connectionId && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {schema.foreignKeys.map((key) => {
+                  const matchingVfk =
+                    key.virtualRelationship && connectionId
+                      ? virtualForeignKeys.find(
+                          (v) =>
+                            v.connectionId === connectionId &&
+                            v.source.schema === tableRef.schema &&
+                            v.source.name === tableRef.name &&
+                            v.name === key.name,
+                        )
+                      : undefined;
+                  return (
+                    <tr key={`${key.name}:${key.columns.join(",")}`}>
+                      <td className="mono">
+                        {key.name}
+                        {key.virtualRelationship && (
+                          <span className="key-badge" style={{ marginLeft: 6 }}>
+                            VIRTUAL
+                          </span>
+                        )}
+                      </td>
+                      <td className="mono">{key.columns.join(", ")}</td>
+                      <td className="mono">
+                        {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
+                      </td>
+                      {connectionId && (
+                        <td>
+                          {matchingVfk ? (
+                            <button
+                              type="button"
+                              className="button ghost small danger-text"
+                              aria-label={`Delete virtual foreign key ${key.name}`}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(matchingVfk.id)
+                                  .then(() => onRefresh?.())
+                                  .catch((err) => useStudio.getState().notify(messageOf(err)))
+                              }
+                            >
+                              <Trash2 size={12} />
+                              Remove
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
       )}
       {detailsError && (
         <div className="structure-details-error">
@@ -1317,6 +1392,16 @@ export function StructureView({
               onRefresh?.();
             }
           }}
+        />
+      )}
+      {virtualFkDialogOpen && connectionId && (
+        <VirtualForeignKeyDialog
+          connectionId={connectionId}
+          initialSource={tableRef}
+          sourceColumns={schema.columns.map((c) => c.name)}
+          knownTables={catalogTables.map((t) => t.table)}
+          onSaved={() => onRefresh?.()}
+          onClose={() => setVirtualFkDialogOpen(false)}
         />
       )}
     </div>

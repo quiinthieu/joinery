@@ -74,6 +74,8 @@ import type {
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
+  VirtualForeignKey,
+  VirtualForeignKeyInput,
   SshHostKey,
   TableChanges,
   TableInfo,
@@ -674,6 +676,14 @@ export interface JoineryCommandMap {
     result: SqlSnippet;
   };
   delete_sql_snippet: {
+    args: { id: string };
+    result: void;
+  };
+  save_virtual_foreign_key: {
+    args: { input: VirtualForeignKeyInput };
+    result: VirtualForeignKey;
+  };
+  delete_virtual_foreign_key: {
     args: { id: string };
     result: void;
   };

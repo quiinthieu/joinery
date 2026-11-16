@@ -37,6 +37,7 @@ import {
 } from "../grid/value-format";
 import { ReviewDialog } from "../safety/ReviewDialog";
 import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
+import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import { DdlPanel } from "./ObjectInspectorView";
 import {
   MAX_SNOWFLAKE_GRID_MUTATIONS,
@@ -280,6 +281,8 @@ export function RelationBrowser({
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
   const [previewTransposed, setPreviewTransposed] = useState(false);
+  const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
+  const virtualForeignKeys = useStudio((state) => state.virtualForeignKeys);
   const [inspectedCell, setInspectedCell] = useState<{
     absRowIndex: number;
     colIndex: number;
@@ -733,6 +736,67 @@ export function RelationBrowser({
     resetPreviewSlice();
     relationSelector.current?.focus();
   };
+  const selectVirtualRelation = (
+    destTable: { schema: string; name: string },
+    presetFilters?: DraftFilterRow[],
+  ) => {
+    if (!catalog || busy) return;
+    const matchesInCatalog = catalog.relations.filter(
+      (entry) =>
+        entry.database === catalog.database &&
+        entry.table.schema === destTable.schema &&
+        entry.table.name === destTable.name &&
+        entry.availability === "available",
+    );
+    if (matchesInCatalog.length !== 1) return;
+    const destination = matchesInCatalog[0];
+    generation.current++;
+    setSearch("");
+    setDdlRequest(null);
+    setSelected(destination.targetId);
+    setInspection(null);
+    setPreview(null);
+    setDefinition(null);
+    setConstraints(null);
+    setConstraintsError(null);
+    setMappings(null);
+    setMappingsError(null);
+    setChecks(null);
+    setChecksError(null);
+    setError(null);
+    setRowPage(0);
+    setColumnPage(0);
+    clearStagedGridEdits();
+    resetPreviewSlice();
+    if (presetFilters && presetFilters.length > 0) {
+      setDraftFilters(presetFilters.slice(0, MAX_PREVIEW_FILTERS));
+    }
+    relationSelector.current?.focus();
+  };
+  const outboundVirtualFks = useMemo(
+    () =>
+      target && session?.connectionId
+        ? virtualForeignKeys.filter(
+            (v) =>
+              v.connectionId === session.connectionId &&
+              v.source.schema === target.table.schema &&
+              v.source.name === target.table.name,
+          )
+        : [],
+    [session?.connectionId, target, virtualForeignKeys],
+  );
+  const inboundVirtualFks = useMemo(
+    () =>
+      target && session?.connectionId
+        ? virtualForeignKeys.filter(
+            (v) =>
+              v.connectionId === session.connectionId &&
+              v.target.schema === target.table.schema &&
+              v.target.name === target.table.name,
+          )
+        : [],
+    [session?.connectionId, target, virtualForeignKeys],
+  );
   const matches =
     catalog?.relations.filter((entry) =>
       `${entry.table.schema}.${entry.table.name}`
@@ -1755,6 +1819,160 @@ export function RelationBrowser({
             )}
           </section>
         )}
+        {target && session?.connectionId && (
+          <section aria-label="Virtual relationships">
+            <div className="query-actions" style={{ justifyContent: "space-between" }}>
+              <h4>Virtual relationships (Joinery local)</h4>
+              <button
+                type="button"
+                className="button small"
+                disabled={busy}
+                onClick={() => setVirtualFkDialogOpen(true)}
+              >
+                Add virtual FK…
+              </button>
+            </div>
+            {outboundVirtualFks.length === 0 && inboundVirtualFks.length === 0 ? (
+              <p>
+                No local virtual foreign keys defined on {target.table.schema}.{target.table.name}.
+              </p>
+            ) : (
+              <div className="relation-table-scroll">
+                <table>
+                  <caption>Virtual relationships</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Direction</th>
+                      <th scope="col">Mapping</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {outboundVirtualFks.map((vfk) => {
+                      const canNavigate = Boolean(
+                        catalog &&
+                        catalog.relations.filter(
+                          (entry) =>
+                            entry.database === catalog.database &&
+                            entry.table.schema === vfk.target.schema &&
+                            entry.table.name === vfk.target.name &&
+                            entry.availability === "available",
+                        ).length === 1,
+                      );
+                      const firstRowFilters =
+                        preview && preview.rows.length > 0
+                          ? vfk.columns.flatMap((colName, idx) => {
+                              const colPos = preview.columns.findIndex((c) => c.name === colName);
+                              if (colPos < 0) return [];
+                              const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                              const targetCol = vfk.targetColumns[idx];
+                              if (!targetCol) return [];
+                              return [
+                                {
+                                  id: `vfk-out-${vfk.id}-${idx}`,
+                                  column: targetCol,
+                                  operator: (val === null
+                                    ? "isNull"
+                                    : "equals") as RelationFilterOperator,
+                                  value: val ?? "",
+                                },
+                              ];
+                            })
+                          : undefined;
+                      return (
+                        <tr key={`out-${vfk.id}`}>
+                          <td className="mono">{vfk.name}</td>
+                          <td>References</td>
+                          <td className="mono">
+                            ({vfk.columns.join(", ")}) → {vfk.target.schema}.{vfk.target.name}(
+                            {vfk.targetColumns.join(", ")})
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={busy || !canNavigate}
+                              onClick={() => selectVirtualRelation(vfk.target, firstRowFilters)}
+                            >
+                              Select {vfk.target.name}
+                            </button>{" "}
+                            <button
+                              type="button"
+                              className="button small danger-text"
+                              aria-label={`Delete virtual foreign key ${vfk.name}`}
+                              disabled={busy}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(vfk.id)
+                                  .catch((err) => setError(messageOf(err)))
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {inboundVirtualFks.map((vfk) => {
+                      const canNavigate = Boolean(
+                        catalog &&
+                        catalog.relations.filter(
+                          (entry) =>
+                            entry.database === catalog.database &&
+                            entry.table.schema === vfk.source.schema &&
+                            entry.table.name === vfk.source.name &&
+                            entry.availability === "available",
+                        ).length === 1,
+                      );
+                      const firstRowFilters =
+                        preview && preview.rows.length > 0
+                          ? vfk.targetColumns.flatMap((targetCol, idx) => {
+                              const colPos = preview.columns.findIndex((c) => c.name === targetCol);
+                              if (colPos < 0) return [];
+                              const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                              const sourceCol = vfk.columns[idx];
+                              if (!sourceCol) return [];
+                              return [
+                                {
+                                  id: `vfk-in-${vfk.id}-${idx}`,
+                                  column: sourceCol,
+                                  operator: (val === null
+                                    ? "isNull"
+                                    : "equals") as RelationFilterOperator,
+                                  value: val ?? "",
+                                },
+                              ];
+                            })
+                          : undefined;
+                      return (
+                        <tr key={`in-${vfk.id}`}>
+                          <td className="mono">{vfk.name}</td>
+                          <td>Referenced by</td>
+                          <td className="mono">
+                            {vfk.source.schema}.{vfk.source.name}({vfk.columns.join(", ")}) → (
+                            {vfk.targetColumns.join(", ")})
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={busy || !canNavigate}
+                              onClick={() => selectVirtualRelation(vfk.source, firstRowFilters)}
+                            >
+                              Select {vfk.source.name}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
         {inspection && (
           <>
             <h3>
@@ -2673,6 +2891,18 @@ export function RelationBrowser({
           </>
         )}
       </div>
+      {virtualFkDialogOpen && target && session?.connectionId && (
+        <VirtualForeignKeyDialog
+          connectionId={session.connectionId}
+          initialSource={target.table}
+          sourceColumns={inspection?.columns.map((c) => c.name) ?? []}
+          knownTables={
+            catalog?.relations.filter((r) => r.availability === "available").map((r) => r.table) ??
+            []
+          }
+          onClose={() => setVirtualFkDialogOpen(false)}
+        />
+      )}
     </Modal>
   );
 }
