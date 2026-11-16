@@ -1460,7 +1460,7 @@ export function App() {
               >
                 {tab.kind === "query" ? (
                   <FileCode2 size={13} />
-                ) : tab.kind === "table" ? (
+                ) : tab.kind === "table" || tab.kind === "result" ? (
                   <Database size={13} />
                 ) : tab.kind === "object" ? (
                   <Code2 size={13} />
@@ -1552,7 +1552,9 @@ export function App() {
               <HistoryView />
             ) : session &&
               isSnowflakeConsoleSession(state, session.id) &&
-              current.kind !== "query" ? (
+              current.kind !== "query" &&
+              current.kind !== "result" &&
+              current.kind !== "benchmark" ? (
               <p role="status">
                 Metadata, monitoring and generated operations are disabled on this reviewed console
                 connection. Open a separate profile with reviewed console off; temporary objects and
@@ -1900,19 +1902,48 @@ export function App() {
       {dialog?.kind === "columns" &&
         (() => {
           const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
-          if (!targetTab?.connectionId || !targetTab.table || !targetTab.schema) return null;
-          return (
-            <TableColumnsDialog
-              connectionId={targetTab.connectionId}
-              table={targetTab.table}
-              columns={targetTab.schema.columns}
-              layout={findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table)}
-              onChange={(next) =>
-                state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
-              }
-              onClose={() => setDialog(null)}
-            />
-          );
+          if (!targetTab) return null;
+          if (targetTab.kind === "table") {
+            if (!targetTab.connectionId || !targetTab.table || !targetTab.schema) return null;
+            return (
+              <TableColumnsDialog
+                connectionId={targetTab.connectionId}
+                table={targetTab.table}
+                columns={targetTab.schema.columns}
+                layout={findTableLayout(
+                  state.tableLayouts,
+                  targetTab.connectionId,
+                  targetTab.table,
+                )}
+                onChange={(next) =>
+                  state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
+                }
+                onClose={() => setDialog(null)}
+              />
+            );
+          }
+          if (targetTab.kind === "query" || targetTab.kind === "result") {
+            const activeResult =
+              targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
+              targetTab.results[0];
+            if (!activeResult || activeResult.columns.length === 0) return null;
+            return (
+              <TableColumnsDialog
+                connectionId={targetTab.connectionId ?? "00000000-0000-4000-8000-000000000000"}
+                table={{ schema: "_result", name: activeResult.id }}
+                subtitleLabel={
+                  targetTab.kind === "result"
+                    ? targetTab.title
+                    : `${targetTab.title} · Query ${activeResult.statementIndex + 1}`
+                }
+                columns={activeResult.columns}
+                layout={targetTab.resultLayouts?.[activeResult.id] ?? null}
+                onChange={(next) => state.setResultLayout(targetTab.id, activeResult.id, next)}
+                onClose={() => setDialog(null)}
+              />
+            );
+          }
+          return null;
         })()}
       {dialog?.kind === "export" &&
         (() => {
@@ -1928,7 +1959,7 @@ export function App() {
                 ? state.sessions[targetProfile.id]
                 : undefined;
           const targetResult =
-            targetTab.kind === "query"
+            targetTab.kind === "query" || targetTab.kind === "result"
               ? (targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
                 targetTab.results[0])
               : undefined;
@@ -1942,7 +1973,12 @@ export function App() {
                   targetTab.schema.columns,
                   findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table),
                 ).visibleColumns
-              : allCols;
+              : targetResult
+                ? resolveTableLayout(
+                    targetResult.columns,
+                    targetTab.resultLayouts?.[targetResult.id] ?? null,
+                  ).visibleColumns
+                : allCols;
           return (
             <ExportDialog
               tab={targetTab}
@@ -2160,6 +2196,18 @@ export function App() {
                     icon: BookmarkPlus,
                     action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
                   },
+                  {
+                    label: "Open active result in tab",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: !current.results.length
+                      ? "Run a query first to open its result in a dedicated tab."
+                      : ["queued", "running"].includes(current.status)
+                        ? "Wait for the query to finish running first."
+                        : null,
+                    icon: ArrowUpRight,
+                    action: () => state.detachResultToTab(current.id),
+                  },
                   ...(profile?.engine !== "redis"
                     ? [
                         {
@@ -2242,6 +2290,56 @@ export function App() {
                           : []),
                       ]
                     : []),
+                ]
+              : []),
+            ...(current?.kind === "result" && current.originSql != null
+              ? [
+                  {
+                    label: "Open originating SQL",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    icon: Code2,
+                    action: () => state.openOriginatingSql(current.id),
+                  },
+                ]
+              : []),
+            ...(current &&
+            (current.kind === "table" || current.kind === "query" || current.kind === "result")
+              ? [
+                  {
+                    label: "Manage columns…",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    icon: Columns3,
+                    action: () => setDialog({ kind: "columns", tabId: current.id }),
+                  },
+                  {
+                    label: "Switch data display to Transpose",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      current.gridMode === "transpose" ? "Already in Transpose view." : null,
+                    icon: ArrowUpDown,
+                    action: () => state.updateTab(current.id, { gridMode: "transpose" }),
+                  },
+                  {
+                    label: "Switch data display to Record",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      current.gridMode === "record" ? "Already in Record view." : null,
+                    icon: Columns3,
+                    action: () => state.updateTab(current.id, { gridMode: "record" }),
+                  },
+                  {
+                    label: "Switch data display to Grid",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      (current.gridMode ?? "grid") === "grid" ? "Already in Grid view." : null,
+                    icon: Database,
+                    action: () => state.updateTab(current.id, { gridMode: "grid" }),
+                  },
                 ]
               : []),
             ...(current?.kind === "table"

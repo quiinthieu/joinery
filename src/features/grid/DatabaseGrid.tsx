@@ -204,10 +204,13 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       : tab.kind === "table"
         ? (tab.schema?.columns ?? [])
         : (result?.columns ?? []);
+  const resultLayoutId = result?.id ?? null;
   const tableLayout = useStudio((state) =>
     tab.kind === "table" && tab.connectionId && tab.table
       ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table)
-      : null,
+      : resultLayoutId
+        ? (tab.resultLayouts?.[resultLayoutId] ?? null)
+        : null,
   );
   const resolvedLayout = useMemo(
     () => resolveTableLayout(rawColumnsInfo, tableLayout),
@@ -218,10 +221,17 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     () => visibleColumns.map((column) => column.id).join(","),
     [visibleColumns],
   );
-  const freezeColumns = visibleColumns[0]?.primaryKey ? 1 : 0;
+  const freezeColumns =
+    resolvedLayout.pinnedCount > 0
+      ? resolvedLayout.pinnedCount
+      : visibleColumns[0]?.primaryKey
+        ? 1
+        : 0;
   const frozen = useRef(freezeColumns);
   frozen.current = freezeColumns;
   const sortQuery = tab.kind === "table" ? tab.query : null;
+  const hasManagedLayout =
+    tab.kind === "table" || ((tab.kind === "query" || tab.kind === "result") && Boolean(result));
   const columns = useMemo<GridColumn[]>(
     () =>
       visibleColumns.map((column) => {
@@ -231,10 +241,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
           title: `${column.primaryKey ? "⌑ " : column.foreignKey ? "↗ " : ""}${column.name}${
             indicator ? ` ${indicator}` : ""
           }`,
-          width:
-            tab.kind === "table"
-              ? (resolvedLayout.widths[column.name] ?? defaultColumnWidth(column))
-              : (widths[column.id] ?? defaultColumnWidth(column)),
+          width: hasManagedLayout
+            ? (resolvedLayout.widths[column.name] ?? defaultColumnWidth(column))
+            : (widths[column.id] ?? defaultColumnWidth(column)),
           icon:
             column.kind === "integer" || column.kind === "decimal"
               ? "headerNumber"
@@ -247,7 +256,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                     : "headerString",
         };
       }),
-    [visibleColumns, resolvedLayout.widths, tab.kind, widths, sortQuery],
+    [visibleColumns, resolvedLayout.widths, hasManagedLayout, widths, sortQuery],
   );
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
   const rowCount =
@@ -1006,6 +1015,26 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
               }
               return;
             }
+            if ((tab.kind === "query" || tab.kind === "result") && result && column.id) {
+              const target = visibleColumns.find((entry) => entry.id === column.id);
+              if (target) {
+                useStudio
+                  .getState()
+                  .setResultLayout(
+                    tab.id,
+                    result.id,
+                    resizeTableColumn(
+                      rawColumnsInfo,
+                      tableLayout,
+                      tab.connectionId ?? "00000000-0000-4000-8000-000000000000",
+                      { schema: "_result", name: result.id },
+                      target.name,
+                      width,
+                    ),
+                  );
+              }
+              return;
+            }
             if (column.id) setWidths((old) => ({ ...old, [column.id!]: clampColumnWidth(width) }));
           }}
           onColumnMoved={
@@ -1026,7 +1055,24 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                       ),
                     );
                 }
-              : undefined
+              : (tab.kind === "query" || tab.kind === "result") && result
+                ? (startIndex, endIndex) => {
+                    useStudio
+                      .getState()
+                      .setResultLayout(
+                        tab.id,
+                        result.id,
+                        moveVisibleColumn(
+                          rawColumnsInfo,
+                          tableLayout,
+                          tab.connectionId ?? "00000000-0000-4000-8000-000000000000",
+                          { schema: "_result", name: result.id },
+                          startIndex,
+                          endIndex,
+                        ),
+                      );
+                  }
+                : undefined
           }
           onCellEdited={edit}
           onPaste={(target, values) => {

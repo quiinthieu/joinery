@@ -110,6 +110,11 @@ fn validate(workspace: &SavedWorkspace) -> AppResult<()> {
             ))
             || !valid_column_list(&layout.column_order)
             || !valid_column_list(&layout.hidden_columns)
+            || !valid_column_list(&layout.pinned_columns)
+            || layout
+                .pinned_columns
+                .iter()
+                .any(|name| layout.hidden_columns.contains(name))
             || layout.column_widths.len() > MAX_LAYOUT_COLUMNS
             || layout.column_widths.iter().any(|(name, width)| {
                 !valid_identifier(name) || !(MIN_COLUMN_WIDTH..=MAX_COLUMN_WIDTH).contains(width)
@@ -280,6 +285,7 @@ mod tests {
                 },
                 column_order: vec!["email".into(), "id".into()],
                 hidden_columns: vec!["metadata".into()],
+                pinned_columns: vec!["email".into()],
                 column_widths: [("email".to_string(), 320)].into_iter().collect(),
             }],
             shortcuts: [("openPalette".to_string(), "Mod+J".to_string())]
@@ -427,6 +433,12 @@ mod tests {
             .push("email".into());
         assert!(db.save_workspace(repeated_col).is_err());
 
+        let mut pinned_hidden = workspace(&profile);
+        pinned_hidden.table_layouts[0]
+            .pinned_columns
+            .push("metadata".into());
+        assert!(db.save_workspace(pinned_hidden).is_err());
+
         // Unknown profile IDs are dropped, and deleting the profile purges its layouts.
         let mut stale = workspace(&profile);
         stale.table_layouts.push(SavedTableLayout {
@@ -437,6 +449,7 @@ mod tests {
             },
             column_order: vec!["id".into()],
             hidden_columns: vec![],
+            pinned_columns: vec![],
             column_widths: Default::default(),
         });
         db.save_workspace(stale).unwrap();

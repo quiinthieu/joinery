@@ -41,6 +41,7 @@ function TabKindGlyph({ kind }: { kind: TabKind }) {
   switch (kind) {
     case "query":
       return <FileCode2 size={16} />;
+    case "result":
     case "table":
       return <Database size={16} />;
     case "object":

@@ -43,6 +43,7 @@ import {
   SAFE_SNOWFLAKE_BATCH_FRAME_BYTES,
   buildSnowflakeGridMutations,
   canColumnDefaultOnInsert,
+  cloneSnowflakePreviewRow,
   createBlankInsertRow,
   estimateInsertRowsFrameBytes,
   isWritableSnowflakeColumn,
@@ -278,6 +279,7 @@ export function RelationBrowser({
   const [error, setError] = useState<string | null>(null);
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
+  const [previewTransposed, setPreviewTransposed] = useState(false);
   const [inspectedCell, setInspectedCell] = useState<{
     absRowIndex: number;
     colIndex: number;
@@ -310,6 +312,7 @@ export function RelationBrowser({
     setDraftSortDirection("asc");
     setDraftSortNulls("");
     setDraftFilters([]);
+    setPreviewTransposed(false);
     setAppliedSlice(DEFAULT_PREVIEW_SLICE);
   };
   useEffect(() => {
@@ -2411,164 +2414,261 @@ export function RelationBrowser({
               >
                 Next columns
               </button>
+              <button
+                type="button"
+                aria-pressed={previewTransposed}
+                onClick={() => setPreviewTransposed((prev) => !prev)}
+              >
+                {previewTransposed ? "Table view" : "Transpose"}
+              </button>
             </div>
             <div className="relation-table-scroll">
-              <table>
-                <caption>
-                  {activeSnapshotId ? "Editable Snowflake preview" : "Read-only preview"}
-                </caption>
-                <thead>
-                  <tr>
-                    {activeSnapshotId && <th>Row action</th>}
-                    {columns.map((column) => (
-                      <th key={column.id}>{column.name}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => {
-                    const absRowIndex = rowPage * PAGE_ROWS + index;
-                    const rowDeleted = Boolean(deletedRows[absRowIndex]);
-                    return (
-                      <tr key={absRowIndex}>
-                        {activeSnapshotId && (
-                          <td>
-                            <button
-                              type="button"
-                              className="button small"
-                              aria-label={
-                                rowDeleted
-                                  ? `Undo delete row ${absRowIndex + 1}`
-                                  : `Mark row ${absRowIndex + 1} for delete`
-                              }
-                              onClick={() => toggleDeleteRow(absRowIndex)}
-                            >
-                              {rowDeleted ? "Undo delete" : "Delete"}
-                            </button>
-                          </td>
-                        )}
-                        {columns.map((column, i) => {
-                          const colIndex = columnPage * PAGE_COLUMNS + i;
-                          const value = row[colIndex];
-                          const inspectedCol = inspection?.columns[colIndex];
-                          const effectiveDbType =
-                            inspectedCol?.fullType || inspectedCol?.dataType || column.databaseType;
-                          const classifierCol = {
-                            kind: column.kind,
-                            databaseType: effectiveDbType,
-                          };
-                          const richInspectorCol =
-                            isJsonColumn(classifierCol) ||
-                            isBinaryColumn(classifierCol) ||
-                            isSpatialColumn(classifierCol);
-                          const cellEditable =
-                            Boolean(activeSnapshotId) &&
-                            !rowDeleted &&
-                            Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
-                          if (cellEditable && inspectedCol) {
+              {previewTransposed ? (
+                <table aria-label="Transposed Snowflake preview">
+                  <caption>Transposed Snowflake preview</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Column</th>
+                      <th scope="col">Type</th>
+                      {rows.map((_, index) => {
+                        const absRowIndex = rowPage * PAGE_ROWS + index;
+                        return <th key={absRowIndex}>{`Row ${absRowIndex + 1}`}</th>;
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {columns.map((column, i) => {
+                      const colIndex = columnPage * PAGE_COLUMNS + i;
+                      const inspectedCol = inspection?.columns[colIndex];
+                      const effectiveDbType =
+                        inspectedCol?.fullType || inspectedCol?.dataType || column.databaseType;
+                      return (
+                        <tr key={column.id}>
+                          <th scope="row" className="mono">
+                            {column.name}
+                          </th>
+                          <td className="mono">{effectiveDbType}</td>
+                          {rows.map((row, index) => {
+                            const absRowIndex = rowPage * PAGE_ROWS + index;
                             const override = updatedCells[absRowIndex]?.[colIndex];
-                            const effective: SnowflakeGridCellInput =
-                              override ??
-                              (value === null ? { kind: "null" } : { kind: "text", value });
-                            const textForCheck = effective.kind === "text" ? effective.value : null;
-                            const showInspect =
-                              richInspectorCol ||
-                              (textForCheck !== null &&
-                                (textForCheck.length > 64 || textForCheck.includes("\n")));
+                            const rawValue =
+                              override === undefined
+                                ? row[colIndex]
+                                : override.kind === "text"
+                                  ? override.value
+                                  : null;
                             return (
                               <td
-                                key={column.id}
+                                key={absRowIndex}
+                                className="mono"
                                 onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
                               >
-                                <input
-                                  aria-label={`Row ${absRowIndex + 1} ${column.name}`}
-                                  disabled={effective.kind === "null"}
-                                  placeholder={effective.kind === "null" ? "NULL" : ""}
-                                  value={effective.kind === "text" ? effective.value : ""}
-                                  onChange={(e) =>
-                                    setCellOverride(absRowIndex, colIndex, {
-                                      kind: "text",
-                                      value: e.target.value,
-                                    })
-                                  }
-                                />
-                                {showInspect && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
-                                  >
-                                    Inspect
-                                  </button>
-                                )}
-                                {inspectedCol.nullable && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Toggle NULL for row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() =>
-                                      setCellOverride(
-                                        absRowIndex,
-                                        colIndex,
-                                        effective.kind === "null"
-                                          ? { kind: "text", value: value ?? "" }
-                                          : { kind: "null" },
-                                      )
-                                    }
-                                  >
-                                    {effective.kind === "null" ? "Text" : "NULL"}
-                                  </button>
-                                )}
-                                {override && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Revert row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setCellOverride(absRowIndex, colIndex, null)}
-                                  >
-                                    Revert
-                                  </button>
+                                {override?.kind === "default" ? (
+                                  <span aria-label="DEFAULT">DEFAULT</span>
+                                ) : rawValue === null ? (
+                                  <span aria-label="NULL">∅</span>
+                                ) : rawValue === "" ? (
+                                  <span aria-label="Empty string">“”</span>
+                                ) : (
+                                  rawValue
                                 )}
                               </td>
                             );
-                          }
-                          const showInspectReadOnly =
-                            value !== null &&
-                            (richInspectorCol || value.length > 64 || value.includes("\n"));
-                          return (
-                            <td
-                              key={column.id}
-                              onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
-                            >
-                              {value === null ? (
-                                <span aria-label="NULL">∅</span>
-                              ) : value === "" ? (
-                                <span aria-label="Empty string">“”</span>
-                              ) : (
-                                value
-                              )}
-                              {showInspectReadOnly && (
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <table>
+                  <caption>
+                    {activeSnapshotId ? "Editable Snowflake preview" : "Read-only preview"}
+                  </caption>
+                  <thead>
+                    <tr>
+                      {activeSnapshotId && <th>Row action</th>}
+                      {columns.map((column) => (
+                        <th key={column.id}>{column.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => {
+                      const absRowIndex = rowPage * PAGE_ROWS + index;
+                      const rowDeleted = Boolean(deletedRows[absRowIndex]);
+                      return (
+                        <tr key={absRowIndex}>
+                          {activeSnapshotId && (
+                            <td>
+                              <button
+                                type="button"
+                                className="button small"
+                                aria-label={
+                                  rowDeleted
+                                    ? `Undo delete row ${absRowIndex + 1}`
+                                    : `Mark row ${absRowIndex + 1} for delete`
+                                }
+                                onClick={() => toggleDeleteRow(absRowIndex)}
+                              >
+                                {rowDeleted ? "Undo delete" : "Delete"}
+                              </button>
+                              {inspection && (
                                 <>
                                   {" "}
                                   <button
                                     type="button"
                                     className="button small"
-                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    aria-label={`Clone row ${absRowIndex + 1}`}
+                                    disabled={
+                                      busy ||
+                                      gridBusy ||
+                                      Boolean(csvImportQueue) ||
+                                      totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
+                                    }
+                                    onClick={() =>
+                                      setInsertedRows((prev) => [
+                                        ...prev,
+                                        cloneSnowflakePreviewRow(
+                                          inspection.columns,
+                                          row,
+                                          updatedCells[absRowIndex],
+                                        ),
+                                      ])
+                                    }
                                   >
-                                    Inspect
+                                    Clone
                                   </button>
                                 </>
                               )}
                             </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          )}
+                          {columns.map((column, i) => {
+                            const colIndex = columnPage * PAGE_COLUMNS + i;
+                            const value = row[colIndex];
+                            const inspectedCol = inspection?.columns[colIndex];
+                            const effectiveDbType =
+                              inspectedCol?.fullType ||
+                              inspectedCol?.dataType ||
+                              column.databaseType;
+                            const classifierCol = {
+                              kind: column.kind,
+                              databaseType: effectiveDbType,
+                            };
+                            const richInspectorCol =
+                              isJsonColumn(classifierCol) ||
+                              isBinaryColumn(classifierCol) ||
+                              isSpatialColumn(classifierCol);
+                            const cellEditable =
+                              Boolean(activeSnapshotId) &&
+                              !rowDeleted &&
+                              Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
+                            if (cellEditable && inspectedCol) {
+                              const override = updatedCells[absRowIndex]?.[colIndex];
+                              const effective: SnowflakeGridCellInput =
+                                override ??
+                                (value === null ? { kind: "null" } : { kind: "text", value });
+                              const textForCheck =
+                                effective.kind === "text" ? effective.value : null;
+                              const showInspect =
+                                richInspectorCol ||
+                                (textForCheck !== null &&
+                                  (textForCheck.length > 64 || textForCheck.includes("\n")));
+                              return (
+                                <td
+                                  key={column.id}
+                                  onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                >
+                                  <input
+                                    aria-label={`Row ${absRowIndex + 1} ${column.name}`}
+                                    disabled={effective.kind === "null"}
+                                    placeholder={effective.kind === "null" ? "NULL" : ""}
+                                    value={effective.kind === "text" ? effective.value : ""}
+                                    onChange={(e) =>
+                                      setCellOverride(absRowIndex, colIndex, {
+                                        kind: "text",
+                                        value: e.target.value,
+                                      })
+                                    }
+                                  />
+                                  {showInspect && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    >
+                                      Inspect
+                                    </button>
+                                  )}
+                                  {inspectedCol.nullable && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Toggle NULL for row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() =>
+                                        setCellOverride(
+                                          absRowIndex,
+                                          colIndex,
+                                          effective.kind === "null"
+                                            ? { kind: "text", value: value ?? "" }
+                                            : { kind: "null" },
+                                        )
+                                      }
+                                    >
+                                      {effective.kind === "null" ? "Text" : "NULL"}
+                                    </button>
+                                  )}
+                                  {override && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Revert row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setCellOverride(absRowIndex, colIndex, null)}
+                                    >
+                                      Revert
+                                    </button>
+                                  )}
+                                </td>
+                              );
+                            }
+                            const showInspectReadOnly =
+                              value !== null &&
+                              (richInspectorCol || value.length > 64 || value.includes("\n"));
+                            return (
+                              <td
+                                key={column.id}
+                                onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                              >
+                                {value === null ? (
+                                  <span aria-label="NULL">∅</span>
+                                ) : value === "" ? (
+                                  <span aria-label="Empty string">“”</span>
+                                ) : (
+                                  value
+                                )}
+                                {showInspectReadOnly && (
+                                  <>
+                                    {" "}
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    >
+                                      Inspect
+                                    </button>
+                                  </>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </>
         )}

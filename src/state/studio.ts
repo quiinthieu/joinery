@@ -92,7 +92,15 @@ import {
 } from "../features/studio/shortcuts";
 
 export type TabKind =
-  "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
+  | "query"
+  | "result"
+  | "table"
+  | "object"
+  | "benchmark"
+  | "history"
+  | "processes"
+  | "diagram"
+  | "schemaDiff";
 export type TabStatus =
   | "idle"
   | "queued"
@@ -160,6 +168,14 @@ export interface StudioTab {
   pinned?: boolean;
   /** Schema shown by a diagram tab. */
   diagramSchema?: string;
+  /** Active display presentation for data grids (`grid` | `transpose` | `record`). */
+  gridMode?: "grid" | "transpose" | "record";
+  /** Transient column layouts keyed by `resultId` for query and detached result tabs. */
+  resultLayouts?: Record<string, SavedTableLayout>;
+  /** Originating query tab identifier for a detached result tab. */
+  originTabId?: string | null;
+  /** Originating SQL text captured when a query result was detached into its own tab. */
+  originSql?: string | null;
 }
 
 export const MAX_RECENT_LOCATIONS = 50;
@@ -289,6 +305,9 @@ interface StudioState {
   resetShortcuts(): void;
   setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
   resetTableLayout(connectionId: string, table: TableRef): void;
+  setResultLayout(tabId: string, resultId: string, layout: SavedTableLayout | null): void;
+  detachResultToTab(tabId: string, resultId?: string): string | null;
+  openOriginatingSql(resultTabId: string): string | null;
   setSession(session: SessionInfo): void;
   bindQuerySession(tabId: string, session: SessionInfo, label?: string): boolean;
   attachQuerySession(tabId: string, sessionId: string | null): boolean;
@@ -454,7 +473,7 @@ export function isTabProtectedFromBulkClose(
   );
 }
 function snapshotClosedTab(candidate: StudioTab): ClosedTabSnapshot | null {
-  if (candidate.metadataOrigin) return null;
+  if (candidate.metadataOrigin || candidate.kind === "result") return null;
   return {
     id: candidate.id,
     kind: candidate.kind,
@@ -1020,6 +1039,114 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   resetTableLayout(connectionId, table) {
     get().setTableLayout(connectionId, table, null);
+  },
+  setResultLayout(tabId, resultId, layout) {
+    set((state) => ({
+      tabs: state.tabs.map((entry) => {
+        if (entry.id !== tabId) return entry;
+        const currentLayouts = { ...(entry.resultLayouts ?? {}) };
+        if (!layout || isDefaultTableLayout(layout)) {
+          delete currentLayouts[resultId];
+        } else {
+          currentLayouts[resultId] = layout;
+        }
+        return {
+          ...entry,
+          resultLayouts: Object.keys(currentLayouts).length > 0 ? currentLayouts : undefined,
+        };
+      }),
+    }));
+  },
+  detachResultToTab(tabId, resultId) {
+    const state = get();
+    const sourceTab = state.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!sourceTab) return null;
+    if (["queued", "running"].includes(sourceTab.status)) {
+      get().notify("Wait for the query to finish before opening its result in a tab.");
+      return null;
+    }
+    const targetResult = resultId
+      ? sourceTab.results.find((r) => r.id === resultId)
+      : (sourceTab.results.find((r) => r.id === sourceTab.activeResultId) ?? sourceTab.results[0]);
+    if (!targetResult) {
+      get().notify("Run a query first to open its result in a tab.");
+      return null;
+    }
+    if (isConsoleOwnedResult(targetResult)) {
+      get().notify("Retained Snowflake console results stay managed by their console receipt.");
+      return null;
+    }
+    dirtyStore.clearTab(targetResult.id, [targetResult.id]);
+    const detachedResult: ResultInfo = {
+      ...targetResult,
+      columns: targetResult.columns.map((c) => ({ ...c, editable: false, insertable: false })),
+      editability: {
+        status: "readOnly",
+        reason: "Detached result snapshot is read-only; open originating SQL or table to edit",
+      },
+    };
+    const next = tab(
+      "result",
+      `${sourceTab.title} · Query ${targetResult.statementIndex + 1}`,
+      sourceTab.connectionId,
+    );
+    next.results = [detachedResult];
+    next.activeResultId = detachedResult.id;
+    next.status = "completed";
+    next.originTabId = sourceTab.id;
+    next.originSql = sourceTab.sql;
+    if (sourceTab.resultLayouts?.[targetResult.id]) {
+      next.resultLayouts = { [targetResult.id]: sourceTab.resultLayouts[targetResult.id] };
+    }
+    const remainingResults = sourceTab.results.filter((r) => r.id !== targetResult.id);
+    const nextSourceLayouts = sourceTab.resultLayouts ? { ...sourceTab.resultLayouts } : undefined;
+    if (nextSourceLayouts) delete nextSourceLayouts[targetResult.id];
+    set((prev) => ({
+      tabs: orderPinnedFirst([
+        ...prev.tabs.map((entry) =>
+          entry.id === sourceTab.id
+            ? {
+                ...entry,
+                results: remainingResults,
+                activeResultId:
+                  entry.activeResultId === targetResult.id
+                    ? (remainingResults[0]?.id ?? null)
+                    : entry.activeResultId,
+                resultLayouts:
+                  nextSourceLayouts && Object.keys(nextSourceLayouts).length > 0
+                    ? nextSourceLayouts
+                    : undefined,
+              }
+            : entry,
+        ),
+        next,
+      ]),
+      activeTabId: next.id,
+    }));
+    get().recordRecentLocation({
+      key: `tab:${next.id}`,
+      label: next.title,
+      subtitle: "Detached query result",
+      target: { kind: "tab", tabId: next.id },
+    });
+    return next.id;
+  },
+  openOriginatingSql(resultTabId) {
+    const state = get();
+    const resultTab = state.tabs.find(
+      (entry) => entry.id === resultTabId && entry.kind === "result",
+    );
+    if (!resultTab) return null;
+    if (resultTab.originTabId) {
+      const origin = state.tabs.find(
+        (entry) => entry.id === resultTab.originTabId && entry.kind === "query",
+      );
+      if (origin && (resultTab.originSql == null || origin.sql === resultTab.originSql)) {
+        set({ activeTabId: origin.id });
+        return origin.id;
+      }
+    }
+    return get().openQuery(resultTab.connectionId, resultTab.originSql ?? "");
   },
   async startSnowflakeConsole(tabId, plan, approval) {
     const storageProblem = consoleReceiptStorageProblem();

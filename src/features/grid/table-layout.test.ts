@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type { ColumnInfo, SavedTableLayout } from "../../ipc/generated";
 import {
+  fitColumnsToWindow,
+  hideOptionalColumns,
   isDefaultTableLayout,
   moveOrderedColumn,
   moveVisibleColumn,
   resizeTableColumn,
   resolveTableLayout,
+  showAllColumns,
+  toggleColumnPin,
   toggleColumnVisibility,
 } from "./table-layout";
 
@@ -96,5 +100,52 @@ describe("table-layout", () => {
     layout = moveOrderedColumn(columns, layout, connectionId, table, 0, 1);
     layout = resizeTableColumn(columns, layout, connectionId, table, "email", 230);
     expect(isDefaultTableLayout(layout)).toBe(true);
+  });
+
+  it("pins columns to the left, keeps pinned and hidden disjoint, and fits widths to window", () => {
+    let layout: SavedTableLayout | null = toggleColumnVisibility(
+      columns,
+      null,
+      connectionId,
+      table,
+      "metadata",
+    );
+    expect(resolveTableLayout(columns, layout).hiddenSet.has("metadata")).toBe(true);
+
+    // Pinning a hidden column unhides it and moves pinned columns first in visibleColumns.
+    layout = toggleColumnPin(columns, layout, connectionId, table, "metadata");
+    let resolved = resolveTableLayout(columns, layout);
+    expect(resolved.hiddenSet.has("metadata")).toBe(false);
+    expect(resolved.pinnedCount).toBe(1);
+    expect(resolved.visibleColumns.map((c) => c.name)).toEqual(["metadata", "id", "name", "email"]);
+    expect(isDefaultTableLayout(layout)).toBe(false);
+
+    // Hiding a pinned column automatically unpins it so hidden and pinned stay disjoint.
+    layout = toggleColumnVisibility(columns, layout, connectionId, table, "metadata");
+    resolved = resolveTableLayout(columns, layout);
+    expect(resolved.pinnedCount).toBe(0);
+    expect(layout?.pinnedColumns).toEqual([]);
+    expect(resolved.hiddenSet.has("metadata")).toBe(true);
+
+    // Hide optional columns keeps PK ("id") visible; showAllColumns restores all.
+    layout = hideOptionalColumns(columns, layout, connectionId, table);
+    expect(resolveTableLayout(columns, layout).visibleColumns.map((c) => c.name)).toEqual(["id"]);
+    layout = showAllColumns(columns, layout, connectionId, table);
+    expect(resolveTableLayout(columns, layout).visibleColumns.map((c) => c.name)).toEqual([
+      "id",
+      "name",
+      "email",
+      "metadata",
+    ]);
+
+    // Fit columns to window distributes usable width across visible columns within bounds.
+    layout = fitColumnsToWindow(columns, layout, connectionId, table, 1048);
+    resolved = resolveTableLayout(columns, layout);
+    const totalWidth = resolved.visibleColumns.reduce((sum, c) => sum + resolved.widths[c.name], 0);
+    expect(totalWidth).toBe(1000);
+    for (const col of resolved.visibleColumns) {
+      expect(resolved.widths[col.name]).toBeGreaterThanOrEqual(60);
+      expect(resolved.widths[col.name]).toBeLessThanOrEqual(1600);
+    }
   });
 });

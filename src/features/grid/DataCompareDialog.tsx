@@ -75,13 +75,16 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
     const connPrefix = tab.connectionId
       ? `${profileNames.get(tab.connectionId) ?? "Connection"} · `
       : "";
-    if (tab.kind === "query") {
+    if (tab.kind === "query" || tab.kind === "result") {
       for (const res of tab.results) {
         if (res.columns.length === 0) continue;
         const suffix = res.status === "truncated" ? " · truncated" : "";
         items.push({
           id: `query:${tab.id}:${res.id}`,
-          label: `${connPrefix}${tab.title} · Query ${res.statementIndex + 1} (${res.retainedRows.toLocaleString()} rows${suffix})`,
+          label:
+            tab.kind === "result"
+              ? `${connPrefix}${tab.title} (${res.retainedRows.toLocaleString()} rows${suffix})`
+              : `${connPrefix}${tab.title} · Query ${res.statementIndex + 1} (${res.retainedRows.toLocaleString()} rows${suffix})`,
           resultIds: [res.id],
           columns: res.columns,
           rowCount: res.retainedRows,
@@ -218,7 +221,7 @@ function buildInitialSides(
   } else if (initialTab) {
     const tabSnaps = snapshots.filter((s) => s.tabId === initialTab.id);
     const activeSnap =
-      initialTab.kind === "query" && initialTab.activeResultId
+      (initialTab.kind === "query" || initialTab.kind === "result") && initialTab.activeResultId
         ? (tabSnaps.find((s) => s.resultIds[0] === initialTab.activeResultId) ?? tabSnaps[0])
         : tabSnaps[0];
     if (activeSnap) {

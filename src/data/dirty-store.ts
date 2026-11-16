@@ -119,11 +119,18 @@ export class DirtyStore {
     return this.inserts.get(tabId) ?? EMPTY_INSERTS;
   }
   addInsertRow(tabId: string): DraftInsertRow {
+    return this.cloneInsertRow(tabId, {});
+  }
+  cloneInsertRow(tabId: string, values: Record<string, string | null>): DraftInsertRow {
     const current = this.inserts.get(tabId) ?? [];
     if (current.length >= MAX_STAGE_INSERTS) {
       throw new Error(`Stage at most ${MAX_STAGE_INSERTS} inserted rows at a time.`);
     }
-    const draft: DraftInsertRow = { id: crypto.randomUUID(), values: {} };
+    const cleanValues: Record<string, string | null> = {};
+    for (const [column, value] of Object.entries(values)) {
+      if (value !== undefined) cleanValues[column] = value;
+    }
+    const draft: DraftInsertRow = { id: crypto.randomUUID(), values: cleanValues };
     const addedBytes = this.insertRowSize(draft);
     if (this.bytes + addedBytes > this.budget)
       throw new Error("Pending edits exceed 8 MiB. Apply or discard some edits first.");
@@ -131,6 +138,39 @@ export class DirtyStore {
     this.bytes += addedBytes;
     this.changed();
     return draft;
+  }
+  revertCell(resultId: string, row: number, column: string): boolean {
+    const key = this.key(resultId, row, column);
+    const previous = this.cells.get(key);
+    if (!previous) return false;
+    this.bytes -= this.size(previous);
+    this.cells.delete(key);
+    this.changed();
+    return true;
+  }
+  revertRows(resultId: string, rows: Iterable<number>): number {
+    const targets = new Set([...rows].filter((r) => Number.isInteger(r) && r >= 0));
+    if (!targets.size) return 0;
+    let reverted = 0;
+    for (const [key, cell] of this.cells) {
+      if (cell.resultId === resultId && targets.has(cell.row)) {
+        this.bytes -= this.size(cell);
+        this.cells.delete(key);
+        reverted++;
+      }
+    }
+    const deletedSet = this.deletes.get(resultId);
+    if (deletedSet) {
+      for (const row of targets) {
+        if (deletedSet.delete(row)) {
+          this.bytes -= DELETE_ENTRY_BYTES;
+          reverted++;
+        }
+      }
+      if (!deletedSet.size) this.deletes.delete(resultId);
+    }
+    if (reverted > 0) this.changed();
+    return reverted;
   }
   setInsertCell(tabId: string, insertId: string, column: string, value: string | null | undefined) {
     this.applyBatch([], [{ tabId, insertId, column, value }]);

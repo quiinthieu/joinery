@@ -18,7 +18,9 @@ import {
   Clock3,
   Code2,
   Columns3,
+  Copy,
   Download,
+  ExternalLink,
   FileCode2,
   FolderOpen,
   Gauge,
@@ -43,6 +45,7 @@ import type {
   DatabaseObjectRef,
   ObjectDetails,
   QueryParamSlot,
+  ResultInfo,
   SessionInfo,
   TableInfo,
   TransactionMode,
@@ -64,6 +67,11 @@ import {
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
+import {
+  RecordCardView,
+  TransposeGridView,
+  type GridDisplayMode,
+} from "../features/grid/GridAltViews";
 import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
@@ -96,6 +104,27 @@ const SqlEditor = lazy(() =>
 );
 const DatabaseGrid = lazy(() => import("../features/grid/DatabaseGrid"));
 const EMPTY_TABLES: TableInfo[] = [];
+const BENCHMARK_ALT_COLUMNS = [
+  ["id", "bigint", "integer"],
+  ["workspace", "text", "text"],
+  ["status", "text", "text"],
+  ["owner", "text", "text"],
+  ["email", "text", "text"],
+  ["amount", "numeric", "decimal"],
+  ["region", "text", "text"],
+  ["created_at", "timestamptz", "temporal"],
+].map(([name, databaseType, kind], i) => ({
+  id: `c${i}`,
+  name,
+  databaseType,
+  kind: kind as ResultInfo["columns"][number]["kind"],
+  nullable: false,
+  primaryKey: i === 0,
+  foreignKey: false,
+  editable: false,
+  insertable: false,
+  hasDefault: false,
+}));
 interface Props {
   tab: StudioTab;
   profile?: ConnectionProfile;
@@ -158,6 +187,7 @@ export function Workbench({
     [runningTime, setRunningTime] = useState(0),
     [planResultId, setPlanResultId] = useState<string | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
+    [activeCell, setActiveCell] = useState<CellTarget | null>(null),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
     [tableDetailsState, setTableDetailsState] = useState<{
       key: string;
@@ -239,10 +269,25 @@ export function Workbench({
         : 0;
   const draftInserts =
     tab.kind === "table" || queryResultEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
+  const rawActiveColumns =
+    tab.kind === "table"
+      ? (tab.schema?.columns ?? [])
+      : tab.kind === "benchmark"
+        ? BENCHMARK_ALT_COLUMNS
+        : (result?.columns ?? []);
   const tableColumns = tab.kind === "table" ? (tab.schema?.columns ?? []) : [];
-  const tableLayout =
-    tab.kind === "table" ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table) : null;
-  const resolvedLayout = resolveTableLayout(tableColumns, tableLayout);
+  const activeDataLayout =
+    tab.kind === "table"
+      ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table)
+      : result
+        ? (tab.resultLayouts?.[result.id] ?? null)
+        : null;
+  const resolvedLayout = resolveTableLayout(rawActiveColumns, activeDataLayout);
+  const gridMode: GridDisplayMode = tab.gridMode ?? "grid";
+  const handleSelectCell = (target: CellTarget | null) => {
+    setActiveCell(target);
+    onSelect(target);
+  };
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
   const tableEditable =
     tab.kind === "table" &&
@@ -298,6 +343,32 @@ export function Workbench({
       : pendingCount
         ? "Review or discard pending edits to change sort or filters"
         : null;
+  const hasSelectedDirtyRows =
+    selectedDraftIds.length > 0 ||
+    selectedExisting.some(
+      (entry) =>
+        dirtyStore.isDeleted(entry.resultId, entry.row) ||
+        dirtyStore.forResult(entry.resultId).some((c) => c.row === entry.row),
+    );
+  const hasActiveDirtyCell =
+    Boolean(activeCell) &&
+    (Boolean(activeCell!.insert) ||
+      Boolean(activeCell!.deleted) ||
+      Boolean(dirtyStore.get(activeCell!.resultId, activeCell!.row, activeCell!.column.id)));
+  const canRevertSelected = hasSelectedDirtyRows || hasActiveDirtyCell;
+  const cloneCandidateVisualRow: number | null =
+    selectedRows.length > 0
+      ? selectedRows[0]
+      : activeCell
+        ? activeCell.insert
+          ? activeCell.row
+          : tab.kind === "table"
+            ? (() => {
+                const page = tab.pages.find((p) => p.result.id === activeCell.resultId);
+                return page ? page.start + activeCell.row : null;
+              })()
+            : activeCell.row
+        : null;
   function stageInsertRow() {
     try {
       const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
@@ -306,6 +377,90 @@ export function Workbench({
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
     } catch (error) {
       state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
+    }
+  }
+  async function cloneSelectedRow() {
+    if (cloneCandidateVisualRow === null) {
+      state.notify("Select a row or cell first to clone it.");
+      return;
+    }
+    try {
+      const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+      const cols = tab.kind === "table" ? (tab.schema?.columns ?? []) : (result?.columns ?? []);
+      const values: Record<string, string | null> = {};
+      if (cloneCandidateVisualRow >= baseRows) {
+        const sourceDraft = draftInserts[cloneCandidateVisualRow - baseRows];
+        if (!sourceDraft) return;
+        for (const col of cols) {
+          if (!col.insertable || (col.primaryKey && col.hasDefault)) continue;
+          if (col.id in sourceDraft.values) {
+            values[col.id] = sourceDraft.values[col.id] ?? null;
+          }
+        }
+      } else {
+        const source =
+          tab.kind === "table"
+            ? (() => {
+                const page = tab.pages.find(
+                  (p) =>
+                    cloneCandidateVisualRow >= p.start &&
+                    cloneCandidateVisualRow < p.start + p.result.retainedRows,
+                );
+                return page
+                  ? { result: page.result, row: cloneCandidateVisualRow - page.start }
+                  : null;
+              })()
+            : result
+              ? { result, row: cloneCandidateVisualRow }
+              : null;
+        if (!source) {
+          state.notify("Scroll to load that row before cloning it.");
+          return;
+        }
+        await resultCache.ensure(source.result.id, source.row, source.result.retainedRows);
+        for (const col of cols) {
+          if (!col.insertable || (col.primaryKey && col.hasDefault)) continue;
+          const dirty = dirtyStore.get(source.result.id, source.row, col.id);
+          const raw = dirty
+            ? dirty.value
+            : (resultCache.read(source.result.id, col.id, source.row, true)?.value ?? null);
+          values[col.id] = raw;
+        }
+      }
+      dirtyStore.cloneInsertRow(insertScopeId, values);
+      const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
+      setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
+      state.notify("Cloned row into staged inserts");
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not clone row");
+    }
+  }
+  function handleRevertSelection() {
+    try {
+      if (hasSelectedDirtyRows) {
+        if (selectedDraftIds.length) {
+          dirtyStore.removeInsertRows(insertScopeId, selectedDraftIds);
+        }
+        const byResult = new Map<string, number[]>();
+        for (const entry of selectedExisting) {
+          byResult.set(entry.resultId, [...(byResult.get(entry.resultId) ?? []), entry.row]);
+        }
+        for (const [resultId, rows] of byResult) {
+          dirtyStore.revertRows(resultId, rows);
+        }
+        return;
+      }
+      if (activeCell) {
+        if (activeCell.insert) {
+          dirtyStore.removeInsertRows(activeCell.insert.tabId, [activeCell.insert.insertId]);
+        } else if (activeCell.deleted) {
+          dirtyStore.setDeleted(activeCell.resultId, [activeCell.row], false);
+        } else {
+          dirtyStore.revertCell(activeCell.resultId, activeCell.row, activeCell.column.id);
+        }
+      }
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not revert selected edits");
     }
   }
   function handleDeleteSelection() {
@@ -463,13 +618,34 @@ export function Workbench({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
   }
-  if (consoleMode && tab.kind !== "query")
+  if (consoleMode && tab.kind !== "query" && tab.kind !== "result" && tab.kind !== "benchmark")
     return (
       <p role="status">
         Metadata is disabled on this reviewed SQL console session. Open a separate profile with
         reviewed console off; temporary objects and transactions are not shared.
       </p>
     );
+  const renderGridModeSwitch = () => (
+    <div className="grid-mode-switch" role="group" aria-label="Data display mode">
+      {(
+        [
+          ["grid", "Grid"],
+          ["transpose", "Transpose"],
+          ["record", "Record"],
+        ] as const
+      ).map(([mode, label]) => (
+        <button
+          key={mode}
+          type="button"
+          className={`button ghost small ${gridMode === mode ? "active" : ""}`.trim()}
+          aria-pressed={gridMode === mode}
+          onClick={() => state.updateTab(tab.id, { gridMode: mode })}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <>
       <div className="query-toolbar">
@@ -486,13 +662,15 @@ export function Workbench({
           <span>
             {tab.kind === "benchmark"
               ? "1,000,000 virtual rows"
-              : tab.kind === "table"
-                ? `${tab.table?.schema}.${tab.table?.name}`
-                : tab.kind === "object" && tab.object
-                  ? `${tab.object.schema}.${objectTabTitle(tab.object)}`
-                  : profile?.engine === "redis"
-                    ? "Redis console"
-                    : "SQL editor"}
+              : tab.kind === "result"
+                ? tab.title
+                : tab.kind === "table"
+                  ? `${tab.table?.schema}.${tab.table?.name}`
+                  : tab.kind === "object" && tab.object
+                    ? `${tab.object.schema}.${objectTabTitle(tab.object)}`
+                    : profile?.engine === "redis"
+                      ? "Redis console"
+                      : "SQL editor"}
           </span>
           {tab.kind === "query" && (
             <select
@@ -962,6 +1140,17 @@ export function Workbench({
               </button>
               {pendingCount > 0 && (
                 <>
+                  {canRevertSelected && (
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={running}
+                      onClick={handleRevertSelection}
+                    >
+                      <RotateCcw size={12} />
+                      Revert selected
+                    </button>
+                  )}
                   <button
                     className="button ghost small"
                     disabled={running}
@@ -985,6 +1174,16 @@ export function Workbench({
                 </>
               )}
             </>
+          )}
+          {tab.kind === "result" && tab.originSql != null && (
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={() => state.openOriginatingSql(tab.id)}
+            >
+              <Code2 size={13} />
+              Open originating SQL
+            </button>
           )}
           {tab.kind === "object" && (
             <>
@@ -1179,15 +1378,26 @@ export function Workbench({
             {queryResultEditable && (
               <>
                 {result.columns.some((col) => col.insertable) && (
-                  <button
-                    type="button"
-                    className="button ghost small"
-                    disabled={mutatingDisabled}
-                    onClick={stageInsertRow}
-                  >
-                    <Plus size={12} />
-                    Insert row
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={mutatingDisabled}
+                      onClick={stageInsertRow}
+                    >
+                      <Plus size={12} />
+                      Insert row
+                    </button>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={mutatingDisabled || cloneCandidateVisualRow === null}
+                      onClick={() => void cloneSelectedRow()}
+                    >
+                      <Copy size={12} />
+                      Clone row
+                    </button>
+                  </>
                 )}
                 <button
                   type="button"
@@ -1215,6 +1425,17 @@ export function Workbench({
             )}
             {tab.kind === "query" && pendingCount > 0 && (
               <>
+                {canRevertSelected && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={running}
+                    onClick={handleRevertSelection}
+                  >
+                    <RotateCcw size={12} />
+                    Revert selected
+                  </button>
+                )}
                 <button
                   type="button"
                   className="button ghost small"
@@ -1241,6 +1462,7 @@ export function Workbench({
             )}
             {result && result.columns.length > 0 && (
               <>
+                {renderGridModeSwitch()}
                 {isQueryPlanResult(result, tab.planSource) && (
                   <button
                     className="button ghost small"
@@ -1250,7 +1472,7 @@ export function Workbench({
                     {planResultId === result.id ? "Data grid" : "View plan"}
                   </button>
                 )}
-                <CopyAsMenu gridRef={gridRef} disabled={running} />
+                <CopyAsMenu gridRef={gridRef} disabled={running || gridMode !== "grid"} />
                 <button
                   type="button"
                   className="button ghost small"
@@ -1268,6 +1490,28 @@ export function Workbench({
                 >
                   <Download size={12} />
                   Export…
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={onOpenColumns}
+                >
+                  <Columns3 size={12} />
+                  Columns
+                  {resolvedLayout.hiddenSet.size > 0
+                    ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
+                    : ""}
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  aria-label="Open result in tab"
+                  disabled={running || isConsoleOwnedResult(result)}
+                  onClick={() => state.detachResultToTab(tab.id, result.id)}
+                >
+                  <ExternalLink size={12} />
+                  Open in tab
                 </button>
               </>
             )}
@@ -1288,6 +1532,50 @@ export function Workbench({
                 </>
               )}
             </span>
+          </div>
+        </div>
+      ) : tab.kind === "result" ? (
+        <div className="results-header table-views">
+          <div className="result-tabs">
+            <button className="active" aria-pressed="true" type="button">
+              <Table2 size={12} />
+              Result snapshot
+              {result ? <span>{result.retainedRows.toLocaleString()}</span> : null}
+            </button>
+          </div>
+          <div className="table-view-actions">
+            {result && result.columns.length > 0 && (
+              <>
+                {renderGridModeSwitch()}
+                <CopyAsMenu gridRef={gridRef} disabled={gridMode !== "grid"} />
+                <button type="button" className="button ghost small" onClick={onOpenCompare}>
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
+                <button type="button" className="button ghost small" onClick={onOpenExport}>
+                  <Download size={12} />
+                  Export…
+                </button>
+                <button type="button" className="button ghost small" onClick={onOpenColumns}>
+                  <Columns3 size={12} />
+                  Columns
+                  {resolvedLayout.hiddenSet.size > 0
+                    ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
+                    : ""}
+                </button>
+                {resolvedLayout.customized && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    onClick={() => state.setResultLayout(tab.id, result.id, null)}
+                  >
+                    <RotateCcw size={12} />
+                    Reset column layout
+                  </button>
+                )}
+              </>
+            )}
+            <span className="result-caption">Detached result snapshot</span>
           </div>
         </div>
       ) : tab.kind === "table" ? (
@@ -1332,6 +1620,17 @@ export function Workbench({
                   <Plus size={12} />
                   Insert row
                 </button>
+                {tab.schema?.columns.some((col) => col.insertable) && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={mutatingDisabled || cloneCandidateVisualRow === null}
+                    onClick={() => void cloneSelectedRow()}
+                  >
+                    <Copy size={12} />
+                    Clone row
+                  </button>
+                )}
                 <button
                   type="button"
                   className="button ghost small"
@@ -1358,7 +1657,11 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
-                <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
+                {renderGridModeSwitch()}
+                <CopyAsMenu
+                  gridRef={gridRef}
+                  disabled={running || tab.loadingPage || gridMode !== "grid"}
+                />
                 {tableImportable ? (
                   <button
                     type="button"
@@ -1445,7 +1748,8 @@ export function Workbench({
       ) : (
         <div className="benchmark-note">
           <Gauge size={13} />
-          Generated on demand · no database connection · constant row storage
+          <span>Generated on demand · no database connection · constant row storage</span>
+          <div style={{ marginLeft: "auto" }}>{renderGridModeSwitch()}</div>
         </div>
       )}
       {tab.kind === "query" && tab.clientStartedAt !== undefined && (
@@ -1579,7 +1883,7 @@ export function Workbench({
             source={tab.planSource}
             canCapture={tab.status === "completed" && session?.id === tab.planSource?.sessionId}
           />
-        ) : tab.kind === "query" && !result ? (
+        ) : (tab.kind === "query" || tab.kind === "result") && !result ? (
           <div className="results-empty">
             <Table2 size={27} />
             <h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3>
@@ -1592,6 +1896,22 @@ export function Workbench({
               <kbd>⌘ ↵</kbd>Run current query
             </span>
           </div>
+        ) : gridMode === "transpose" ? (
+          <TransposeGridView
+            tab={tab}
+            result={result}
+            visibleColumns={resolvedLayout.visibleColumns}
+            onSelect={handleSelectCell}
+            onOpenValue={onOpenValue}
+          />
+        ) : gridMode === "record" ? (
+          <RecordCardView
+            tab={tab}
+            result={result}
+            visibleColumns={resolvedLayout.visibleColumns}
+            onSelect={handleSelectCell}
+            onOpenValue={onOpenValue}
+          />
         ) : (
           <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
             <DatabaseGrid
@@ -1600,7 +1920,7 @@ export function Workbench({
               tab={tab}
               result={result}
               theme={state.theme}
-              onSelect={onSelect}
+              onSelect={handleSelectCell}
               onOpenValue={onOpenValue}
               onSelectedRowsChange={setSelectedRows}
               focusRowRequest={focusRowRequest}

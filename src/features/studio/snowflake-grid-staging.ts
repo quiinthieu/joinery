@@ -163,6 +163,29 @@ export function createBlankInsertRow(columns: readonly ColumnInspection[]): Stag
   return { id: crypto.randomUUID(), cells };
 }
 
+export function cloneSnowflakePreviewRow(
+  columns: readonly ColumnInspection[],
+  row: readonly (string | null)[],
+  rowUpdates?: Readonly<Record<number, SnowflakeGridCellInput>>,
+): StagedInsertRow {
+  const cells: Record<number, SnowflakeGridCellInput> = {};
+  columns.forEach((column, index) => {
+    if (!isWritableSnowflakeColumn(column)) return;
+    if (column.identity && canColumnDefaultOnInsert(column)) {
+      cells[index] = { kind: "default" };
+      return;
+    }
+    const updated = rowUpdates?.[index];
+    if (updated) {
+      cells[index] = updated;
+      return;
+    }
+    const raw = row[index] ?? null;
+    cells[index] = raw === null ? { kind: "null" } : { kind: "text", value: raw };
+  });
+  return { id: crypto.randomUUID(), cells };
+}
+
 export function buildSnowflakeGridMutations(args: {
   deletedRows: Readonly<Record<number, true>>;
   updatedCells: Readonly<Record<number, Readonly<Record<number, SnowflakeGridCellInput>>>>;

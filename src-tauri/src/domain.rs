@@ -1688,6 +1688,9 @@ pub struct SavedTableLayout {
     pub table: TableRef,
     pub column_order: Vec<String>,
     pub hidden_columns: Vec<String>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub pinned_columns: Vec<String>,
     pub column_widths: std::collections::BTreeMap<String, u32>,
 }
 
