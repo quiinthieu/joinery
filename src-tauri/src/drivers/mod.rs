@@ -60,6 +60,7 @@ mod snowflake_session;
 pub(crate) mod snowflake_sql_contract;
 #[cfg(all(unix, feature = "test-harness"))]
 pub mod snowflake_table_qualification;
+pub mod sqlite;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);

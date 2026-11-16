@@ -20,6 +20,10 @@ pub(crate) fn explain_sql(
             "EXPLAIN (ANALYZE, FORMAT JSON)",
         ),
         (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+        (EngineKind::Sqlite, false) => (
+            Box::new(sqlparser::dialect::SQLiteDialect {}),
+            "EXPLAIN QUERY PLAN",
+        ),
         (EngineKind::Snowflake, false) => (Box::new(SnowflakeDialect {}), "EXPLAIN USING JSON"),
         (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
             (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")

@@ -274,7 +274,7 @@ export function ConnectionDialog({
                 setDraft((current) => ({
                   ...current,
                   engine,
-                  host: engine === "snowflake" ? "" : "localhost",
+                  host: engine === "snowflake" ? "" : engine === "sqlite" ? "local" : "localhost",
                   port:
                     engine === "snowflake"
                       ? 443
@@ -282,10 +282,25 @@ export function ConnectionDialog({
                         ? 6379
                         : engine === "mysql"
                           ? 3306
-                          : 5432,
-                  database: engine === "redis" ? "0" : engine === "postgres" ? "postgres" : "",
+                          : engine === "sqlite"
+                            ? 1
+                            : 5432,
+                  database:
+                    engine === "redis"
+                      ? "0"
+                      : engine === "postgres"
+                        ? "postgres"
+                        : engine === "sqlite"
+                          ? ":memory:"
+                          : "",
                   username:
-                    engine === "redis" ? "default" : engine === "postgres" ? "postgres" : "",
+                    engine === "redis"
+                      ? "default"
+                      : engine === "postgres"
+                        ? "postgres"
+                        : engine === "sqlite"
+                          ? "local"
+                          : "",
                   safeMode: engine === "snowflake" ? "readOnly" : current.safeMode,
                   tlsMode: "verifyFull",
                   caCertPath: null,
@@ -316,11 +331,13 @@ export function ConnectionDialog({
                     ? "PostgreSQL"
                     : engine === "mysql"
                       ? "MySQL / MariaDB"
-                      : engine === "redis"
-                        ? "Redis"
-                        : engine === "snowflake"
-                          ? "Snowflake"
-                          : engine}
+                      : engine === "sqlite"
+                        ? "SQLite"
+                        : engine === "redis"
+                          ? "Redis"
+                          : engine === "snowflake"
+                            ? "Snowflake"
+                            : engine}
                 </option>
               ))}
             </select>
@@ -360,18 +377,20 @@ export function ConnectionDialog({
               ))}
             </select>
           </label>
-          <label>
-            {draft.engine === "snowflake" ? "Snowflake account hostname" : "Host"}
-            <input
-              value={draft.host}
-              onChange={(e) => change("host", e.target.value)}
-              required
-              spellCheck={false}
-              placeholder={
-                draft.engine === "snowflake" ? "org-account.snowflakecomputing.com" : undefined
-              }
-            />
-          </label>
+          {draft.engine !== "sqlite" && (
+            <label>
+              {draft.engine === "snowflake" ? "Snowflake account hostname" : "Host"}
+              <input
+                value={draft.host}
+                onChange={(e) => change("host", e.target.value)}
+                required
+                spellCheck={false}
+                placeholder={
+                  draft.engine === "snowflake" ? "org-account.snowflakecomputing.com" : undefined
+                }
+              />
+            </label>
+          )}
           {draft.engine === "snowflake" && draft.snowflake && (
             <>
               <label className="span-2">
@@ -465,37 +484,48 @@ export function ConnectionDialog({
               </p>
             </>
           )}
-          <label>
-            Port
-            <input
-              type="number"
-              min={1}
-              max={65535}
-              value={draft.port}
-              onChange={(e) => change("port", Number(e.target.value))}
-              required
-            />
-          </label>
-          <label>
-            {draft.engine === "redis" ? "Database index" : "Database"}
+          {draft.engine !== "sqlite" && (
+            <label>
+              Port
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={draft.port}
+                onChange={(e) => change("port", Number(e.target.value))}
+                required
+              />
+            </label>
+          )}
+          <label className={draft.engine === "sqlite" ? "span-2" : undefined}>
+            {draft.engine === "redis"
+              ? "Database index"
+              : draft.engine === "sqlite"
+                ? "Database file path (or :memory:)"
+                : "Database"}
             <input
               value={draft.database}
               onChange={(e) => change("database", e.target.value)}
               required
               spellCheck={false}
+              placeholder={
+                draft.engine === "sqlite" ? "/path/to/app.sqlite or :memory:" : undefined
+              }
             />
           </label>
-          <label>
-            Username
-            <input
-              value={draft.username}
-              onChange={(e) => change("username", e.target.value)}
-              required
-              autoComplete="username"
-              spellCheck={false}
-            />
-          </label>
-          {draft.engine !== "snowflake" && (
+          {draft.engine !== "sqlite" && (
+            <label>
+              Username
+              <input
+                value={draft.username}
+                onChange={(e) => change("username", e.target.value)}
+                required
+                autoComplete="username"
+                spellCheck={false}
+              />
+            </label>
+          )}
+          {draft.engine !== "snowflake" && draft.engine !== "sqlite" && (
             <label className="span-2">
               Password
               <input
@@ -507,7 +537,7 @@ export function ConnectionDialog({
               />
             </label>
           )}
-          {draft.engine !== "snowflake" && (
+          {draft.engine !== "snowflake" && draft.engine !== "sqlite" && (
             <label className="checkbox-label span-2">
               <input
                 type="checkbox"
@@ -517,7 +547,7 @@ export function ConnectionDialog({
               Remember password in the system credential store
             </label>
           )}
-          {draft.engine !== "snowflake" && (
+          {draft.engine !== "snowflake" && draft.engine !== "sqlite" && (
             <label className="checkbox-label span-2">
               <input
                 type="checkbox"

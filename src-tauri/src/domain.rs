@@ -21,6 +21,7 @@ pub use crate::schema_diff::{
 pub enum EngineKind {
     Postgres,
     Mysql,
+    Sqlite,
     Redis,
     Snowflake,
 }

@@ -40,6 +40,8 @@ function engineBadgeLabel(engine: EngineKind | null): string {
       return "PostgreSQL";
     case "mysql":
       return "MySQL";
+    case "sqlite":
+      return "SQLite";
     case "snowflake":
       return "Snowflake";
     default:

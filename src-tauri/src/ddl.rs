@@ -208,7 +208,7 @@ fn format_column_ddl(
             }
             parts.join(" ")
         }
-        EngineKind::Postgres | EngineKind::Redis => {
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Redis => {
             let mut parts = vec![col_ident, col.data_type.clone()];
             if let Some(gen_kind) = &col.generated
                 && !gen_kind.trim().is_empty()
@@ -283,7 +283,7 @@ fn format_inline_constraint_ddl(
         return None;
     }
     match engine {
-        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Redis | EngineKind::Snowflake => {
             let def = if !c.definition.trim().is_empty() {
                 retarget_schema_sql(&c.definition, engine, source_schema, target_schema)
             } else {
@@ -577,7 +577,7 @@ fn build_create_index_stmt(
     target_schema: &str,
 ) -> DdlStatement {
     let sql = match engine {
-        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Redis | EngineKind::Snowflake => {
             if let Some(def) = &idx.definition
                 && !def.trim().is_empty()
             {
@@ -656,7 +656,7 @@ fn build_add_constraint_stmt(
     let qualified_table = quote_qualified(engine, target_schema, table_name);
     let quoted_cname = quote_engine_identifier(engine, &c.name);
     let sql = match engine {
-        EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Redis | EngineKind::Snowflake => {
             let def = if !c.definition.trim().is_empty() {
                 retarget_schema_sql(&c.definition, engine, source_schema, target_schema)
             } else if c.kind == ConstraintKind::ForeignKey

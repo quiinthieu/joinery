@@ -69,7 +69,10 @@ fn scan_raw_tokens(engine: EngineKind, sql: &str) -> AppResult<Vec<RawToken>> {
     let allow_backslash_escape = matches!(engine, EngineKind::Mysql | EngineKind::Snowflake);
     let allow_dollar_quote = matches!(engine, EngineKind::Postgres | EngineKind::Snowflake);
     let allow_dollar_params = matches!(engine, EngineKind::Postgres | EngineKind::Snowflake);
-    let allow_question_params = matches!(engine, EngineKind::Mysql | EngineKind::Snowflake);
+    let allow_question_params = matches!(
+        engine,
+        EngineKind::Mysql | EngineKind::Snowflake | EngineKind::Sqlite
+    );
 
     while i < len {
         let b = bytes[i];
@@ -942,6 +945,10 @@ pub fn compile_statement_with_budget(
             EngineKind::Snowflake => {
                 binds.push(bind.clone());
                 snowflake_placeholder_expr(bind)
+            }
+            EngineKind::Sqlite => {
+                binds.push(bind.clone());
+                "?".into()
             }
             EngineKind::Redis => unreachable!(),
         };

@@ -11,6 +11,7 @@ use crate::{
         postgres::{Postgres, mutation_sql},
         redis::Redis,
         snowflake::Snowflake,
+        sqlite::Sqlite,
     },
     export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
     file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
@@ -447,8 +448,9 @@ impl Studio {
                 == Some("true"),
             supported_engines: vec![
                 EngineKind::Postgres,
-                EngineKind::Redis,
                 EngineKind::Mysql,
+                EngineKind::Sqlite,
+                EngineKind::Redis,
                 EngineKind::Snowflake,
             ],
             result_budget_bytes: RESULT_BUDGET,
@@ -642,6 +644,24 @@ impl Studio {
         }
         uuid::Uuid::parse_str(&profile.id)
             .map_err(|_| AppError::invalid("Invalid connection identifier"))?;
+        if profile.engine == EngineKind::Sqlite {
+            if profile.host.trim().is_empty() {
+                profile.host = "local".into();
+            }
+            if profile.port == 0 {
+                profile.port = 1;
+            }
+            if profile.username.trim().is_empty() {
+                profile.username = "local".into();
+            }
+            profile.ssh = None;
+            profile.snowflake = None;
+        }
+        let max_db_len = if profile.engine == EngineKind::Sqlite {
+            4096
+        } else {
+            1024
+        };
         if profile.name.trim().is_empty()
             || profile.name.len() > 100
             || profile.host.trim().is_empty()
@@ -650,7 +670,7 @@ impl Studio {
             || profile.username.is_empty()
             || profile.username.len() > 1024
             || profile.database.is_empty()
-            || profile.database.len() > 1024
+            || profile.database.len() > max_db_len
             || profile
                 .ca_cert_path
                 .as_ref()
@@ -698,6 +718,9 @@ impl Studio {
         }
         if profile.engine == EngineKind::Redis {
             Redis::validate_profile(&profile)?;
+        }
+        if profile.engine == EngineKind::Sqlite {
+            Sqlite::validate_profile(&profile)?;
         }
         if profile.engine == EngineKind::Snowflake {
             Snowflake::validate_profile(&profile)?;
@@ -1089,6 +1112,7 @@ impl Studio {
                     .await?;
                     (driver, info)
                 }
+                EngineKind::Sqlite => Sqlite::open(&profile, &session_id).await?,
                 EngineKind::Mysql => {
                     let (driver, info) = Mysql::open_with_guard_policy(
                         &profile,
@@ -4404,6 +4428,8 @@ impl Studio {
             .map(|m| {
                 if session.profile.engine == EngineKind::Mysql {
                     crate::drivers::mysql::mutation_sql(&schema, m)
+                } else if session.profile.engine == EngineKind::Sqlite {
+                    crate::drivers::sqlite::mutation_sql(&schema, m)
                 } else {
                     mutation_sql(&schema, m)
                 }
@@ -5931,6 +5957,9 @@ fn browse_sql_for_engine(
         }
         EngineKind::Mysql => {
             crate::drivers::mysql::browse_sql(schema, query, after).map(|(sql, _)| sql)
+        }
+        EngineKind::Sqlite => {
+            crate::drivers::sqlite::browse_sql(schema, query, after).map(|(sql, _)| sql)
         }
         EngineKind::Snowflake | EngineKind::Redis => Err(AppError::new(
             ErrorCode::Unsupported,

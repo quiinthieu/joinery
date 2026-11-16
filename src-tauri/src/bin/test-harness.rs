@@ -346,12 +346,16 @@ async fn rpc(
                     && profile.ssh.is_none() && profile.environment == Environment::Local
                     && profile.safe_mode == SafeMode::ReadOnly
                     && !profile.remember_password;
+                let sqlite_memory = profile.engine == EngineKind::Sqlite
+                    && profile.database.trim() == ":memory:"
+                    && profile.ssh.is_none()
+                    && profile.environment == Environment::Local;
                 #[cfg(unix)]
                 let synthetic_console = state.synthetic_snowflake.is_some()
                     && matches_synthetic_console_profile(&profile);
                 #[cfg(not(unix))]
                 let synthetic_console = false;
-                if !offline_snowflake && !synthetic_console && (profile.host != "127.0.0.1"
+                if !offline_snowflake && !sqlite_memory && !synthetic_console && (profile.host != "127.0.0.1"
                     || !allowed_fixture
                     || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
                     || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))

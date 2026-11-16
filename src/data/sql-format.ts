@@ -2,7 +2,7 @@ import type { EditorState, Text } from "@codemirror/state";
 import { format } from "sql-formatter";
 import type { EngineKind, SqlFormatSettings, SqlFormatStyle } from "../ipc/generated";
 
-export type SqlFormatterDialect = "postgresql" | "mysql" | "snowflake";
+export type SqlFormatterDialect = "postgresql" | "mysql" | "sqlite" | "snowflake";
 export type SqlFormatScope = "global" | "postgres" | "mysql" | "snowflake";
 
 export const DEFAULT_SQL_FORMAT_SETTINGS: SqlFormatSettings = {
@@ -41,6 +41,8 @@ export function sqlFormatterLanguage(engine: EngineKind): SqlFormatterDialect | 
       return "postgresql";
     case "mysql":
       return "mysql";
+    case "sqlite":
+      return "sqlite";
     case "snowflake":
       return "snowflake";
     case "redis":
@@ -53,7 +55,10 @@ export function formatSqlText(
   language: SqlFormatterDialect,
   settings: SqlFormatSettings = DEFAULT_SQL_FORMAT_SETTINGS,
 ): string {
-  const style = sqlFormatStyle(settings, language === "postgresql" ? "postgres" : language);
+  const style = sqlFormatStyle(
+    settings,
+    language === "postgresql" ? "postgres" : language === "sqlite" ? "global" : language,
+  );
   return format(sql, {
     language,
     keywordCase: style.keywordCase,

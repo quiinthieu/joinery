@@ -170,7 +170,9 @@ pub struct SchemaDiffReport {
 pub fn quote_engine_identifier(engine: EngineKind, name: &str) -> String {
     match engine {
         EngineKind::Mysql => format!("`{}`", name.replace('`', "``")),
-        EngineKind::Postgres | EngineKind::Snowflake | EngineKind::Redis => quote_identifier(name),
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Snowflake | EngineKind::Redis => {
+            quote_identifier(name)
+        }
     }
 }
 
@@ -264,6 +266,7 @@ impl SchemaSnapshot {
         let engine = match self.engine {
             EngineKind::Postgres => "PostgreSQL",
             EngineKind::Mysql => "MySQL",
+            EngineKind::Sqlite => "SQLite",
             EngineKind::Snowflake => "Snowflake",
             EngineKind::Redis => "Redis",
         };

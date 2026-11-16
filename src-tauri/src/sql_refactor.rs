@@ -49,6 +49,7 @@ pub fn find_sql_usages(request: &SqlFindUsagesRequest) -> AppResult<SqlFindUsage
         .filter(|s| !s.is_empty())
         .or(match request.engine {
             EngineKind::Postgres => Some("public"),
+            EngineKind::Sqlite => Some("main"),
             _ => None,
         });
     let active_database = request
@@ -125,6 +126,7 @@ fn dialect_for_engine(engine: EngineKind) -> Box<dyn Dialect> {
     match engine {
         EngineKind::Postgres => Box::new(PostgreSqlDialect {}),
         EngineKind::Mysql => Box::new(MySqlDialect {}),
+        EngineKind::Sqlite => Box::new(sqlparser::dialect::SQLiteDialect {}),
         EngineKind::Snowflake => Box::new(SnowflakeDialect {}),
         EngineKind::Redis => Box::new(PostgreSqlDialect {}),
     }
@@ -149,12 +151,12 @@ fn statement_role(stmt: &Statement) -> &'static str {
 fn normalize_ident(engine: EngineKind, ident: &Ident) -> String {
     if ident.quote_style.is_some() {
         return match engine {
-            EngineKind::Mysql => ident.value.to_ascii_lowercase(),
+            EngineKind::Mysql | EngineKind::Sqlite => ident.value.to_ascii_lowercase(),
             EngineKind::Postgres | EngineKind::Snowflake | EngineKind::Redis => ident.value.clone(),
         };
     }
     match engine {
-        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Redis => {
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite | EngineKind::Redis => {
             ident.value.to_ascii_lowercase()
         }
         EngineKind::Snowflake => ident.value.to_ascii_uppercase(),
@@ -163,7 +165,7 @@ fn normalize_ident(engine: EngineKind, ident: &Ident) -> String {
 
 fn normalize_catalog_name(engine: EngineKind, raw: &str) -> String {
     match engine {
-        EngineKind::Mysql => raw.to_ascii_lowercase(),
+        EngineKind::Mysql | EngineKind::Sqlite => raw.to_ascii_lowercase(),
         EngineKind::Postgres | EngineKind::Snowflake | EngineKind::Redis => raw.to_owned(),
     }
 }
@@ -171,7 +173,9 @@ fn normalize_catalog_name(engine: EngineKind, raw: &str) -> String {
 fn ident_matches_catalog(engine: EngineKind, ident: &Ident, catalog_name: &str) -> bool {
     if ident.quote_style.is_some() {
         return match engine {
-            EngineKind::Mysql => ident.value.eq_ignore_ascii_case(catalog_name),
+            EngineKind::Mysql | EngineKind::Sqlite => {
+                ident.value.eq_ignore_ascii_case(catalog_name)
+            }
             EngineKind::Postgres | EngineKind::Snowflake | EngineKind::Redis => {
                 ident.value == catalog_name
             }
@@ -182,7 +186,7 @@ fn ident_matches_catalog(engine: EngineKind, ident: &Ident, catalog_name: &str) 
             ident.value.to_ascii_lowercase() == catalog_name
         }
         EngineKind::Snowflake => ident.value.to_ascii_uppercase() == catalog_name,
-        EngineKind::Mysql => ident.value.eq_ignore_ascii_case(catalog_name),
+        EngineKind::Mysql | EngineKind::Sqlite => ident.value.eq_ignore_ascii_case(catalog_name),
     }
 }
 

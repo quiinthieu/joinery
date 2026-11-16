@@ -254,6 +254,7 @@ fn prepare_inner(
     let dialect: Box<dyn Dialect> = match profile.engine {
         EngineKind::Postgres => Box::new(PostgreSqlDialect {}),
         EngineKind::Mysql => Box::new(MySqlDialect {}),
+        EngineKind::Sqlite => Box::new(sqlparser::dialect::SQLiteDialect {}),
         EngineKind::Snowflake => Box::new(SnowflakeDialect {}),
         EngineKind::Redis => {
             return Err(AppError::new(
@@ -891,10 +892,12 @@ pub enum ProvenanceResolution {
 fn dialect_for_provenance(engine: EngineKind) -> &'static dyn Dialect {
     static PG: PostgreSqlDialect = PostgreSqlDialect {};
     static MYSQL: MySqlDialect = MySqlDialect {};
+    static SQLITE: sqlparser::dialect::SQLiteDialect = sqlparser::dialect::SQLiteDialect {};
     static SNOWFLAKE: SnowflakeDialect = SnowflakeDialect {};
     match engine {
         EngineKind::Postgres | EngineKind::Redis => &PG,
         EngineKind::Mysql => &MYSQL,
+        EngineKind::Sqlite => &SQLITE,
         EngineKind::Snowflake => &SNOWFLAKE,
     }
 }
@@ -916,7 +919,7 @@ fn ident_matches_target(engine: EngineKind, ident: &Ident, target: &str) -> bool
                 ident.value.eq_ignore_ascii_case(target)
             }
         }
-        EngineKind::Mysql => ident.value.eq_ignore_ascii_case(target),
+        EngineKind::Mysql | EngineKind::Sqlite => ident.value.eq_ignore_ascii_case(target),
         _ => false,
     }
 }
@@ -929,7 +932,7 @@ fn ident_matches_ident(engine: EngineKind, left: &Ident, right: &Ident) -> bool 
             (false, true) => left.value.to_ascii_lowercase() == right.value,
             (false, false) => left.value.eq_ignore_ascii_case(&right.value),
         },
-        EngineKind::Mysql => left.value.eq_ignore_ascii_case(&right.value),
+        EngineKind::Mysql | EngineKind::Sqlite => left.value.eq_ignore_ascii_case(&right.value),
         _ => false,
     }
 }
