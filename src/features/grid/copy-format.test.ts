@@ -179,6 +179,17 @@ describe("copy-format", () => {
       "INSERT INTO `shop`.`order``items` (`order_id`, `amount`, `note`, `active`, `payload`, `digest`)",
     );
     expect(mysql.text).toContain("(1, 2.5, 'O''Reilly\\nC:\\\\temp', FALSE, NULL, X'deadbeef');");
+
+    const sqlite = formatGridCells({
+      columns: sampleColumns,
+      rows: [["1", "2.5", "O'Reilly\\path", "1", null, "0xdeadbeef"]],
+      format: "sqlInsert",
+      engine: "sqlite",
+      table: { schema: "main", name: "items" },
+    });
+    expect(sqlite.ok).toBe(true);
+    if (!sqlite.ok) return;
+    expect(sqlite.text).toContain("(1, 2.5, 'O''Reilly\\path', TRUE, NULL, X'deadbeef');");
   });
 
   it("formats GFM Markdown tables with numeric alignment and escaped pipes/backslashes/newlines", () => {

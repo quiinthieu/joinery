@@ -48,7 +48,9 @@ export function VirtualForeignKeyDialog({
       ? profile.snowflake?.schema || "PUBLIC"
       : profile?.engine === "mysql"
         ? profile.database || ""
-        : "public");
+        : profile?.engine === "sqlite"
+          ? "main"
+          : "public");
   const defaultSourceName = existing?.source.name ?? initialSource?.name ?? "";
   const fallbackTarget = useMemo(() => {
     if (existing) return existing.target;

@@ -282,7 +282,9 @@ export function QueryPlanView({
           <p className="plan-note">
             {parsed.plan.engine === "Snowflake"
               ? "Snowflake logical plan · Assigned partitions and bytes are compile-time upper-bound estimates; runtime pruning can reduce them. Shared operators are expanded once per step with references for additional parents. Logical structure does not imply execution order. No actual rows or timing measurements are available. Warehouse size can affect the plan; compilation may consume Cloud Services credits."
-              : `${parsed.plan.engine} · Costs use engine optimizer units, not milliseconds. Row estimates and actual measurements are shown separately.`}
+              : parsed.plan.engine === "SQLite"
+                ? "SQLite EXPLAIN QUERY PLAN · Shows B-tree table/index access strategy and nested loop hierarchy without optimizer cost units or runtime row timings."
+                : `${parsed.plan.engine} · Costs use engine optimizer units, not milliseconds. Row estimates and actual measurements are shown separately.`}
           </p>
           <PlanTree plan={parsed.plan} />
         </>

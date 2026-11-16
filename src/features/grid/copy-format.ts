@@ -204,7 +204,7 @@ function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind):
     const hexMatch = HEX_BINARY_PATTERN.exec(cell.trim());
     if (hexMatch && hexMatch[1].length % 2 === 0) {
       const hex = hexMatch[1];
-      if (engine === "mysql" || engine === "snowflake") {
+      if (engine === "mysql" || engine === "snowflake" || engine === "sqlite") {
         return `X'${hex}'`;
       }
       return `'\\x${hex}'::bytea`;

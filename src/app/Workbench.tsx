@@ -1102,7 +1102,7 @@ export function Workbench({
               )}
               {!consoleMode &&
                 profile &&
-                ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+                ["postgres", "mysql", "sqlite", "snowflake"].includes(profile.engine) && (
                   <button
                     className="button ghost small"
                     disabled={running || !session || rollbackOnly}

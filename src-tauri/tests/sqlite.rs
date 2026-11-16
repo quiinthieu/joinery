@@ -317,18 +317,276 @@ async fn sqlite_file_and_memory_end_to_end_explorer_grid_edits_transactions_sear
             .sql
             .starts_with("EXPLAIN QUERY PLAN\n")
     );
-
+    let (exp_tx, exp_rx) = mpsc::unbounded_channel();
     studio
+        .execute(
+            &explain_plan.id,
+            None,
+            Arc::new(move |e| exp_tx.send(e).is_ok()),
+        )
+        .unwrap();
+    let exp_events = finish_events(exp_rx).await;
+    let exp_result = exp_events
+        .iter()
+        .find_map(|e| match e {
+            QueryEvent::Result { result } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("expected EXPLAIN QUERY PLAN result");
+    assert_eq!(exp_result.columns.len(), 1);
+    assert_eq!(exp_result.columns[0].name, "QUERY PLAN");
+    let exp_cell = studio
+        .results
+        .row(&exp_result.id, 0)
+        .unwrap()
+        .remove(0)
+        .unwrap();
+    assert!(exp_cell.contains("\"sqliteQueryPlan\""));
+    assert!(exp_cell.contains("idx_orders_status"));
+    studio.release_result(&exp_result.id);
+
+    // Lazy manual transaction mode: stays Idle until first statement, blocks conflicting grid
+    // commits while uncommitted, rolls back cleanly, and switches back to AutoCommit!
+    let manual_state = studio
         .set_transaction_mode(&session.id, TransactionMode::Manual)
         .await
         .unwrap();
-    let _ = exec_sql(&studio, &session.id, "DELETE FROM orders WHERE id = 12;").await;
-    studio.rollback_transaction(&session.id).await.unwrap();
-    studio.commit_transaction(&session.id).await.unwrap();
-    // Switch back to auto-commit after committing clean state: rollback + commit in manual mode
-    // re-opens a fresh deferred transaction, so verify row 12 survived rollback!
+    assert_eq!(manual_state.transaction_state, TransactionState::Idle);
+    let tx_events = exec_sql(&studio, &session.id, "DELETE FROM orders WHERE id = 12;").await;
+    assert!(tx_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::SessionState { state }
+            if state.transaction_state == TransactionState::InTransaction
+    )));
+    // Attempting to switch to AutoCommit while uncommitted is rejected with Conflict
+    let mode_conflict = studio
+        .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+        .await
+        .unwrap_err();
+    assert_eq!(mode_conflict.code, ErrorCode::Conflict);
+
+    // Attempting to apply a grid edit while an editor transaction is uncommitted is rejected rather than merged
+    let pre_tx_page = after_page.clone();
+    let grid_while_open = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(pre_tx_page.result.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: pre_tx_page.result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "status".into(),
+                        value: Some("closed".into()),
+                    }],
+                }],
+                deletes: vec![],
+                inserts: vec![],
+            },
+        )
+        .unwrap();
+    let grid_open_approval = studio
+        .authorize(
+            &grid_while_open.plan.id,
+            None,
+            grid_while_open.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let (gt_tx, gt_rx) = mpsc::unbounded_channel();
+    studio
+        .execute(
+            &grid_while_open.plan.id,
+            Some(&grid_open_approval),
+            Arc::new(move |e| gt_tx.send(e).is_ok()),
+        )
+        .unwrap();
+    let grid_open_events = finish_events(gt_rx).await;
+    assert!(grid_open_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict
+    )));
+    assert!(grid_open_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::Finished {
+            status: RunStatus::Failed,
+            ..
+        }
+    )));
+
+    let rolled_back_state = studio.rollback_transaction(&session.id).await.unwrap();
+    assert_eq!(rolled_back_state.transaction_state, TransactionState::Idle);
+    studio
+        .set_transaction_mode(&session.id, TransactionMode::AutoCommit)
+        .await
+        .unwrap();
     let survived = studio.browse(&session.id, &orders_ref, None).await.unwrap();
     assert_eq!(survived.result.retained_rows, 3);
+
+    // Whole-row conflict check across non-PK + non-UTF8 BLOB columns, WITHOUT ROWID composite-PK paging,
+    // and case-sensitive Contains/StartsWith search past lowercase decoys!
+    {
+        let ext = rusqlite::Connection::open(&sqlite_file).unwrap();
+        ext.execute_batch(
+            "CREATE TABLE kv_without_rowid (
+               tenant TEXT NOT NULL,
+               seq INTEGER NOT NULL,
+               token TEXT NOT NULL,
+               payload BLOB,
+               PRIMARY KEY (tenant, seq)
+             ) WITHOUT ROWID;",
+        )
+        .unwrap();
+        let mut ins = ext
+            .prepare("INSERT INTO kv_without_rowid (tenant, seq, token, payload) VALUES (?1, ?2, ?3, ?4)")
+            .unwrap();
+        for i in 1..=205 {
+            let tok = if i <= 20 {
+                format!("ada_lower_{i}")
+            } else if i == 21 {
+                "Ada_ExactCase_21".to_owned()
+            } else {
+                format!("tok_{i}")
+            };
+            let blob: Option<Vec<u8>> = if i == 1 {
+                Some(vec![0xff, 0x00, 0xfe, 0x42])
+            } else {
+                None
+            };
+            ins.execute(rusqlite::params!["org", i, tok, blob]).unwrap();
+        }
+    }
+    let kv_ref = TableRef {
+        schema: "main".into(),
+        name: "kv_without_rowid".into(),
+    };
+    let kv_p1 = studio.browse(&session.id, &kv_ref, None).await.unwrap();
+    assert_eq!(kv_p1.result.retained_rows, 200);
+    assert!(kv_p1.has_more);
+    assert_eq!(
+        studio.results.row(&kv_p1.result.id, 0).unwrap()[3].as_deref(),
+        Some("0xff00fe42")
+    );
+    let kv_p2 = studio
+        .browse(&session.id, &kv_ref, kv_p1.next_key.clone())
+        .await
+        .unwrap();
+    assert_eq!(kv_p2.result.retained_rows, 5);
+    assert!(!kv_p2.has_more);
+
+    // Case-sensitive Contains search skips the 20 `ada_lower_*` rows and finds `Ada_ExactCase_21`!
+    let cs_search = studio
+        .search_database_data(DataSearchRequest {
+            session_id: session.id.clone(),
+            query: "Ada_".into(),
+            schemas: vec!["main".into()],
+            tables: vec![kv_ref.clone()],
+            match_mode: DataSearchMatchMode::Contains,
+            case_sensitive: true,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cs_search.total_row_hits, 1);
+    assert_eq!(cs_search.matches[0].rows[0].matched_columns, vec!["token"]);
+    assert_eq!(cs_search.matches[0].rows[0].row[1].as_deref(), Some("21"));
+
+    // Update row 0 of kv_without_rowid (verifying non-UTF8 BLOB `0xff00fe42` matches cleanly in conflict check!)
+    let kv_ok_edit = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(kv_p1.result.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: kv_p1.result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: "token".into(),
+                        value: Some("updated_with_blob_guard".into()),
+                    }],
+                }],
+                deletes: vec![],
+                inserts: vec![],
+            },
+        )
+        .unwrap();
+    let kv_ok_app = studio
+        .authorize(
+            &kv_ok_edit.plan.id,
+            None,
+            kv_ok_edit.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let (kv_tx, kv_rx) = mpsc::unbounded_channel();
+    studio
+        .execute(
+            &kv_ok_edit.plan.id,
+            Some(&kv_ok_app),
+            Arc::new(move |e| kv_tx.send(e).is_ok()),
+        )
+        .unwrap();
+    let kv_ok_events = finish_events(kv_rx).await;
+    assert!(kv_ok_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::Finished {
+            status: RunStatus::Completed,
+            ..
+        }
+    )));
+
+    // External modification of non-PK `payload` BLOB on row 1 causes stale conflict rejection!
+    {
+        let ext = rusqlite::Connection::open(&sqlite_file).unwrap();
+        ext.execute(
+            "UPDATE kv_without_rowid SET payload = X'CAFE' WHERE tenant = 'org' AND seq = 2",
+            [],
+        )
+        .unwrap();
+    }
+    let kv_stale_edit = studio
+        .prepare_table_changes(
+            &session.id,
+            TableChanges {
+                result_id: Some(kv_p1.result.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: kv_p1.result.id.clone(),
+                    changes: vec![CellChange {
+                        row: 1,
+                        column: "token".into(),
+                        value: Some("should_conflict".into()),
+                    }],
+                }],
+                deletes: vec![],
+                inserts: vec![],
+            },
+        )
+        .unwrap();
+    let kv_stale_app = studio
+        .authorize(
+            &kv_stale_edit.plan.id,
+            None,
+            kv_stale_edit.plan.confirmation_text.as_deref(),
+        )
+        .unwrap();
+    let (st_tx, st_rx) = mpsc::unbounded_channel();
+    studio
+        .execute(
+            &kv_stale_edit.plan.id,
+            Some(&kv_stale_app),
+            Arc::new(move |e| st_tx.send(e).is_ok()),
+        )
+        .unwrap();
+    let kv_stale_events = finish_events(st_rx).await;
+    assert!(kv_stale_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::Error { error, .. } if error.code == ErrorCode::Conflict
+    )));
+    assert!(kv_stale_events.iter().any(|e| matches!(
+        e,
+        QueryEvent::Finished {
+            status: RunStatus::Failed,
+            ..
+        }
+    )));
 
     // 5. Workspace SQL usages on SQLite dialect
     let usages = studio

@@ -4,8 +4,9 @@
 //! `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` enforcement in `SafeMode::ReadOnly`.
 
 use crate::data_search::{
-    MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS, build_table_match, escape_like_pattern,
-    filter_candidate_tables, validate_search_request,
+    MAX_SEARCH_REPORT_BYTES, MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS,
+    build_table_match, escape_like_pattern, estimate_table_match_bytes, filter_candidate_tables,
+    validate_search_request,
 };
 use crate::domain::*;
 use crate::drivers::{
@@ -101,11 +102,28 @@ fn format_value_ref(val: ValueRef<'_>, col_kind: ColumnKind) -> Option<String> {
     }
 }
 
+fn decode_hex_blob(raw: &str) -> Option<Vec<u8>> {
+    let trimmed = raw.trim();
+    let hex_str = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .or_else(|| trimmed.strip_prefix("\\x"))
+        .or_else(|| trimmed.strip_prefix("\\X"))?;
+    if hex_str.len().is_multiple_of(2) && hex_str.bytes().all(|b| b.is_ascii_hexdigit()) {
+        hex::decode(hex_str).ok()
+    } else {
+        None
+    }
+}
+
 fn parse_sqlite_param(raw: &Option<String>, col_kind: ColumnKind) -> SqliteValue {
     let Some(text) = raw.as_deref() else {
         return SqliteValue::Null;
     };
     match col_kind {
+        ColumnKind::Binary => decode_hex_blob(text)
+            .map(SqliteValue::Blob)
+            .unwrap_or_else(|| SqliteValue::Blob(text.as_bytes().to_vec())),
         ColumnKind::Boolean => {
             let lower = text.trim().to_ascii_lowercase();
             match lower.as_str() {
@@ -119,15 +137,90 @@ fn parse_sqlite_param(raw: &Option<String>, col_kind: ColumnKind) -> SqliteValue
             .parse::<i64>()
             .map(SqliteValue::Integer)
             .unwrap_or_else(|_| SqliteValue::Text(text.to_owned())),
-        ColumnKind::Decimal => text
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|f| f.is_finite())
-            .map(SqliteValue::Real)
-            .unwrap_or_else(|| SqliteValue::Text(text.to_owned())),
+        ColumnKind::Decimal => {
+            let trimmed = text.trim();
+            if let Ok(int_val) = trimmed.parse::<i64>() {
+                return SqliteValue::Integer(int_val);
+            }
+            let sig_digits = trimmed.bytes().filter(u8::is_ascii_digit).count();
+            if sig_digits <= 15
+                && let Ok(f) = trimmed.parse::<f64>()
+                && f.is_finite()
+                && f.to_string() == trimmed
+            {
+                return SqliteValue::Real(f);
+            }
+            SqliteValue::Text(text.to_owned())
+        }
         _ => SqliteValue::Text(text.to_owned()),
     }
+}
+
+fn run_blocking_in_place<T, F: FnOnce() -> T>(f: F) -> T {
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
+fn leading_sql_keyword(sql: &str) -> String {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes.get(i..i + 2) == Some(b"--") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes.get(i..i + 2) == Some(b"/*") {
+            i += 2;
+            while i + 1 < bytes.len() && &bytes[i..i + 2] != b"*/" {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+            continue;
+        }
+        break;
+    }
+    let start = i;
+    while i < bytes.len() && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+        i += 1;
+    }
+    sql[start..i].to_ascii_uppercase()
+}
+
+fn should_auto_begin_sqlite(sql: &str, kind: StatementKind) -> bool {
+    if kind == StatementKind::Transaction {
+        return false;
+    }
+    !matches!(
+        leading_sql_keyword(sql).as_str(),
+        "" | "BEGIN"
+            | "COMMIT"
+            | "END"
+            | "ROLLBACK"
+            | "SAVEPOINT"
+            | "RELEASE"
+            | "VACUUM"
+            | "PRAGMA"
+            | "ATTACH"
+            | "DETACH"
+            | "EXPLAIN"
+    )
+}
+
+fn is_explain_query_plan_sql(sql: &str) -> bool {
+    let trimmed = sql.trim_start();
+    trimmed
+        .get(..18)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("EXPLAIN QUERY PLAN"))
 }
 
 fn typed_bind_to_sqlite(bind: &TypedBind) -> SqliteValue {
@@ -232,33 +325,31 @@ pub fn mutation_sql(
     mutation: &RowMutation,
 ) -> AppResult<(String, Vec<Option<String>>)> {
     let table_sql = quote_sqlite_table(&schema.table);
-    let pk_where = |original: &TextRow, binds: &mut Vec<Option<String>>| -> AppResult<String> {
-        if schema.primary_key.is_empty() {
-            return Err(AppError::invalid(
-                "SQLite grid edits require a table primary key",
-            ));
-        }
-        let mut parts = Vec::with_capacity(schema.primary_key.len());
-        for pk_name in &schema.primary_key {
-            let idx = schema
-                .columns
-                .iter()
-                .position(|c| &c.name == pk_name)
-                .ok_or_else(|| {
-                    AppError::invalid(format!("Missing primary key column {pk_name}"))
-                })?;
-            let val = original.get(idx).cloned().unwrap_or(None);
-            let col_sql = quote_sqlite_ident(pk_name);
-            match val {
-                Some(v) => {
-                    parts.push(format!("{col_sql} = ?"));
-                    binds.push(Some(v));
-                }
-                None => parts.push(format!("{col_sql} IS NULL")),
+    let full_row_where =
+        |original: &TextRow, binds: &mut Vec<Option<String>>| -> AppResult<String> {
+            if schema.primary_key.is_empty() {
+                return Err(AppError::invalid(
+                    "SQLite grid edits require a table primary key",
+                ));
             }
-        }
-        Ok(parts.join(" AND "))
-    };
+            if original.len() != schema.columns.len() {
+                return Err(AppError::invalid(
+                    "Original SQLite row length does not match table schema",
+                ));
+            }
+            let mut parts = Vec::with_capacity(schema.columns.len());
+            for (col, val) in schema.columns.iter().zip(original.iter()) {
+                let col_sql = quote_sqlite_ident(&col.name);
+                match val {
+                    Some(v) => {
+                        parts.push(format!("{col_sql} IS ?"));
+                        binds.push(Some(v.clone()));
+                    }
+                    None => parts.push(format!("{col_sql} IS NULL")),
+                }
+            }
+            Ok(parts.join(" AND "))
+        };
 
     match mutation {
         RowMutation::Update { original, changes } => {
@@ -281,7 +372,7 @@ pub fn mutation_sql(
                     None => sets.push(format!("{col_sql} = NULL")),
                 }
             }
-            let where_sql = pk_where(original, &mut binds)?;
+            let where_sql = full_row_where(original, &mut binds)?;
             Ok((
                 format!(
                     "UPDATE {table_sql} SET {} WHERE {where_sql};",
@@ -292,7 +383,7 @@ pub fn mutation_sql(
         }
         RowMutation::Delete { original } => {
             let mut binds = Vec::new();
-            let where_sql = pk_where(original, &mut binds)?;
+            let where_sql = full_row_where(original, &mut binds)?;
             Ok((format!("DELETE FROM {table_sql} WHERE {where_sql};"), binds))
         }
         RowMutation::Insert { values } => {
@@ -460,7 +551,7 @@ impl Sqlite {
                     object_explorer: true,
                     schema_diagram: true,
                     schema_diff: true,
-                    ddl_editing: !read_only,
+                    ddl_editing: false,
                     snowflake_reviewed_ddl: false,
                     snowflake_grid_editing: false,
                     lock_inspection: false,
@@ -738,6 +829,45 @@ impl Sqlite {
         }
 
         let col_names: Vec<String> = stmt.column_names().into_iter().map(str::to_owned).collect();
+        if is_explain_query_plan_sql(sql)
+            && col_count == 4
+            && col_names
+                .iter()
+                .map(|s| s.to_ascii_lowercase())
+                .eq(["id", "parent", "notused", "detail"])
+        {
+            let mut rows_iter = stmt
+                .query(rusqlite::params_from_iter(params.iter()))
+                .map_err(map_sqlite_err)?;
+            let mut steps = Vec::new();
+            while let Some(row) = rows_iter.next().map_err(map_sqlite_err)? {
+                let id: i64 = row.get(0).unwrap_or(0);
+                let parent: i64 = row.get(1).unwrap_or(0);
+                let detail: String = row.get(3).unwrap_or_default();
+                steps.push(serde_json::json!({
+                    "id": id,
+                    "parent": parent,
+                    "detail": detail,
+                }));
+            }
+            let payload = serde_json::json!({ "sqliteQueryPlan": steps }).to_string();
+            sink.describe(vec![ColumnInfo {
+                id: "query_plan".into(),
+                name: "QUERY PLAN".into(),
+                database_type: "JSON".into(),
+                kind: ColumnKind::Json,
+                nullable: false,
+                primary_key: false,
+                foreign_key: false,
+                editable: false,
+                insertable: false,
+                has_default: false,
+            }])?;
+            let _ = sink.rows(vec![vec![Some(payload)]])?;
+            sink.complete(1)?;
+            return Ok(1);
+        }
+
         let columns: Vec<ColumnInfo> = col_names
             .iter()
             .enumerate()
@@ -820,22 +950,42 @@ impl Driver for Sqlite {
     async fn execute(
         &self,
         sql: &str,
-        _kind: StatementKind,
+        kind: StatementKind,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
-        self.with_conn(|conn| Self::execute_sync(conn, &self.closed, sql, &[], sink))
+        run_blocking_in_place(|| {
+            let auto_begin = !self.read_only
+                && *self.tx_mode.lock() == TransactionMode::Manual
+                && should_auto_begin_sqlite(sql, kind);
+            self.with_conn(|conn| {
+                if auto_begin && conn.is_autocommit() {
+                    conn.execute_batch("BEGIN DEFERRED TRANSACTION")
+                        .map_err(map_sqlite_err)?;
+                }
+                Self::execute_sync(conn, &self.closed, sql, &[], sink)
+            })
+        })
     }
 
     async fn execute_bound(
         &self,
-        _sql: &str,
-        _kind: StatementKind,
+        sql: &str,
+        kind: StatementKind,
         bound: &BoundStatement,
         sink: &mut dyn QuerySink,
     ) -> AppResult<u64> {
         let params: Vec<SqliteValue> = bound.binds.iter().map(typed_bind_to_sqlite).collect();
-        self.with_conn(|conn| {
-            Self::execute_sync(conn, &self.closed, &bound.rewritten_sql, &params, sink)
+        run_blocking_in_place(|| {
+            let auto_begin = !self.read_only
+                && *self.tx_mode.lock() == TransactionMode::Manual
+                && should_auto_begin_sqlite(sql, kind);
+            self.with_conn(|conn| {
+                if auto_begin && conn.is_autocommit() {
+                    conn.execute_batch("BEGIN DEFERRED TRANSACTION")
+                        .map_err(map_sqlite_err)?;
+                }
+                Self::execute_sync(conn, &self.closed, &bound.rewritten_sql, &params, sink)
+            })
         })
     }
 
@@ -911,6 +1061,11 @@ impl Driver for Sqlite {
     }
 
     async fn set_transaction_mode(&self, mode: TransactionMode) -> AppResult<()> {
+        if mode == TransactionMode::Unknown {
+            return Err(AppError::invalid(
+                "Unknown is not a requested transaction mode",
+            ));
+        }
         if self.read_only {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
@@ -918,11 +1073,7 @@ impl Driver for Sqlite {
             ));
         }
         self.with_conn(|conn| {
-            let in_tx = !conn.is_autocommit();
-            if mode == TransactionMode::Manual && !in_tx {
-                conn.execute_batch("BEGIN DEFERRED TRANSACTION")
-                    .map_err(map_sqlite_err)?;
-            } else if mode == TransactionMode::AutoCommit && in_tx {
+            if mode == TransactionMode::AutoCommit && !conn.is_autocommit() {
                 return Err(AppError::new(
                     ErrorCode::Conflict,
                     "Commit or roll back the open SQLite transaction before switching to auto-commit",
@@ -935,27 +1086,25 @@ impl Driver for Sqlite {
 
     async fn commit_transaction(&self) -> AppResult<()> {
         self.with_conn(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("COMMIT").map_err(map_sqlite_err)?;
+            if conn.is_autocommit() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "No transaction is currently open",
+                ));
             }
-            if *self.tx_mode.lock() == TransactionMode::Manual {
-                conn.execute_batch("BEGIN DEFERRED TRANSACTION")
-                    .map_err(map_sqlite_err)?;
-            }
-            Ok(())
+            conn.execute_batch("COMMIT").map_err(map_sqlite_err)
         })
     }
 
     async fn rollback_transaction(&self) -> AppResult<()> {
         self.with_conn(|conn| {
-            if !conn.is_autocommit() {
-                conn.execute_batch("ROLLBACK").map_err(map_sqlite_err)?;
+            if conn.is_autocommit() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "No transaction is currently open",
+                ));
             }
-            if *self.tx_mode.lock() == TransactionMode::Manual {
-                conn.execute_batch("BEGIN DEFERRED TRANSACTION")
-                    .map_err(map_sqlite_err)?;
-            }
-            Ok(())
+            conn.execute_batch("ROLLBACK").map_err(map_sqlite_err)
         })
     }
 
@@ -1402,6 +1551,7 @@ impl Driver for Sqlite {
         let mut scanned_tables = 0usize;
         let mut skipped_tables = 0usize;
         let mut total_row_hits = 0usize;
+        let mut report_bytes = 0usize;
         let mut matches = Vec::new();
         let needle = request.query.as_str();
 
@@ -1412,7 +1562,9 @@ impl Driver for Sqlite {
                     "SQLite connection closed during data search",
                 ));
             }
-            if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS {
+            if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
+                || report_bytes >= MAX_SEARCH_REPORT_BYTES
+            {
                 truncated = true;
                 break;
             }
@@ -1434,10 +1586,15 @@ impl Driver for Sqlite {
             }
             scanned_tables += 1;
 
-            let bind_val = match request.match_mode {
-                DataSearchMatchMode::Contains => format!("%{}%", escape_like_pattern(needle)),
-                DataSearchMatchMode::StartsWith => format!("{}%", escape_like_pattern(needle)),
-                DataSearchMatchMode::Exact => needle.to_owned(),
+            let bind_val = match (request.match_mode, request.case_sensitive) {
+                (DataSearchMatchMode::Exact, _) => needle.to_owned(),
+                (_, true) => needle.to_owned(),
+                (DataSearchMatchMode::Contains, false) => {
+                    format!("%{}%", escape_like_pattern(needle))
+                }
+                (DataSearchMatchMode::StartsWith, false) => {
+                    format!("{}%", escape_like_pattern(needle))
+                }
             };
 
             let preds: Vec<String> = searchable_cols
@@ -1449,7 +1606,13 @@ impl Driver for Sqlite {
                         (DataSearchMatchMode::Exact, false) => {
                             format!("LOWER({col_expr}) = LOWER(?1)")
                         }
-                        (_, _) => format!("LOWER({col_expr}) LIKE LOWER(?1) ESCAPE '!'"),
+                        (DataSearchMatchMode::Contains, true) => {
+                            format!("INSTR({col_expr}, ?1) > 0")
+                        }
+                        (DataSearchMatchMode::StartsWith, true) => {
+                            format!("SUBSTR({col_expr}, 1, LENGTH(?1)) = ?1")
+                        }
+                        (_, false) => format!("LOWER({col_expr}) LIKE LOWER(?1) ESCAPE '!'"),
                     }
                 })
                 .collect();
@@ -1469,19 +1632,21 @@ impl Driver for Sqlite {
                 remaining + 1
             );
 
-            let fetched = self.with_conn(|conn| {
-                let mut stmt = conn.prepare(&sql).map_err(map_sqlite_err)?;
-                let mut rows_iter = stmt.query([&bind_val]).map_err(map_sqlite_err)?;
-                let mut rows = Vec::new();
-                while let Some(row) = rows_iter.next().map_err(map_sqlite_err)? {
-                    let mut cells = Vec::with_capacity(ts.columns.len());
-                    for (ci, col) in ts.columns.iter().enumerate() {
-                        let v = row.get_ref(ci).map_err(map_sqlite_err)?;
-                        cells.push(format_value_ref(v, col.kind));
+            let fetched = run_blocking_in_place(|| {
+                self.with_conn(|conn| {
+                    let mut stmt = conn.prepare(&sql).map_err(map_sqlite_err)?;
+                    let mut rows_iter = stmt.query([&bind_val]).map_err(map_sqlite_err)?;
+                    let mut rows = Vec::new();
+                    while let Some(row) = rows_iter.next().map_err(map_sqlite_err)? {
+                        let mut cells = Vec::with_capacity(ts.columns.len());
+                        for (ci, col) in ts.columns.iter().enumerate() {
+                            let v = row.get_ref(ci).map_err(map_sqlite_err)?;
+                            cells.push(format_value_ref(v, col.kind));
+                        }
+                        rows.push(cells);
                     }
-                    rows.push(cells);
-                }
-                Ok(rows)
+                    Ok(rows)
+                })
             });
 
             let Ok(rows) = fetched else {
@@ -1502,6 +1667,7 @@ impl Driver for Sqlite {
                 if hit.has_more_in_table {
                     truncated = true;
                 }
+                report_bytes = report_bytes.saturating_add(estimate_table_match_bytes(&hit));
                 total_row_hits += hit.rows.len();
                 matches.push(hit);
             }
@@ -1546,35 +1712,37 @@ impl Driver for Sqlite {
             })
             .collect();
         let cols = schema.columns.clone();
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(&sql).map_err(map_sqlite_err)?;
-            let mut rows_iter = stmt
-                .query(rusqlite::params_from_iter(params.iter()))
-                .map_err(map_sqlite_err)?;
-            let mut rows = Vec::with_capacity(PAGE_SIZE + 1);
-            while let Some(row) = rows_iter.next().map_err(map_sqlite_err)? {
-                let mut cells = Vec::with_capacity(cols.len());
-                for (i, col) in cols.iter().enumerate() {
-                    let v = row.get_ref(i).map_err(map_sqlite_err)?;
-                    cells.push(format_value_ref(v, col.kind));
+        run_blocking_in_place(|| {
+            self.with_conn(|conn| {
+                let mut stmt = conn.prepare(&sql).map_err(map_sqlite_err)?;
+                let mut rows_iter = stmt
+                    .query(rusqlite::params_from_iter(params.iter()))
+                    .map_err(map_sqlite_err)?;
+                let mut rows = Vec::with_capacity(PAGE_SIZE + 1);
+                while let Some(row) = rows_iter.next().map_err(map_sqlite_err)? {
+                    let mut cells = Vec::with_capacity(cols.len());
+                    for (i, col) in cols.iter().enumerate() {
+                        let v = row.get_ref(i).map_err(map_sqlite_err)?;
+                        cells.push(format_value_ref(v, col.kind));
+                    }
+                    rows.push(cells);
                 }
-                rows.push(cells);
-            }
-            let has_more = rows.len() > PAGE_SIZE && built.pageable;
-            let truncated = rows.len() > PAGE_SIZE && !built.pageable;
-            if rows.len() > PAGE_SIZE {
-                rows.truncate(PAGE_SIZE);
-            }
-            let next_key = if has_more {
-                rows.last().map(|r| built.cursor(r))
-            } else {
-                None
-            };
-            Ok(BrowseRows {
-                rows,
-                next_key,
-                has_more,
-                truncated,
+                let has_more = rows.len() > PAGE_SIZE && built.pageable;
+                let truncated = rows.len() > PAGE_SIZE && !built.pageable;
+                if rows.len() > PAGE_SIZE {
+                    rows.truncate(PAGE_SIZE);
+                }
+                let next_key = if has_more {
+                    rows.last().map(|r| built.cursor(r))
+                } else {
+                    None
+                };
+                Ok(BrowseRows {
+                    rows,
+                    next_key,
+                    has_more,
+                    truncated,
+                })
             })
         })
     }
@@ -1596,82 +1764,98 @@ impl Driver for Sqlite {
             ));
         }
         let table_sql = quote_sqlite_table(&schema.table);
-        self.with_conn(|conn| {
-            conn.execute_batch("SAVEPOINT joinery_grid_apply")
-                .map_err(map_sqlite_err)?;
-            let outcome: AppResult<()> = (|| {
-                for mutation in rows {
-                    match mutation {
-                        RowMutation::Update { original, changes } => {
-                            let mut set_parts = Vec::with_capacity(changes.len());
-                            let mut params: Vec<SqliteValue> = Vec::new();
-                            for (col_idx, new_val) in changes {
-                                let col = schema
-                                    .columns
-                                    .get(*col_idx)
-                                    .ok_or_else(|| AppError::invalid("Invalid column index"))?;
-                                set_parts.push(format!("{} = ?", quote_sqlite_ident(&col.name)));
-                                params.push(parse_sqlite_param(new_val, col.kind));
-                            }
-                            let mut where_parts = Vec::with_capacity(schema.primary_key.len());
-                            for pk_name in &schema.primary_key {
-                                let idx = schema
-                                    .columns
-                                    .iter()
-                                    .position(|c| &c.name == pk_name)
-                                    .ok_or_else(|| {
-                                        AppError::invalid("Missing primary key column")
-                                    })?;
-                                let col = &schema.columns[idx];
-                                let orig_val = original.get(idx).cloned().unwrap_or(None);
-                                where_parts.push(format!("{} IS ?", quote_sqlite_ident(pk_name)));
-                                params.push(parse_sqlite_param(&orig_val, col.kind));
-                            }
-                            let sql = format!(
-                                "UPDATE {table_sql} SET {} WHERE {}",
-                                set_parts.join(", "),
-                                where_parts.join(" AND ")
-                            );
-                            let affected = conn
-                                .execute(&sql, rusqlite::params_from_iter(params.iter()))
-                                .map_err(map_sqlite_err)?;
-                            if affected != 1 {
-                                return Err(AppError::new(
-                                    ErrorCode::Conflict,
-                                    "Row changed or disappeared before SQLite grid edit could be applied",
+        let build_row_conflict_where =
+            |original: &TextRow, params: &mut Vec<SqliteValue>| -> AppResult<String> {
+                if original.len() != schema.columns.len() {
+                    return Err(AppError::invalid(
+                        "Original SQLite row length does not match table schema",
+                    ));
+                }
+                let mut where_parts = Vec::with_capacity(schema.columns.len());
+                for (col, orig_val) in schema.columns.iter().zip(original.iter()) {
+                    let col_sql = quote_sqlite_ident(&col.name);
+                    match orig_val.as_deref() {
+                        None => where_parts.push(format!("{col_sql} IS NULL")),
+                        Some(v) if col.kind == ColumnKind::Boolean => {
+                            let lower = v.trim().to_ascii_lowercase();
+                            if matches!(lower.as_str(), "true" | "t" | "1" | "yes") {
+                                where_parts.push(format!(
+                                    "({col_sql} IS 1 OR LOWER(CAST({col_sql} AS TEXT)) = 'true')"
                                 ));
+                            } else if matches!(lower.as_str(), "false" | "f" | "0" | "no") {
+                                where_parts.push(format!(
+                                    "({col_sql} IS 0 OR LOWER(CAST({col_sql} AS TEXT)) = 'false')"
+                                ));
+                            } else {
+                                where_parts.push(format!("{col_sql} IS ?"));
+                                params.push(SqliteValue::Text(v.to_owned()));
                             }
                         }
-                        RowMutation::Delete { original } => {
-                            let mut where_parts = Vec::with_capacity(schema.primary_key.len());
-                            let mut params: Vec<SqliteValue> = Vec::new();
-                            for pk_name in &schema.primary_key {
-                                let idx = schema
-                                    .columns
-                                    .iter()
-                                    .position(|c| &c.name == pk_name)
-                                    .ok_or_else(|| {
-                                        AppError::invalid("Missing primary key column")
-                                    })?;
-                                let col = &schema.columns[idx];
-                                let orig_val = original.get(idx).cloned().unwrap_or(None);
-                                where_parts.push(format!("{} IS ?", quote_sqlite_ident(pk_name)));
-                                params.push(parse_sqlite_param(&orig_val, col.kind));
-                            }
-                            let sql = format!(
-                                "DELETE FROM {table_sql} WHERE {}",
-                                where_parts.join(" AND ")
-                            );
-                            let affected = conn
-                                .execute(&sql, rusqlite::params_from_iter(params.iter()))
-                                .map_err(map_sqlite_err)?;
-                            if affected != 1 {
-                                return Err(AppError::new(
-                                    ErrorCode::Conflict,
-                                    "Row changed or disappeared before SQLite row delete could be applied",
-                                ));
-                            }
+                        Some(_) => {
+                            where_parts.push(format!("{col_sql} IS ?"));
+                            params.push(parse_sqlite_param(orig_val, col.kind));
                         }
+                    }
+                }
+                Ok(where_parts.join(" AND "))
+            };
+
+        run_blocking_in_place(|| {
+            self.with_conn(|conn| {
+                if !conn.is_autocommit() {
+                    return Err(AppError::new(
+                        ErrorCode::Conflict,
+                        "Commit or roll back the open SQLite editor transaction before applying table grid edits",
+                    ));
+                }
+                conn.execute_batch("SAVEPOINT joinery_grid_apply")
+                    .map_err(map_sqlite_err)?;
+                let outcome: AppResult<()> = (|| {
+                    for mutation in rows {
+                        match mutation {
+                            RowMutation::Update { original, changes } => {
+                                let mut set_parts = Vec::with_capacity(changes.len());
+                                let mut params: Vec<SqliteValue> = Vec::new();
+                                for (col_idx, new_val) in changes {
+                                    let col = schema
+                                        .columns
+                                        .get(*col_idx)
+                                        .ok_or_else(|| AppError::invalid("Invalid column index"))?;
+                                    set_parts
+                                        .push(format!("{} = ?", quote_sqlite_ident(&col.name)));
+                                    params.push(parse_sqlite_param(new_val, col.kind));
+                                }
+                                let where_clause =
+                                    build_row_conflict_where(original, &mut params)?;
+                                let sql = format!(
+                                    "UPDATE {table_sql} SET {} WHERE {where_clause}",
+                                    set_parts.join(", ")
+                                );
+                                let affected = conn
+                                    .execute(&sql, rusqlite::params_from_iter(params.iter()))
+                                    .map_err(map_sqlite_err)?;
+                                if affected != 1 {
+                                    return Err(AppError::new(
+                                        ErrorCode::Conflict,
+                                        "Row changed or disappeared before SQLite grid edit could be applied",
+                                    ));
+                                }
+                            }
+                            RowMutation::Delete { original } => {
+                                let mut params: Vec<SqliteValue> = Vec::new();
+                                let where_clause =
+                                    build_row_conflict_where(original, &mut params)?;
+                                let sql = format!("DELETE FROM {table_sql} WHERE {where_clause}");
+                                let affected = conn
+                                    .execute(&sql, rusqlite::params_from_iter(params.iter()))
+                                    .map_err(map_sqlite_err)?;
+                                if affected != 1 {
+                                    return Err(AppError::new(
+                                        ErrorCode::Conflict,
+                                        "Row changed or disappeared before SQLite row delete could be applied",
+                                    ));
+                                }
+                            }
                         RowMutation::Insert { values } => {
                             if values.is_empty() {
                                 let sql = format!("INSERT INTO {table_sql} DEFAULT VALUES");
@@ -1716,6 +1900,7 @@ impl Driver for Sqlite {
                     Err(err)
                 }
             }
+            })
         })
     }
 
