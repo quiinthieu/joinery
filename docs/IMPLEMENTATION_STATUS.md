@@ -22,69 +22,84 @@ surfaces across PostgreSQL, MySQL/MariaDB, and Snowflake SDK sessions:
   Added `virtual_relationship: bool` across `ForeignKey`, `InboundForeignKey`,
   and `DiagramForeignKey`, plus bounded `'virtual-foreign-keys'` SQLite
   persistence (`MAX_VIRTUAL_FOREIGN_KEYS = 256`, composite column pairing,
-  cascade purge on `delete_profile`, and backup/recovery validation in
+  cascade purge on `delete_profile`, pre-allocation byte bounds in
+  `persistence/recovery_stream.rs`, clean-workspace verification in
+  `snowflake_table_qualification_profile.rs`, and backup/recovery validation in
   `persistence/library.rs` and `persistence/recovery.rs`). Merged virtual FKs
-  into `Studio::schema_for_session`, `Studio::editor_schema` (enabling live SQL
-  `JOIN` completion & hover across PostgreSQL, MySQL/MariaDB, and Snowflake
-  without extra `completion_catalog` database round-trips),
-  `Studio::referencing_foreign_keys`, and `Studio::schema_diagram` (`execution.rs`),
-  with dashed `virtual` ER edges in `DiagramView.tsx`, `VirtualForeignKeyDialog.tsx`,
-  `LibraryModal.tsx` (`Relationships` tab), `StructureView`, and Snowflake
-  `RelationBrowser` outbound/inbound navigation.
+  into `Studio::schema` and `Studio::browse_with_approval` display columns (while
+  preserving pure physical `Studio::schema_for_session` provenance for
+  PostgreSQL/MySQL `browse_target` and `apply_target` edit-identity checks),
+  `Studio::editor_schema` (enabling live SQL `JOIN` completion & hover across
+  PostgreSQL, MySQL/MariaDB, and Snowflake without extra `completion_catalog`
+  database round-trips), `Studio::referencing_foreign_keys`, and
+  `Studio::schema_diagram` (`execution.rs`), with live open-tab reconciliation in
+  `studio.ts`, dashed `virtual` ER edges in `DiagramView.tsx`,
+  `VirtualForeignKeyDialog.tsx`, `LibraryModal.tsx` (`Relationships` tab),
+  `StructureView`, and Snowflake `RelationBrowser` outbound/inbound navigation.
 - **Cross-Source Workspace SQL & Bounded Full-Text Data Search (`8ec0477`, `ac7953d`)**:
   Added `workspace_sql.rs`, a sandboxed read-only in-memory SQLite engine
-  (`PRAGMA temp_store=MEMORY`, `PRAGMA query_only=ON`, strict `conn.authorizer`
+  (`PRAGMA temp_store=MEMORY`, `PRAGMA query_only=ON`, `SQLITE_LIMIT_LENGTH = 4 MiB`,
+  `NONE`-affinity lossless numeric preservation for >53-bit and >63-bit Snowflake
+  `NUMBER(38, s)` / PostgreSQL `NUMERIC` values, strict `conn.authorizer`
   allowing only `SELECT`/`Read`/`Recursive`/safe scalar functions, 15s
   `progress_handler` timeout, single-statement check, `<= 16` alias mounts,
   `<= 100,000` rows / `32 MiB` total, blocking retained-console results) that
   joins and aggregates retained `ResultStore` snapshots across engines and
   publishes results as first-class `ResultInfo` snapshots (`WorkspaceSqlView.tsx`
-  with code-split `DatabaseGrid`). Added `data_search.rs` and `Driver::search_data`
-  across `drivers/postgres.rs`, `drivers/mysql.rs`, and
-  `drivers/snowflake_external.rs` (`DataSearchView.tsx`), performing bounded
-  parameterized substring scans (`<= 50` tables, `<= 64` non-binary columns per
-  table, `10` sample hits per table, `<= 200` total hits / `2 MiB`, `!`-escaped
-  `LIKE`/`ILIKE`/`CONTAINS`/`STARTSWITH` patterns with zero SQL interpolation)
-  with click-through to filtered table/relation views.
+  with code-split `DatabaseGrid` and duplicate-column layout preservation in
+  `table-layout.ts`). Added `data_search.rs` and `Driver::search_data` across
+  `drivers/postgres.rs`, `drivers/mysql.rs`, and `drivers/snowflake_external.rs`
+  (`DataSearchView.tsx`), performing bounded parameterized substring scans
+  (`<= 50` tables, `<= 64` non-binary columns per table, `10` sample hits per
+  table, `<= 200` total hits / `2 MiB`, `!`-escaped `LIKE`/`ILIKE` and type-aware
+  Snowflake `TO_VARCHAR`/`TO_JSON`/`ST_ASEWKT` `CONTAINS`/`STARTSWITH` predicates
+  with zero SQL interpolation) with click-through to filtered table/SQL views.
 - **Privacy-Safe SQL Local History with Diff & Restore (`d8bbba8`)**:
   Added `persistence/local_history.rs` (`'local-history'`, `<= 200` global
   snapshots, `<= 30` per `tab_key`, `<= 128 KiB` per entry, `<= 2 MiB` total),
-  strictly gated on connection privacy (`store_query_text` and `store_drafts`),
-  deduplicating consecutive identical SQL per `tab_key`, automatically purging
-  when `save_profile` disables `store_query_text`, on `delete_profile`, and on
-  `clear_history`, and validated in `recovery::validate`. Added Myers line-diff
-  comparison (`local-diff.ts`) and `LocalHistoryModal.tsx` (`Restore into editor`
-  and `Open as new tab` without automatic execution).
+  strictly gating `Executed` revisions on `store_query_text`, `Snapshot`/`Saved`
+  revisions on `store_drafts`, blocking reviewed Snowflake console sessions and
+  unconnected automatic `.sql` file saves, deduplicating consecutive identical
+  SQL per `tab_key`, automatically purging matching revisions on `save_profile`
+  privacy opt-outs, `delete_profile`, and `clear_history`, and validating in
+  `recovery::validate` and `recovery_stream::validate`. Added Myers line-diff
+  comparison (`local-diff.ts`) and `LocalHistoryModal.tsx` (`Restore to editor`
+  and `Open in new tab` without automatic execution).
 
 Local verification recorded on `feat/datagrip-2026-3-workflows`:
 
 - Frontend, formatting, contracts & build: `pnpm format:check` clean,
-  `pnpm contracts && tsc -b` clean, `vitest run` **`1,076/1,076` tests passed
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,080/1,080` tests passed
   across `77` test files** (`0` failed), and `pnpm build` (`vite build`) clean
   with `DatabaseGrid` code-split (`0` chunk warnings).
 - Rust static analysis & unit/integration suites: `pnpm check:rust`
   (`cargo fmt --check`, `cargo check`, and strict
   `cargo clippy --all-targets --all-features -- -D warnings` with `0` warnings),
-  `745` non-socket `--lib` unit tests passed (`0` regressions across all new
-  `workspace`, `library`, `execution`, `workspace_sql`, `data_search`, and
-  `local_history` unit tests), `36/36` `execution::snowflake_connection_tests`,
-  `43/43` `tests/snowflake_process.rs`, `32/32` `tests/snowflake_external.rs`,
-  `11/11` `tests/snowflake_profile.rs`, `8/8` `tests/history_lifecycle.rs`,
-  `2/2` `tests/groups.rs`, `2/2` `tests/credential_store.rs`, `2/2`
-  `tests/large_results.rs`, and `1/1` `tests/recovery.rs` passed.
+  `732` non-socket `--lib` unit tests passed (`0` regressions across all new
+  `workspace`, `library`, `execution`, `workspace_sql`, `data_search`,
+  `recovery_stream`, and `local_history` unit tests, including `36/36`
+  `execution::snowflake_connection_tests`), plus `111/111` non-socket
+  integration tests (`43/43` `tests/snowflake_process.rs`, `33/33`
+  `tests/snowflake_external.rs` including real child-process
+  `SnowflakeExternal::search_data` with `OBJECT` `TO_JSON` & `BINARY` exclusion,
+  `11/11` `tests/snowflake_profile.rs`, `9/9`
+  `tests/snowflake_table_qualification_cli.rs` (`--features test-harness`),
+  `8/8` `tests/history_lifecycle.rs`, `2/2` `tests/groups.rs`, `2/2`
+  `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, and `1/1`
+  `tests/recovery.rs`) passed (`843` Rust tests total).
 - Node & Python verification suites: `165/165` non-loopback `snowflake-helper`
   unit tests, `136/136` `pnpm test:snowflake:qualification`, `59/59`
   `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
   `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
   `pnpm test:native:recovery:runner`, `11/11`
-  `pnpm test:native:encrypted-recovery:runner`, `verify-snowflake-package.mjs`
-  (`entryCount: 15111`, `symlinkCount: 5`), and guarded
-  `verify-snowflake-runtime.mjs` (`sdkVersion: "3.4.1"`,
+  `pnpm test:native:encrypted-recovery:runner` (`401` Node/Python cases total),
+  `verify-snowflake-package.mjs` (`entryCount: 15111`, `symlinkCount: 5`), and
+  guarded `verify-snowflake-runtime.mjs` (`sdkVersion: "3.4.1"`,
   `authenticationRequests: 0`, `sqlRequests: 0`) passed.
 - Sandbox-blocked checks (not executed inside the offline socket-restricted
   agent sandbox; require host CI / non-sandboxed execution before shipping):
   `127.0.0.1` loopback TCP listener tests (Playwright E2E `test-harness` browser
-  suite, `47` Rust loopback mock-socket tests, and loopback HTTP/TLS
+  suite, `61` Rust loopback mock-socket `--lib` tests, and loopback HTTP/TLS
   `snowflake-helper` tests), `1` setuid `chmod 0o4755` test
   (`snowflake_runtime::tests::unsafe_modes_and_non_executable_node_are_rejected`),
   Docker `/var/run/docker.sock` disposable PG/MySQL/MariaDB/Redis container
