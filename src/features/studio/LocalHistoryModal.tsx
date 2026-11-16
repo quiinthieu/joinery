@@ -4,7 +4,12 @@ import type { LocalHistoryEntry } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { tabNavigation } from "../../components/ui/tabs";
-import { useStudio, type StudioTab } from "../../state/studio";
+import {
+  isSnowflakeConsoleSession,
+  querySessionForTab,
+  useStudio,
+  type StudioTab,
+} from "../../state/studio";
 import { computeLineDiff } from "./local-diff";
 
 export function localHistoryTabKey(
@@ -35,9 +40,18 @@ export function LocalHistoryModal({ tab, onClose }: { tab: StudioTab | null; onC
   const activeProfile = tab?.connectionId
     ? (state.bootstrap?.profiles.find((p) => p.id === tab.connectionId) ?? null)
     : null;
-  const privacyBlocksSnapshot = Boolean(
+  const tabSession = tab && tab.kind === "query" ? querySessionForTab(tab, state.sessions) : null;
+  const isConsoleSession = Boolean(
+    (tabSession && isSnowflakeConsoleSession(state, tabSession.id)) ||
+    activeProfile?.snowflake?.reviewedConsole,
+  );
+  const privacyBlocksAll = Boolean(
     activeProfile && !activeProfile.storeQueryText && !activeProfile.storeDrafts,
   );
+  const privacyBlocksSnapshot = Boolean(
+    isConsoleSession || (activeProfile && !activeProfile.storeDrafts),
+  );
+  const tabBusy = Boolean(tab && (tab.status === "queued" || tab.status === "running"));
 
   async function reload(targetScope = scope) {
     setLoading(true);
@@ -212,12 +226,21 @@ export function LocalHistoryModal({ tab, onClose }: { tab: StudioTab | null; onC
           />
         </label>
 
-        {privacyBlocksSnapshot && scope === "tab" && (
+        {isConsoleSession && scope === "tab" ? (
+          <div className="diagram-notice" role="status">
+            Reviewed Snowflake console sessions never store SQL text in local history.
+          </div>
+        ) : privacyBlocksAll && scope === "tab" ? (
           <div className="diagram-notice" role="status">
             <strong>{activeProfile?.name}</strong> disables both query-text and draft storage, so
             local SQL revisions are never written to disk for this connection.
           </div>
-        )}
+        ) : privacyBlocksSnapshot && scope === "tab" ? (
+          <div className="diagram-notice" role="status">
+            <strong>{activeProfile?.name}</strong> disables draft storage, so manual snapshots are
+            disabled; executed queries are still recorded while query-text history is enabled.
+          </div>
+        ) : null}
 
         <InlineError message={error} />
 
@@ -340,7 +363,7 @@ export function LocalHistoryModal({ tab, onClose }: { tab: StudioTab | null; onC
                       <button
                         type="button"
                         className="button primary small"
-                        disabled={diff?.identical === true}
+                        disabled={diff?.identical === true || tabBusy || isConsoleSession}
                         onClick={() => {
                           state.updateTab(tab.id, { sql: selected.sql });
                           state.notify(

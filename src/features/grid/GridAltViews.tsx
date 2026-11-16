@@ -21,6 +21,7 @@ interface AltViewProps {
   tab: StudioTab;
   result?: ResultInfo;
   visibleColumns: ColumnInfo[];
+  focusRowRequest?: { seq: number; row: number } | null;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
 }
@@ -134,6 +135,7 @@ export function TransposeGridView({
   tab,
   result,
   visibleColumns,
+  focusRowRequest,
   onSelect,
   onOpenValue,
 }: AltViewProps) {
@@ -185,6 +187,11 @@ export function TransposeGridView({
   useEffect(() => {
     setRowPage(0);
   }, [tab.id, tab.revision, result?.id]);
+
+  useEffect(() => {
+    if (!focusRowRequest) return;
+    setRowPage(Math.max(0, Math.floor(focusRowRequest.row / TRANSPOSE_ROW_PAGE)));
+  }, [focusRowRequest]);
 
   useEffect(() => {
     if (tab.kind === "benchmark") return;
@@ -361,6 +368,7 @@ export function RecordCardView({
   tab,
   result,
   visibleColumns,
+  focusRowRequest,
   onSelect,
   onOpenValue,
 }: AltViewProps) {
@@ -403,6 +411,11 @@ export function RecordCardView({
   useEffect(() => {
     setRowIndex(0);
   }, [tab.id, tab.revision, result?.id]);
+
+  useEffect(() => {
+    if (!focusRowRequest) return;
+    setRowIndex(Math.max(0, focusRowRequest.row));
+  }, [focusRowRequest]);
 
   useEffect(() => {
     if (tab.kind === "benchmark" || totalRows === 0) return;
@@ -503,6 +516,16 @@ export function RecordCardView({
           >
             <ChevronsRight size={14} />
           </button>
+          {tab.kind === "table" && tab.hasMore && clampedRow >= totalRows - 1 && (
+            <button
+              type="button"
+              className="button ghost small"
+              disabled={tab.loadingPage}
+              onClick={() => void useStudio.getState().loadNextPage(tab.id)}
+            >
+              Load more rows
+            </button>
+          )}
         </div>
       </div>
       <div className="alt-grid-scroll record-fields-list">

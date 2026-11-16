@@ -40,7 +40,15 @@ export function VirtualForeignKeyDialog({
   const datalistBaseId = useId();
   const profile = state.bootstrap?.profiles.find((p) => p.id === connectionId) ?? null;
 
-  const defaultSourceSchema = existing?.source.schema ?? initialSource?.schema ?? "public";
+  const defaultSourceSchema =
+    existing?.source.schema ??
+    initialSource?.schema ??
+    knownTables[0]?.schema ??
+    (profile?.engine === "snowflake"
+      ? profile.snowflake?.schema || "PUBLIC"
+      : profile?.engine === "mysql"
+        ? profile.database || ""
+        : "public");
   const defaultSourceName = existing?.source.name ?? initialSource?.name ?? "";
   const fallbackTarget = useMemo(() => {
     if (existing) return existing.target;

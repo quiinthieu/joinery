@@ -25,6 +25,7 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
       (state.bootstrap?.profiles ?? []).filter((p) => {
         const sess = state.sessions[p.id];
         if (!sess || p.engine === "redis") return false;
+        if (p.engine === "snowflake" && !sess.capabilities.relationBrowsing) return false;
         if (isSnowflakeConsoleSession(state, sess.id)) return false;
         return true;
       }),
@@ -120,13 +121,32 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
     }
 
     const escapedLiteral = report.query.replaceAll("'", "''");
-    const colRef = firstMatchedCol ? quoteDouble(firstMatchedCol) : "*";
-    const whereExpr = firstMatchedCol
+    const matchedColInfo = firstMatchedCol
+      ? tableMatch.columns.find((c) => c.name === firstMatchedCol)
+      : undefined;
+    const upperType = (matchedColInfo?.databaseType ?? "").trim().toUpperCase();
+    const colExpr = firstMatchedCol
+      ? upperType.startsWith("OBJECT") || upperType.startsWith("ARRAY")
+        ? `TO_JSON(${quoteDouble(firstMatchedCol)})`
+        : upperType.startsWith("GEOGRAPHY") || upperType.startsWith("GEOMETRY")
+          ? `ST_ASEWKT(${quoteDouble(firstMatchedCol)})`
+          : `TO_VARCHAR(${quoteDouble(firstMatchedCol)})`
+      : null;
+    const whereExpr = colExpr
       ? report.matchMode === "exact"
-        ? `TO_VARCHAR(${colRef}) = '${escapedLiteral}'`
-        : `CONTAINS(LOWER(TO_VARCHAR(${colRef})), LOWER('${escapedLiteral}'))`
+        ? report.caseSensitive
+          ? `${colExpr} = '${escapedLiteral}'`
+          : `LOWER(${colExpr}) = LOWER('${escapedLiteral}')`
+        : report.matchMode === "startsWith"
+          ? report.caseSensitive
+            ? `STARTSWITH(${colExpr}, '${escapedLiteral}')`
+            : `STARTSWITH(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`
+          : report.caseSensitive
+            ? `CONTAINS(${colExpr}, '${escapedLiteral}')`
+            : `CONTAINS(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`
       : "1 = 1";
-    const sql = `SELECT *\nFROM ${quoteDouble(tableMatch.table.schema)}.${quoteDouble(tableMatch.table.name)}\nWHERE ${whereExpr}\nLIMIT 100;`;
+    const dbPrefix = profile?.database ? `${quoteDouble(profile.database)}.` : "";
+    const sql = `SELECT *\nFROM ${dbPrefix}${quoteDouble(tableMatch.table.schema)}.${quoteDouble(tableMatch.table.name)}\nWHERE ${whereExpr}\nLIMIT 100;`;
     state.openQuery(effectiveConnectionId, sql);
   }
 

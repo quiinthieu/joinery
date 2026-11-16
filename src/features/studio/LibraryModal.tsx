@@ -308,8 +308,14 @@ export function LibraryModal({
       .catch((err) => state.notify(messageOf(err)));
   }
 
+  const relationalProfiles = (state.bootstrap?.profiles ?? []).filter((p) => p.engine !== "redis");
   const defaultConnectionId =
-    state.selectedConnectionId ?? state.bootstrap?.profiles[0]?.id ?? null;
+    (state.selectedConnectionId &&
+    relationalProfiles.some((p) => p.id === state.selectedConnectionId)
+      ? state.selectedConnectionId
+      : null) ??
+    relationalProfiles[0]?.id ??
+    null;
 
   return (
     <Modal
@@ -523,7 +529,31 @@ export function LibraryModal({
         <VirtualForeignKeyDialog
           connectionId={editingVfk.connectionId}
           existing={editingVfk.existing}
-          knownTables={(state.catalog[editingVfk.connectionId] ?? []).map((t) => t.table)}
+          knownTables={(() => {
+            const seen = new Set<string>();
+            const out: { schema: string; name: string }[] = [];
+            for (const t of state.catalog[editingVfk.connectionId] ?? []) {
+              const key = `${t.table.schema}.${t.table.name}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                out.push(t.table);
+              }
+            }
+            for (const o of state.objects[editingVfk.connectionId] ?? []) {
+              if (
+                o.object.kind === "table" ||
+                o.object.kind === "view" ||
+                o.object.kind === "materializedView"
+              ) {
+                const key = `${o.object.schema}.${o.object.name}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  out.push({ schema: o.object.schema, name: o.object.name });
+                }
+              }
+            }
+            return out;
+          })()}
           onClose={() => setEditingVfk(null)}
         />
       )}

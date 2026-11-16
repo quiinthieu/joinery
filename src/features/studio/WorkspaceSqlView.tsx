@@ -131,6 +131,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
 
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>({});
   const [aliases, setAliases] = useState<Record<string, string>>({});
+  const [hasEditedSql, setHasEditedSql] = useState(() => Boolean(tab.sql));
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastMeta, setLastMeta] = useState<{ elapsedMs: number; mountedRows: number } | null>(null);
@@ -173,7 +174,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
     return `SELECT a.*, b.*\nFROM ${left.alias} a\nJOIN ${right.alias} b ON a."${leftCol.replaceAll('"', '""')}" = b."${rightMatch.replaceAll('"', '""')}"\nLIMIT 100;`;
   }, [activeMounts]);
 
-  const sqlText = tab.sql || defaultSql;
+  const sqlText = hasEditedSql || Boolean(tab.sql) ? tab.sql : defaultSql;
   const activeResult: ResultInfo | undefined = tab.results[0];
   const resolvedLayout = useMemo(
     () =>
@@ -232,7 +233,10 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
               type="button"
               className="button ghost"
               disabled={running}
-              onClick={() => state.updateTab(tab.id, { sql: defaultSql })}
+              onClick={() => {
+                setHasEditedSql(true);
+                state.updateTab(tab.id, { sql: defaultSql });
+              }}
             >
               <Sparkles size={14} />
               JOIN template
@@ -357,7 +361,10 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
             style={{ minHeight: 145, resize: "vertical" }}
             value={sqlText}
             spellCheck={false}
-            onChange={(e) => state.updateTab(tab.id, { sql: e.target.value })}
+            onChange={(e) => {
+              setHasEditedSql(true);
+              state.updateTab(tab.id, { sql: e.target.value });
+            }}
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
                 e.preventDefault();
@@ -383,6 +390,11 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                   <Layers size={12} />
                   Workspace result
                   <span>{activeResult.retainedRows.toLocaleString()}</span>
+                  {activeResult.status === "truncated" && (
+                    <span className="query-error-badge" style={{ marginLeft: 4 }}>
+                      Truncated
+                    </span>
+                  )}
                 </button>
               </div>
               <div className="table-view-actions">

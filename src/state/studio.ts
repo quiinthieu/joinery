@@ -179,6 +179,8 @@ export interface StudioTab {
   resultLayouts?: Record<string, SavedTableLayout>;
   /** Originating query tab identifier for a detached result tab. */
   originTabId?: string | null;
+  /** Originating tab kind (`query` or `workspaceSql`) for a detached result tab. */
+  originKind?: "query" | "workspaceSql" | null;
   /** Originating SQL text captured when a query result was detached into its own tab. */
   originSql?: string | null;
 }
@@ -805,8 +807,106 @@ function retireAfterBrowseFailure(sessionId: string, error: AppError) {
   if (error.code === "connectionClosed" || error.code === "outcomeUnknown")
     useStudio.getState().retireSession(sessionId);
 }
+function samePhysicalColumnShape(
+  expected: TableSchema["columns"],
+  actual: ResultInfo["columns"],
+): boolean {
+  if (expected.length !== actual.length) return false;
+  return actual.every((col, idx) => {
+    const { foreignKey: _actualFk, ...actualRest } = col;
+    const { foreignKey: _expectedFk, ...expectedRest } = expected[idx]!;
+    return JSON.stringify(actualRest) === JSON.stringify(expectedRest);
+  });
+}
+
+function isResultReferencedByOtherTabs(
+  tabs: readonly StudioTab[],
+  excludingTabIds: ReadonlySet<string>,
+  resultId: string,
+): boolean {
+  for (const t of tabs) {
+    if (excludingTabIds.has(t.id)) continue;
+    if (t.results.some((r) => r.id === resultId)) return true;
+    if (t.pages.some((p) => p.result.id === resultId)) return true;
+  }
+  return false;
+}
+
+export function reconcileTableSchemaVirtualFks(
+  schema: TableSchema,
+  vfks: readonly VirtualForeignKey[],
+  connectionId: string,
+): TableSchema {
+  const colNames = new Set(schema.columns.map((c) => c.name));
+  const foreignKeys = schema.foreignKeys.filter((fk) => !fk.virtualRelationship);
+  const inboundForeignKeys = (schema.inboundForeignKeys ?? []).filter(
+    (ifk) => !ifk.virtualRelationship,
+  );
+  for (const vfk of vfks) {
+    if (vfk.connectionId !== connectionId) continue;
+    if (
+      vfk.source.schema === schema.table.schema &&
+      vfk.source.name === schema.table.name &&
+      vfk.columns.every((c) => colNames.has(c))
+    ) {
+      const dup = foreignKeys.some(
+        (fk) =>
+          fk.target.schema === vfk.target.schema &&
+          fk.target.name === vfk.target.name &&
+          fk.columns.length === vfk.columns.length &&
+          fk.columns.every((c, i) => c === vfk.columns[i]) &&
+          fk.targetColumns.length === vfk.targetColumns.length &&
+          fk.targetColumns.every((c, i) => c === vfk.targetColumns[i]),
+      );
+      if (!dup) {
+        foreignKeys.push({
+          name: vfk.name,
+          columns: [...vfk.columns],
+          target: vfk.target,
+          targetColumns: [...vfk.targetColumns],
+          virtualRelationship: true,
+        });
+      }
+    }
+    if (
+      vfk.target.schema === schema.table.schema &&
+      vfk.target.name === schema.table.name &&
+      vfk.targetColumns.every((c) => colNames.has(c))
+    ) {
+      const dup = inboundForeignKeys.some(
+        (ifk) =>
+          ifk.source.schema === vfk.source.schema &&
+          ifk.source.name === vfk.source.name &&
+          ifk.columns.length === vfk.columns.length &&
+          ifk.columns.every((c, i) => c === vfk.columns[i]) &&
+          ifk.targetColumns.length === vfk.targetColumns.length &&
+          ifk.targetColumns.every((c, i) => c === vfk.targetColumns[i]),
+      );
+      if (!dup) {
+        inboundForeignKeys.push({
+          name: vfk.name,
+          source: vfk.source,
+          columns: [...vfk.columns],
+          targetColumns: [...vfk.targetColumns],
+          virtualRelationship: true,
+        });
+      }
+    }
+  }
+  const fkCols = new Set(foreignKeys.flatMap((fk) => fk.columns));
+  return {
+    ...schema,
+    foreignKeys,
+    inboundForeignKeys,
+    columns: schema.columns.map((col) => ({
+      ...col,
+      foreignKey: fkCols.has(col.name),
+    })),
+  };
+}
+
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
-  if (schema && JSON.stringify(schema.columns) === JSON.stringify(result.columns))
+  if (schema && samePhysicalColumnShape(schema.columns, result.columns))
     return result.editability?.status === "readOnly" ? { ...schema, editable: false } : schema;
   // A completed page may lose its edit lease while rows are fetched. Preserve
   // that known result, but narrow the whole table view until explicit refresh.
@@ -817,10 +917,16 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
     JSON.stringify(schema.table) === JSON.stringify(result.table) &&
     schema.columns.length === result.columns.length &&
     result.columns.every((column, index) => {
-      const { editable: _actualEdit, insertable: _actualInsert, ...actual } = column;
+      const {
+        editable: _actualEdit,
+        insertable: _actualInsert,
+        foreignKey: _actualFk,
+        ...actual
+      } = column;
       const {
         editable: _expectedEdit,
         insertable: _expectedInsert,
+        foreignKey: _expectedFk,
         ...expected
       } = schema.columns[index];
       return (
@@ -830,7 +936,14 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
       );
     })
   )
-    return { ...schema, editable: false, columns: result.columns };
+    return {
+      ...schema,
+      editable: false,
+      columns: result.columns.map((col, idx) => ({
+        ...col,
+        foreignKey: schema.columns[idx]?.foreignKey ?? col.foreignKey,
+      })),
+    };
   if (!isConsoleOwnedResult(result))
     void client.call("release_result", { resultId: result.id }).catch(() => {});
   throw new Error("The table schema changed. Refresh the table before continuing.");
@@ -1114,6 +1227,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     next.activeResultId = detachedResult.id;
     next.status = "completed";
     next.originTabId = sourceTab.id;
+    next.originKind = sourceTab.kind === "workspaceSql" ? "workspaceSql" : "query";
     next.originSql = sourceTab.sql;
     if (sourceTab.resultLayouts?.[targetResult.id]) {
       next.resultLayouts = { [targetResult.id]: sourceTab.resultLayouts[targetResult.id] };
@@ -1159,20 +1273,53 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (!resultTab) return null;
     if (resultTab.originTabId) {
       const origin = state.tabs.find(
-        (entry) => entry.id === resultTab.originTabId && entry.kind === "query",
+        (entry) =>
+          entry.id === resultTab.originTabId &&
+          (entry.kind === "query" || entry.kind === "workspaceSql"),
       );
       if (origin && (resultTab.originSql == null || origin.sql === resultTab.originSql)) {
         set({ activeTabId: origin.id });
         return origin.id;
       }
     }
+    if (resultTab.originKind === "workspaceSql") {
+      const existingWs = state.tabs.find((entry) => entry.kind === "workspaceSql");
+      if (existingWs) {
+        set((prev) => ({
+          tabs: prev.tabs.map((t) =>
+            t.id === existingWs.id ? { ...t, sql: resultTab.originSql ?? "" } : t,
+          ),
+          activeTabId: existingWs.id,
+        }));
+        return existingWs.id;
+      }
+      const next = tab("workspaceSql", "Workspace SQL", resultTab.connectionId);
+      next.sql = resultTab.originSql ?? "";
+      set((prev) => ({ tabs: [...prev.tabs, next], activeTabId: next.id }));
+      return next.id;
+    }
     return get().openQuery(resultTab.connectionId, resultTab.originSql ?? "");
   },
   setWorkspaceSqlResult(tabId, sql, response) {
-    const current = get().tabs.find((entry) => entry.id === tabId && entry.kind === "workspaceSql");
-    if (!current) return;
+    const snapshot = get();
+    const current = snapshot.tabs.find(
+      (entry) => entry.id === tabId && entry.kind === "workspaceSql",
+    );
+    if (!current) {
+      if (
+        !isConsoleOwnedResult(response.result) &&
+        !isResultReferencedByOtherTabs(snapshot.tabs, new Set(), response.result.id)
+      ) {
+        void client.call("release_result", { resultId: response.result.id }).catch(() => {});
+      }
+      return;
+    }
+    const excluding = new Set([tabId]);
     for (const old of current.results) {
-      if (old.id !== response.result.id) {
+      if (
+        old.id !== response.result.id &&
+        !isResultReferencedByOtherTabs(snapshot.tabs, excluding, old.id)
+      ) {
         dirtyStore.clearTab(old.id, [old.id]);
         resultCache.release(old.id);
         if (!isConsoleOwnedResult(old)) {
@@ -3103,11 +3250,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       subtitle: "SQL file",
       target: { kind: "tab", tabId },
     });
-    if (contentToSave.trim()) {
-      const boundProfile = current.connectionId
-        ? get().bootstrap?.profiles.find((p) => p.id === current.connectionId)
-        : undefined;
-      if (!boundProfile || boundProfile.storeDrafts || boundProfile.storeQueryText) {
+    if (contentToSave.trim() && current.connectionId) {
+      const boundProfile = get().bootstrap?.profiles.find((p) => p.id === current.connectionId);
+      if (boundProfile && !boundProfile.snowflake?.reviewedConsole && boundProfile.storeDrafts) {
         void Promise.resolve(
           client.call("record_local_history", {
             input: {
@@ -3327,6 +3472,18 @@ export const useStudio = create<StudioState>((set, get) => ({
       );
       return {
         virtualForeignKeys,
+        tabs: state.tabs.map((t) =>
+          t.kind === "table" && t.schema && t.connectionId === saved.connectionId
+            ? {
+                ...t,
+                schema: reconcileTableSchemaVirtualFks(
+                  t.schema,
+                  virtualForeignKeys,
+                  t.connectionId,
+                ),
+              }
+            : t,
+        ),
         bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
       };
     });
@@ -3335,9 +3492,24 @@ export const useStudio = create<StudioState>((set, get) => ({
   async deleteVirtualForeignKey(id) {
     await client.call("delete_virtual_foreign_key", { id });
     set((state) => {
+      const removed = state.virtualForeignKeys.find((entry) => entry.id === id);
       const virtualForeignKeys = state.virtualForeignKeys.filter((entry) => entry.id !== id);
       return {
         virtualForeignKeys,
+        tabs: removed
+          ? state.tabs.map((t) =>
+              t.kind === "table" && t.schema && t.connectionId === removed.connectionId
+                ? {
+                    ...t,
+                    schema: reconcileTableSchemaVirtualFks(
+                      t.schema,
+                      virtualForeignKeys,
+                      t.connectionId,
+                    ),
+                  }
+                : t,
+            )
+          : state.tabs,
         bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
       };
     });
@@ -3872,11 +4044,14 @@ export const useStudio = create<StudioState>((set, get) => ({
     else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
     dirtyStore.clearInserts(current.id);
+    const closingSet = new Set([id]);
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
-      dirtyStore.clearTab(result.id, [result.id]);
-      resultCache.release(result.id);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(stateSnapshot.tabs, closingSet, result.id)) {
+        dirtyStore.clearTab(result.id, [result.id]);
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     set((state) => {
       const index = state.tabs.findIndex((t) => t.id === id),

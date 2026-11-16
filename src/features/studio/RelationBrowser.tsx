@@ -1862,23 +1862,25 @@ export function RelationBrowser({
                       );
                       const firstRowFilters =
                         preview && preview.rows.length > 0
-                          ? vfk.columns.flatMap((colName, idx) => {
-                              const colPos = preview.columns.findIndex((c) => c.name === colName);
-                              if (colPos < 0) return [];
-                              const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
-                              const targetCol = vfk.targetColumns[idx];
-                              if (!targetCol) return [];
-                              return [
-                                {
+                          ? (() => {
+                              const filters: DraftFilterRow[] = [];
+                              for (let idx = 0; idx < vfk.columns.length; idx++) {
+                                const colName = vfk.columns[idx]!;
+                                const targetCol = vfk.targetColumns[idx];
+                                const colPos = preview.columns.findIndex((c) => c.name === colName);
+                                if (colPos < 0 || !targetCol) return undefined;
+                                const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                                // SQL NULL keys reference nothing; never filter referenced rows by IS NULL.
+                                if (val === null) return undefined;
+                                filters.push({
                                   id: `vfk-out-${vfk.id}-${idx}`,
                                   column: targetCol,
-                                  operator: (val === null
-                                    ? "isNull"
-                                    : "equals") as RelationFilterOperator,
-                                  value: val ?? "",
-                                },
-                              ];
-                            })
+                                  operator: "equals" as RelationFilterOperator,
+                                  value: val,
+                                });
+                              }
+                              return filters.length > 0 ? filters : undefined;
+                            })()
                           : undefined;
                       return (
                         <tr key={`out-${vfk.id}`}>
@@ -1928,23 +1930,26 @@ export function RelationBrowser({
                       );
                       const firstRowFilters =
                         preview && preview.rows.length > 0
-                          ? vfk.targetColumns.flatMap((targetCol, idx) => {
-                              const colPos = preview.columns.findIndex((c) => c.name === targetCol);
-                              if (colPos < 0) return [];
-                              const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
-                              const sourceCol = vfk.columns[idx];
-                              if (!sourceCol) return [];
-                              return [
-                                {
+                          ? (() => {
+                              const filters: DraftFilterRow[] = [];
+                              for (let idx = 0; idx < vfk.targetColumns.length; idx++) {
+                                const targetCol = vfk.targetColumns[idx]!;
+                                const sourceCol = vfk.columns[idx];
+                                const colPos = preview.columns.findIndex(
+                                  (c) => c.name === targetCol,
+                                );
+                                if (colPos < 0 || !sourceCol) return undefined;
+                                const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                                if (val === null) return undefined;
+                                filters.push({
                                   id: `vfk-in-${vfk.id}-${idx}`,
                                   column: sourceCol,
-                                  operator: (val === null
-                                    ? "isNull"
-                                    : "equals") as RelationFilterOperator,
-                                  value: val ?? "",
-                                },
-                              ];
-                            })
+                                  operator: "equals" as RelationFilterOperator,
+                                  value: val,
+                                });
+                              }
+                              return filters.length > 0 ? filters : undefined;
+                            })()
                           : undefined;
                       return (
                         <tr key={`in-${vfk.id}`}>
@@ -1962,6 +1967,20 @@ export function RelationBrowser({
                               onClick={() => selectVirtualRelation(vfk.source, firstRowFilters)}
                             >
                               Select {vfk.source.name}
+                            </button>{" "}
+                            <button
+                              type="button"
+                              className="button small danger-text"
+                              aria-label={`Delete virtual foreign key ${vfk.name}`}
+                              disabled={busy}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(vfk.id)
+                                  .catch((err) => setError(messageOf(err)))
+                              }
+                            >
+                              Remove
                             </button>
                           </td>
                         </tr>
@@ -2744,16 +2763,25 @@ export function RelationBrowser({
                                       Boolean(csvImportQueue) ||
                                       totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
                                     }
-                                    onClick={() =>
-                                      setInsertedRows((prev) => [
-                                        ...prev,
-                                        cloneSnowflakePreviewRow(
+                                    onClick={() => {
+                                      const cloned = cloneSnowflakePreviewRow(
+                                        inspection.columns,
+                                        row,
+                                        updatedCells[absRowIndex],
+                                      );
+                                      if (
+                                        estimateInsertRowsFrameBytes(
+                                          [...insertedRows, cloned],
                                           inspection.columns,
-                                          row,
-                                          updatedCells[absRowIndex],
-                                        ),
-                                      ])
-                                    }
+                                        ) > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES
+                                      ) {
+                                        setError(
+                                          "Staged Snowflake inserts reached the single-batch frame limit; review and apply current edits first.",
+                                        );
+                                        return;
+                                      }
+                                      setInsertedRows((prev) => [...prev, cloned]);
+                                    }}
                                   >
                                     Clone
                                   </button>

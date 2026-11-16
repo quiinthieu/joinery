@@ -1908,7 +1908,16 @@ export function Workbench({
             source={tab.planSource}
             canCapture={tab.status === "completed" && session?.id === tab.planSource?.sessionId}
           />
-        ) : (tab.kind === "query" || tab.kind === "result") && !result ? (
+        ) : tab.kind === "result" && !result ? (
+          <div className="results-empty">
+            <Table2 size={27} />
+            <h3>Result snapshot released</h3>
+            <p>
+              This detached snapshot was released when its connection reset. Reopen the originating
+              SQL to run a fresh query.
+            </p>
+          </div>
+        ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />
             <h3>{running ? "Your query is running" : "A fresh perspective awaits"}</h3>
@@ -1926,6 +1935,7 @@ export function Workbench({
             tab={tab}
             result={result}
             visibleColumns={resolvedLayout.visibleColumns}
+            focusRowRequest={focusRowRequest}
             onSelect={handleSelectCell}
             onOpenValue={onOpenValue}
           />
@@ -1934,6 +1944,7 @@ export function Workbench({
             tab={tab}
             result={result}
             visibleColumns={resolvedLayout.visibleColumns}
+            focusRowRequest={focusRowRequest}
             onSelect={handleSelectCell}
             onOpenValue={onOpenValue}
           />

@@ -171,4 +171,107 @@ describe("VirtualForeignKeyDialog and LibraryModal virtual relationships", () =>
     });
     expect(useStudio.getState().virtualForeignKeys).toHaveLength(0);
   });
+
+  it("reconciles open table tabs immediately when saving and deleting virtual foreign keys", async () => {
+    const saved: VirtualForeignKey = {
+      id: "44444444-4444-4444-8444-444444444444",
+      connectionId: profile.id,
+      name: "vfk_orders_cust",
+      source: { schema: "PUBLIC", name: "ORDERS" },
+      columns: ["CUSTOMER_ID"],
+      target: { schema: "PUBLIC", name: "CUSTOMERS" },
+      targetColumns: ["ID"],
+      updatedAtMs: 3000,
+    };
+    useStudio.setState({
+      tabs: [
+        {
+          id: "tab-orders",
+          kind: "table",
+          title: "ORDERS",
+          connectionId: profile.id,
+          sql: "",
+          table: { schema: "PUBLIC", name: "ORDERS" },
+          view: "data",
+          results: [],
+          activeResultId: null,
+          pages: [],
+          pageKeys: {},
+          loadedRows: 0,
+          hasMore: false,
+          loadingPage: false,
+          schema: {
+            table: { schema: "PUBLIC", name: "ORDERS" },
+            columns: [
+              {
+                id: "c0",
+                name: "ID",
+                databaseType: "NUMBER",
+                kind: "integer",
+                nullable: false,
+                primaryKey: true,
+                foreignKey: false,
+                editable: true,
+                insertable: true,
+                hasDefault: false,
+              },
+              {
+                id: "c1",
+                name: "CUSTOMER_ID",
+                databaseType: "NUMBER",
+                kind: "integer",
+                nullable: true,
+                primaryKey: false,
+                foreignKey: false,
+                editable: true,
+                insertable: true,
+                hasDefault: false,
+              },
+            ],
+            primaryKey: ["ID"],
+            foreignKeys: [],
+            inboundForeignKeys: [],
+            editable: true,
+          },
+          nextKey: null,
+          query: { sort: [], filters: [], whereClause: null, orderClause: null },
+          status: "idle",
+          runId: null,
+          revision: 1,
+          dataSessionId: null,
+          error: null,
+          elapsedMs: 0,
+          metrics: {},
+          fileToken: null,
+          fileName: null,
+          savedSql: null,
+          savedQueryId: null,
+          object: null,
+          querySession: null,
+          querySessionClosed: false,
+        },
+      ],
+    });
+
+    vi.mocked(client.call).mockResolvedValueOnce(saved).mockResolvedValueOnce(undefined);
+    await useStudio.getState().saveVirtualForeignKey({
+      id: null,
+      connectionId: profile.id,
+      name: saved.name,
+      source: saved.source,
+      columns: saved.columns,
+      target: saved.target,
+      targetColumns: saved.targetColumns,
+    });
+
+    const afterSave = useStudio.getState().tabs[0]!.schema!;
+    expect(afterSave.foreignKeys).toHaveLength(1);
+    expect(afterSave.foreignKeys[0]?.virtualRelationship).toBe(true);
+    expect(afterSave.columns.find((c) => c.name === "CUSTOMER_ID")?.foreignKey).toBe(true);
+
+    await useStudio.getState().deleteVirtualForeignKey(saved.id);
+    const afterDelete = useStudio.getState().tabs[0]!.schema!;
+    expect(afterDelete.foreignKeys).toHaveLength(0);
+    expect(afterDelete.columns.find((c) => c.name === "CUSTOMER_ID")?.foreignKey).toBe(false);
+  });
 });

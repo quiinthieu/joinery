@@ -289,4 +289,141 @@ describe("WorkspaceSqlView and DataSearchView", () => {
       },
     );
   });
+
+  it("allows clearing Workspace SQL textarea, routes detached result back to workspaceSql, and releases orphaned results", async () => {
+    useStudio.getState().openUtility("workspaceSql");
+    const wsTab = useStudio.getState().tabs.find((t) => t.kind === "workspaceSql")!;
+
+    const { rerender } = render(<WorkspaceSqlView tab={wsTab} />);
+    const textarea = screen.getByLabelText("Workspace SQL query") as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "" } });
+    rerender(<WorkspaceSqlView tab={useStudio.getState().tabs.find((t) => t.id === wsTab.id)!} />);
+    expect((screen.getByLabelText("Workspace SQL query") as HTMLTextAreaElement).value).toBe("");
+
+    const resp: WorkspaceSqlResponse = {
+      result: {
+        id: "wsql-detached-1",
+        runId: "workspace-sql-1",
+        statementIndex: 0,
+        columns: [col("id")],
+        retainedRows: 1,
+        status: "truncated",
+        table: null,
+        editability: { status: "readOnly", reason: "Cross-source workspace query result" },
+      },
+      elapsedMs: 2,
+      mountedRows: 1,
+      truncated: true,
+    };
+    useStudio.getState().setWorkspaceSqlResult(wsTab.id, "SELECT 1 AS id;", resp);
+    rerender(<WorkspaceSqlView tab={useStudio.getState().tabs.find((t) => t.id === wsTab.id)!} />);
+    expect(screen.getByText("Truncated")).toBeTruthy();
+
+    const detachedId = useStudio.getState().detachResultToTab(wsTab.id, "wsql-detached-1");
+    expect(detachedId).toBeTruthy();
+    useStudio.getState().updateTab(wsTab.id, { sql: "SELECT 999;" });
+    const reopenedId = useStudio.getState().openOriginatingSql(detachedId!);
+    expect(reopenedId).toBe(wsTab.id);
+    expect(useStudio.getState().tabs.find((t) => t.id === wsTab.id)?.sql).toBe("SELECT 1 AS id;");
+
+    // If the Workspace SQL tab was closed before an in-flight query returned, release_result is called immediately.
+    useStudio.getState().closeTab(wsTab.id);
+    vi.mocked(client.call).mockResolvedValue(undefined);
+    useStudio.getState().setWorkspaceSqlResult(wsTab.id, "SELECT 1;", {
+      ...resp,
+      result: { ...resp.result, id: "wsql-orphan-99" },
+    });
+    expect(client.call).toHaveBeenCalledWith("release_result", { resultId: "wsql-orphan-99" });
+  });
+
+  it("excludes stateless Snowflake OAuth sessions and generates type-aware Snowflake search SQL", async () => {
+    const sfOauth: ConnectionProfile = {
+      ...pgProfile,
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "SF OAuth",
+      engine: "snowflake",
+      database: "ANALYTICS",
+      snowflake: {
+        role: "ANALYST",
+        warehouse: "WH",
+        schema: "PUBLIC",
+        authentication: "localApplicationOauth",
+        reviewedDml: false,
+        reviewedDdl: false,
+        reviewedConsole: false,
+      },
+    };
+    const sfSdk: ConnectionProfile = {
+      ...sfOauth,
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "SF SDK",
+      snowflake: { ...sfOauth.snowflake!, authentication: "externalBrowser" },
+    };
+    useStudio.setState((s) => ({
+      bootstrap: s.bootstrap ? { ...s.bootstrap, profiles: [sfOauth, sfSdk] } : null,
+      selectedConnectionId: sfSdk.id,
+      sessions: {
+        [sfOauth.id]: {
+          ...pgSession,
+          id: "sess-sf-oauth",
+          connectionId: sfOauth.id,
+          engine: "snowflake",
+          capabilities: {
+            ...pgSession.capabilities,
+            relationBrowsing: false,
+            oauthBrowser: true,
+          },
+        },
+        [sfSdk.id]: {
+          ...pgSession,
+          id: "sess-sf-sdk",
+          connectionId: sfSdk.id,
+          engine: "snowflake",
+          capabilities: {
+            ...pgSession.capabilities,
+            relationBrowsing: true,
+            oauthBrowser: false,
+          },
+        },
+      },
+    }));
+    useStudio.getState().openUtility("dataSearch");
+    const dsTab = useStudio.getState().tabs.find((t) => t.kind === "dataSearch")!;
+
+    const report: DataSearchReport = {
+      query: '{"tier":"VIP',
+      matchMode: "startsWith",
+      caseSensitive: true,
+      scannedTables: 1,
+      skippedTables: 0,
+      totalRowHits: 1,
+      truncated: false,
+      elapsedMs: 12,
+      matches: [
+        {
+          table: { schema: "PUBLIC", name: "EVENTS" },
+          columns: [{ ...col("PAYLOAD"), databaseType: "OBJECT", kind: "json" }],
+          searchableColumns: ["PAYLOAD"],
+          rows: [{ matchedColumns: ["PAYLOAD"], row: ['{"tier":"VIP"}'] }],
+          hasMoreInTable: false,
+        },
+      ],
+    };
+    vi.mocked(client.call).mockResolvedValueOnce(report);
+
+    render(<DataSearchView tab={dsTab} />);
+    const connSelect = screen.getByLabelText("Search connection") as HTMLSelectElement;
+    expect(Array.from(connSelect.options).map((o) => o.text)).toEqual(["SF SDK (snowflake)"]);
+
+    fireEvent.change(screen.getByLabelText("Search database values"), {
+      target: { value: '{"tier":"VIP' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Search tables/i }));
+    await screen.findByText('{"tier":"VIP"}');
+
+    fireEvent.click(screen.getByRole("button", { name: /Open SQL query/i }));
+    const openedQueryTab = useStudio.getState().tabs.find((t) => t.kind === "query")!;
+    expect(openedQueryTab.sql).toContain('FROM "ANALYTICS"."PUBLIC"."EVENTS"');
+    expect(openedQueryTab.sql).toContain('STARTSWITH(TO_JSON("PAYLOAD"), \'{"tier":"VIP\')');
+  });
 });

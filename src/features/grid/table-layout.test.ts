@@ -148,4 +148,20 @@ describe("table-layout", () => {
       expect(resolved.widths[col.name]).toBeLessThanOrEqual(1600);
     }
   });
+
+  it("preserves duplicate-named JOIN columns and keeps at least one column visible on all-nullable results", () => {
+    const joinCols: ColumnInfo[] = [
+      { ...columns[0]!, id: "c0", name: "id", primaryKey: false, nullable: true },
+      { ...columns[1]!, id: "c1", name: "email", primaryKey: false, nullable: true },
+      { ...columns[0]!, id: "c2", name: "id", primaryKey: false, nullable: true },
+    ];
+    const resolvedDefault = resolveTableLayout(joinCols, null);
+    expect(resolvedDefault.visibleColumns.map((c) => c.id)).toEqual(["c0", "c1", "c2"]);
+    expect(resolvedDefault.customized).toBe(false);
+
+    const hiddenOptional = hideOptionalColumns(joinCols, null, connectionId, table);
+    const resolvedOptional = resolveTableLayout(joinCols, hiddenOptional);
+    expect(resolvedOptional.visibleColumns.length).toBeGreaterThanOrEqual(1);
+    expect(resolvedOptional.visibleColumns.map((c) => c.id)).toEqual(["c0", "c2"]);
+  });
 });

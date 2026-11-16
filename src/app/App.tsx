@@ -749,7 +749,7 @@ export function App() {
       const ownerProfile = active.connectionId
         ? executionState.bootstrap?.profiles.find((p) => p.id === active.connectionId)
         : undefined;
-      if (!ownerProfile || ownerProfile.storeQueryText) {
+      if (ownerProfile && !ownerProfile.snowflake?.reviewedConsole && ownerProfile.storeQueryText) {
         void Promise.resolve(
           client.call("record_local_history", {
             input: {

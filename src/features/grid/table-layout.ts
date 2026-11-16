@@ -80,25 +80,30 @@ export function resolveTableLayout(
       customized: false,
     };
   }
-  const byName = new Map(columns.map((column) => [column.name, column]));
+  const byName = new Map<string, ColumnInfo[]>();
+  for (const column of columns) {
+    const bucket = byName.get(column.name);
+    if (bucket) bucket.push(column);
+    else byName.set(column.name, [column]);
+  }
   const orderedColumns: ColumnInfo[] = [];
-  const seen = new Set<string>();
+  const placedNames = new Set<string>();
   for (const name of layout?.columnOrder ?? []) {
-    const found = byName.get(name);
-    if (found && !seen.has(name)) {
-      orderedColumns.push(found);
-      seen.add(name);
+    if (placedNames.has(name)) continue;
+    const bucket = byName.get(name);
+    if (bucket) {
+      orderedColumns.push(...bucket);
+      placedNames.add(name);
     }
   }
   for (const column of columns) {
-    if (!seen.has(column.name)) {
+    if (!placedNames.has(column.name)) {
       orderedColumns.push(column);
-      seen.add(column.name);
     }
   }
 
   const requestedHidden = new Set((layout?.hiddenColumns ?? []).filter((name) => byName.has(name)));
-  if (requestedHidden.size >= orderedColumns.length) {
+  if (orderedColumns.length > 0 && orderedColumns.every((col) => requestedHidden.has(col.name))) {
     requestedHidden.delete(orderedColumns[0].name);
   }
   const requestedPinned = new Set(
@@ -279,11 +284,17 @@ export function hideOptionalColumns(
   table: TableRef,
 ): SavedTableLayout {
   const resolved = resolveTableLayout(columns, current);
-  const nextHidden: string[] = [];
+  const nextHidden = new Set<string>();
   for (const col of resolved.orderedColumns) {
     if (!col.primaryKey && col.nullable && !resolved.pinnedSet.has(col.name)) {
-      nextHidden.push(col.name);
+      nextHidden.add(col.name);
     }
+  }
+  if (
+    resolved.orderedColumns.length > 0 &&
+    resolved.orderedColumns.every((col) => nextHidden.has(col.name))
+  ) {
+    nextHidden.delete(resolved.orderedColumns[0].name);
   }
   return buildNormalizedLayout(
     columns,
