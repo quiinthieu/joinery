@@ -1,6 +1,12 @@
 import { useEffect, useRef } from "react";
 import { ArrowUpRight, BookOpen, GitBranch, X } from "lucide-react";
-import type { DatabaseObjectKind, DatabaseObjectRef, ObjectDetails } from "../../ipc/generated";
+import type {
+  DatabaseObjectKind,
+  DatabaseObjectRef,
+  ObjectDetails,
+  SqlFindUsagesReport,
+  SqlUsageHit,
+} from "../../ipc/generated";
 import { objectTabTitle } from "../connections/explorer-tree";
 import { ObjectKindGlyph } from "./ObjectInspectorView";
 import type { ResolvedSqlSymbol } from "./sql-navigation";
@@ -24,6 +30,10 @@ interface Props {
   objectDetailsLoading: boolean;
   objectDetailsError: string | null;
   objectExplorerSupported: boolean;
+  workspaceUsages?: SqlFindUsagesReport | null;
+  workspaceUsagesLoading?: boolean;
+  workspaceUsagesError?: string | null;
+  onOpenWorkspaceHit?(hit: SqlUsageHit): void;
   onJumpInEditor(from: number, to: number): void;
   onOpenDefinition(): void;
   onOpenObject?(object: DatabaseObjectRef, highlightedColumn?: string): void;
@@ -66,6 +76,10 @@ export function SqlNavigationOverlay({
   objectDetailsLoading,
   objectDetailsError,
   objectExplorerSupported,
+  workspaceUsages = null,
+  workspaceUsagesLoading = false,
+  workspaceUsagesError = null,
+  onOpenWorkspaceHit,
   onJumpInEditor,
   onOpenDefinition,
   onOpenObject,
@@ -423,6 +437,44 @@ export function SqlNavigationOverlay({
               ))}
             </div>
           </div>
+
+          {catalogTarget && (
+            <div className="sql-nav-section" aria-label="Workspace SQL usages">
+              <div className="sql-nav-section-head">
+                <span>Workspace SQL usages (other tabs &amp; saved queries)</span>
+                {workspaceUsages && <span>{workspaceUsages.hits.length}</span>}
+              </div>
+              {workspaceUsagesLoading && !workspaceUsages ? (
+                <div className="sql-nav-empty">Scanning workspace SQL AST…</div>
+              ) : workspaceUsagesError ? (
+                <div className="sql-nav-empty">{workspaceUsagesError}</div>
+              ) : !workspaceUsages || workspaceUsages.hits.length === 0 ? (
+                <div className="sql-nav-empty">
+                  No other open tabs or saved queries reference this symbol.
+                </div>
+              ) : (
+                <div className="sql-nav-usage-list">
+                  {workspaceUsages.hits.map((hit, idx) => (
+                    <button
+                      type="button"
+                      key={`${hit.documentId}:${hit.span.startUtf16}:${idx}`}
+                      className="sql-nav-usage-row"
+                      disabled={!onOpenWorkspaceHit}
+                      onClick={() => onOpenWorkspaceHit?.(hit)}
+                    >
+                      <span className="sql-nav-loc">
+                        {hit.documentTitle} · Ln {hit.span.line}
+                      </span>
+                      <span className="sql-nav-pill">
+                        {hit.sourceKind === "savedQuery" ? `Saved · ${hit.role}` : hit.role}
+                      </span>
+                      <code className="mono sql-nav-snippet">{hit.lineText}</code>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {catalogTarget && objectExplorerSupported && (
             <div className="sql-nav-section">

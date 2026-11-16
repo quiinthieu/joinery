@@ -650,6 +650,24 @@ export async function runNativeSmoke() {
           }),
       ],
       [
+        "find_sql_usages",
+        "invalidInput",
+        () =>
+          client.call("find_sql_usages", {
+            request: {
+              engine: "postgres",
+              connectionId: null,
+              database: null,
+              defaultSchema: null,
+              schema: "public",
+              objectName: "   ",
+              columnName: null,
+              includeSavedQueries: false,
+              documents: [],
+            },
+          }),
+      ],
+      [
         "delete_sql_snippet",
         "notFound",
         () => client.call("delete_sql_snippet", { id: "missing-native-smoke-snippet" }),

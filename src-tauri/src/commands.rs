@@ -1415,3 +1415,14 @@ pub async fn clear_local_history(
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn find_sql_usages(
+    studio: State<'_, Arc<Studio>>,
+    request: SqlFindUsagesRequest,
+) -> AppResult<SqlFindUsagesReport> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.find_sql_usages(request))
+        .await
+        .map_err(join_error)?
+}

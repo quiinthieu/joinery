@@ -26,6 +26,7 @@ pub mod secrets;
 pub mod snowflake_cleanup;
 #[cfg(unix)]
 pub mod snowflake_runtime;
+pub mod sql_refactor;
 pub mod sql_text;
 pub mod ssh;
 pub mod workspace_sql;
@@ -288,6 +289,7 @@ pub fn run() {
             commands::record_local_history,
             commands::delete_local_history_entry,
             commands::clear_local_history,
+            commands::find_sql_usages,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

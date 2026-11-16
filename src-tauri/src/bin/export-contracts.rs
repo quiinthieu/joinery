@@ -285,6 +285,11 @@ fn main() {
         LocalHistoryTrigger::decl(),
         LocalHistoryEntry::decl(),
         LocalHistoryInput::decl(),
+        SqlUsageSourceKind::decl(),
+        SqlUsageDocument::decl(),
+        SqlFindUsagesRequest::decl(),
+        SqlUsageHit::decl(),
+        SqlFindUsagesReport::decl(),
         ErrorCode::decl(),
         AppError::decl(),
     ];

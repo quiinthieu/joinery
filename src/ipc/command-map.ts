@@ -120,6 +120,8 @@ import type {
   SnowflakeOperatorProfileRequest,
   SnowflakeQueryHistoryEntry,
   SnowflakeQueryHistoryRequest,
+  SqlFindUsagesReport,
+  SqlFindUsagesRequest,
 } from "./generated";
 
 /**
@@ -712,6 +714,10 @@ export interface JoineryCommandMap {
   snowflake_query_operator_profile: {
     args: { request: SnowflakeOperatorProfileRequest };
     result: SnowflakeOperatorProfile;
+  };
+  find_sql_usages: {
+    args: { request: SqlFindUsagesRequest };
+    result: SqlFindUsagesReport;
   };
   local_history_entries: {
     args: { tabKey?: string | null };

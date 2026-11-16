@@ -3067,6 +3067,65 @@ pub struct LocalHistoryInput {
     pub sql: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SqlUsageSourceKind {
+    OpenTab,
+    SavedQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlUsageDocument {
+    pub id: String,
+    pub title: String,
+    pub source_kind: SqlUsageSourceKind,
+    #[serde(default)]
+    pub saved_query_id: Option<String>,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFindUsagesRequest {
+    pub engine: EngineKind,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub default_schema: Option<String>,
+    pub schema: String,
+    pub object_name: String,
+    #[serde(default)]
+    pub column_name: Option<String>,
+    #[serde(default)]
+    pub include_saved_queries: bool,
+    #[serde(default)]
+    pub documents: Vec<SqlUsageDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlUsageHit {
+    pub document_id: String,
+    pub document_title: String,
+    pub source_kind: SqlUsageSourceKind,
+    pub saved_query_id: Option<String>,
+    pub role: String,
+    pub span: SqlSpan,
+    pub line_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlFindUsagesReport {
+    pub scanned_documents: usize,
+    pub skipped_statements: usize,
+    pub truncated: bool,
+    pub hits: Vec<SqlUsageHit>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

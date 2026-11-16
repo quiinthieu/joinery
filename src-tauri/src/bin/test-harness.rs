@@ -887,6 +887,7 @@ async fn rpc(
                         .await?
                 )
             }
+            "find_sql_usages" => json!(studio.find_sql_usages(arg(&args, "request")?)?),
             "local_history_entries" => json!(studio.local_history_entries(
                 arg::<Option<String>>(&args, "tabKey")?.as_deref()
             )?),

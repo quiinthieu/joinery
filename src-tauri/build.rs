@@ -201,6 +201,7 @@ fn build_desktop() {
             "record_local_history",
             "delete_local_history_entry",
             "clear_local_history",
+            "find_sql_usages",
             "native_smoke_fixture",
             "native_smoke_checkpoint",
             "native_smoke_report",

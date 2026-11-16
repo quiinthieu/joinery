@@ -5741,6 +5741,39 @@ impl Studio {
         Self::publish_relation(&session, result)
     }
 
+    pub fn find_sql_usages(
+        &self,
+        mut request: SqlFindUsagesRequest,
+    ) -> AppResult<SqlFindUsagesReport> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        if request.include_saved_queries {
+            let existing_saved_ids: std::collections::HashSet<String> = request
+                .documents
+                .iter()
+                .filter_map(|doc| doc.saved_query_id.clone())
+                .collect();
+            for sq in self.persistence.saved_queries()? {
+                if existing_saved_ids.contains(&sq.id) {
+                    continue;
+                }
+                let matches_conn = match (&request.connection_id, &sq.connection_id) {
+                    (Some(req_cid), Some(sq_cid)) => req_cid == sq_cid,
+                    (Some(_), None) | (None, _) => true,
+                };
+                if matches_conn {
+                    request.documents.push(SqlUsageDocument {
+                        id: sq.id.clone(),
+                        title: sq.title,
+                        source_kind: SqlUsageSourceKind::SavedQuery,
+                        saved_query_id: Some(sq.id),
+                        sql: sq.sql,
+                    });
+                }
+            }
+        }
+        crate::sql_refactor::find_sql_usages(&request)
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         let grid_runs = {

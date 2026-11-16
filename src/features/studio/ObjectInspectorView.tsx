@@ -10,6 +10,7 @@ import {
   Layers,
   ListTree,
   Lock,
+  Search,
   Table2,
   Trash2,
   Wrench,
@@ -24,10 +25,12 @@ import type {
   ObjectDetails,
   SessionInfo,
   SnowflakeTableSubtype,
+  SqlFindUsagesReport,
   TableInfo,
   TableRef,
   TableStorageStats,
 } from "../../ipc/generated";
+import { collectWorkspaceSqlDocuments } from "./sql-refactor";
 import { client, messageOf } from "../../ipc/client";
 import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
@@ -280,7 +283,10 @@ export function ObjectInspectorView({
     [loading, setLoading] = useState(false),
     [error, setError] = useState<string | null>(null),
     [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null),
-    [refreshNonce, setRefreshNonce] = useState(0);
+    [refreshNonce, setRefreshNonce] = useState(0),
+    [sqlUsages, setSqlUsages] = useState<SqlFindUsagesReport | null>(null),
+    [sqlUsagesLoading, setSqlUsagesLoading] = useState(false),
+    [sqlUsagesError, setSqlUsagesError] = useState<string | null>(null);
   const storeProfile = useStudio((s) =>
     tab.connectionId
       ? (s.bootstrap?.profiles.find((p) => p.id === tab.connectionId) ?? null)
@@ -404,6 +410,52 @@ export function ObjectInspectorView({
               : KIND_LABELS[details.object.kind].toUpperCase()}
           </span>
           <h2 className="mono">{`${details.object.schema}.${objectTabTitle(details.object)}`}</h2>
+          {session &&
+            session.engine !== "redis" &&
+            [
+              "table",
+              "partitionedTable",
+              "view",
+              "materializedView",
+              "function",
+              "procedure",
+            ].includes(details.object.kind) && (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={sqlUsagesLoading}
+                onClick={() => {
+                  const snap = useStudio.getState();
+                  const runtime = session.id ? snap.sessionStates[session.id] : undefined;
+                  const docs = collectWorkspaceSqlDocuments(snap.tabs, tab.connectionId);
+                  setSqlUsagesLoading(true);
+                  setSqlUsagesError(null);
+                  void client
+                    .call("find_sql_usages", {
+                      request: {
+                        engine: session.engine,
+                        connectionId: tab.connectionId,
+                        database: runtime?.database || activeProfile?.database || null,
+                        defaultSchema: runtime?.activeContext || details.object.schema,
+                        schema: details.object.schema,
+                        objectName: details.object.name,
+                        columnName: null,
+                        includeSavedQueries: true,
+                        documents: docs,
+                      },
+                    })
+                    .then((report) => setSqlUsages(report))
+                    .catch((err) => {
+                      setSqlUsages(null);
+                      setSqlUsagesError(messageOf(err));
+                    })
+                    .finally(() => setSqlUsagesLoading(false));
+                }}
+              >
+                <Search size={12} />
+                {sqlUsagesLoading ? "Scanning SQL…" : "Find SQL usages"}
+              </button>
+            )}
           {details.ownerTable && (onOpenObject || tab.connectionId) && (
             <button
               type="button"
@@ -740,6 +792,49 @@ export function ObjectInspectorView({
               </div>
             ))}
           </dl>
+        </section>
+      )}
+
+      {(sqlUsages || sqlUsagesError) && (
+        <section className="object-section" aria-label="Workspace SQL usages">
+          <h3 className="object-section-title">
+            Workspace SQL Usages {sqlUsages ? `(${sqlUsages.hits.length})` : ""}
+          </h3>
+          {sqlUsagesError ? (
+            <div className="inline-error" role="alert">
+              {sqlUsagesError}
+            </div>
+          ) : sqlUsages && sqlUsages.hits.length === 0 ? (
+            <div className="dependency-empty">
+              No open SQL tabs or saved queries reference {details.object.schema}.
+              {details.object.name}.
+            </div>
+          ) : (
+            <div className="dependency-chip-list">
+              {sqlUsages?.hits.map((hit, idx) => (
+                <button
+                  type="button"
+                  key={`${hit.documentId}:${hit.span.startUtf16}:${idx}`}
+                  className="dependency-chip"
+                  onClick={() => {
+                    if (hit.sourceKind === "openTab") {
+                      useStudio.setState({ activeTabId: hit.documentId });
+                    } else if (hit.savedQueryId) {
+                      useStudio.getState().openSavedQuery(hit.savedQueryId);
+                    }
+                  }}
+                >
+                  <span className="mono">{`${hit.documentTitle} · Ln ${hit.span.line}`}</span>
+                  <small>
+                    {hit.sourceKind === "savedQuery" ? `Saved · ${hit.role}` : hit.role}
+                  </small>
+                  <code className="mono" style={{ marginLeft: 6 }}>
+                    {hit.lineText}
+                  </code>
+                </button>
+              ))}
+            </div>
+          )}
         </section>
       )}
 
