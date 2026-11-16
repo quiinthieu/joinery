@@ -116,6 +116,10 @@ import type {
   SnowflakeConsoleReceiptArchiveResult,
   SnowflakeConsolePending,
   SnowflakeConsoleStorage,
+  SnowflakeOperatorProfile,
+  SnowflakeOperatorProfileRequest,
+  SnowflakeQueryHistoryEntry,
+  SnowflakeQueryHistoryRequest,
 } from "./generated";
 
 /**
@@ -700,6 +704,14 @@ export interface JoineryCommandMap {
   search_database_data: {
     args: { request: DataSearchRequest };
     result: DataSearchReport;
+  };
+  snowflake_query_history: {
+    args: { request: SnowflakeQueryHistoryRequest };
+    result: SnowflakeQueryHistoryEntry[];
+  };
+  snowflake_query_operator_profile: {
+    args: { request: SnowflakeOperatorProfileRequest };
+    result: SnowflakeOperatorProfile;
   };
   local_history_entries: {
     args: { tabKey?: string | null };

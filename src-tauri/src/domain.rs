@@ -933,6 +933,45 @@ pub enum ObjectDdlStatus {
     Unavailable { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeTableSubtype {
+    Base,
+    Transient,
+    Temporary,
+    Dynamic,
+    Hybrid,
+    External,
+    Event,
+    Iceberg,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeTableDetails {
+    pub subtype: SnowflakeTableSubtype,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_lag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warehouse: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub refresh_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduling_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub external_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_format: Option<String>,
+    #[serde(default)]
+    pub columns: Vec<ColumnInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectDetails {
@@ -948,6 +987,9 @@ pub struct ObjectDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub storage: Option<TableStorageStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_table: Option<SnowflakeTableDetails>,
     pub uses: Vec<DependencyEdge>,
     pub used_by: Vec<DependencyEdge>,
 }
@@ -2901,6 +2943,95 @@ pub struct DataSearchReport {
     pub truncated: bool,
     pub elapsed_ms: u32,
     pub matches: Vec<DataSearchTableMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeQueryHistoryRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeQueryHistoryEntry {
+    pub query_id: String,
+    pub query_text: String,
+    pub query_type: String,
+    pub execution_status: String,
+    pub warehouse_name: Option<String>,
+    pub warehouse_size: Option<String>,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+    pub start_time: String,
+    #[ts(type = "number | null")]
+    pub total_elapsed_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub compilation_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub execution_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub queued_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_scanned: Option<u64>,
+    pub cache_hit_ratio: Option<f64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_local: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_remote: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_scanned: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_total: Option<u64>,
+    #[ts(type = "number | null")]
+    pub rows_produced: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeOperatorProfileRequest {
+    pub session_id: String,
+    pub query_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeOperatorStat {
+    pub step_id: u32,
+    pub operator_id: u32,
+    pub parent_operators: Vec<u32>,
+    pub operator_type: String,
+    pub overall_percentage: Option<f64>,
+    #[ts(type = "number | null")]
+    pub input_rows: Option<u64>,
+    #[ts(type = "number | null")]
+    pub output_rows: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_scanned: Option<u64>,
+    pub cache_hit_ratio: Option<f64>,
+    #[ts(type = "number | null")]
+    pub partitions_scanned: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_total: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_local: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_remote: Option<u64>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeOperatorProfile {
+    pub query_id: String,
+    pub operators: Vec<SnowflakeOperatorStat>,
+    #[ts(type = "number")]
+    pub total_spilled_local_bytes: u64,
+    #[ts(type = "number")]
+    pub total_spilled_remote_bytes: u64,
+    pub bottleneck_operator_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -23,6 +23,7 @@ import type {
   ObjectDdlStatus,
   ObjectDetails,
   SessionInfo,
+  SnowflakeTableSubtype,
   TableInfo,
   TableRef,
   TableStorageStats,
@@ -49,6 +50,17 @@ const KIND_LABELS: Record<DatabaseObjectKind, string> = {
   sequence: "Sequence",
   trigger: "Trigger",
   index: "Index",
+};
+
+const SNOWFLAKE_SUBTYPE_LABELS: Record<SnowflakeTableSubtype, string> = {
+  base: "Table",
+  transient: "Transient table",
+  temporary: "Temporary table",
+  dynamic: "Dynamic table",
+  hybrid: "Hybrid table",
+  external: "External table",
+  event: "Event table",
+  iceberg: "Iceberg table",
 };
 
 export function ObjectKindGlyph({ kind, size = 13 }: { kind: DatabaseObjectKind; size?: number }) {
@@ -386,7 +398,11 @@ export function ObjectInspectorView({
     <div className="object-inspector-scroll">
       <div className="object-summary-card">
         <div className="object-summary-head">
-          <span className="key-badge">{KIND_LABELS[details.object.kind].toUpperCase()}</span>
+          <span className="key-badge" data-testid="object-kind-badge">
+            {details.snowflakeTable && details.snowflakeTable.subtype !== "base"
+              ? SNOWFLAKE_SUBTYPE_LABELS[details.snowflakeTable.subtype].toUpperCase()
+              : KIND_LABELS[details.object.kind].toUpperCase()}
+          </span>
           <h2 className="mono">{`${details.object.schema}.${objectTabTitle(details.object)}`}</h2>
           {details.ownerTable && (onOpenObject || tab.connectionId) && (
             <button
@@ -436,6 +452,63 @@ export function ObjectInspectorView({
             )}
         </div>
         {details.comment && <p className="object-comment">{details.comment}</p>}
+
+        {details.snowflakeTable &&
+          (details.snowflakeTable.subtype !== "base" ||
+            details.snowflakeTable.targetLag ||
+            details.snowflakeTable.externalLocation) && (
+            <dl className="object-meta-grid" aria-label="Snowflake table properties">
+              <div>
+                <dt>Table subtype</dt>
+                <dd>{SNOWFLAKE_SUBTYPE_LABELS[details.snowflakeTable.subtype]}</dd>
+              </div>
+              {(details.snowflakeTable.subtype === "dynamic" ||
+                details.snowflakeTable.targetLag) && (
+                <>
+                  <div>
+                    <dt>Target lag</dt>
+                    <dd className="mono">{details.snowflakeTable.targetLag ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Warehouse</dt>
+                    <dd className="mono">{details.snowflakeTable.warehouse ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Refresh mode</dt>
+                    <dd className="mono">{details.snowflakeTable.refreshMode ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>Scheduling state</dt>
+                    <dd>
+                      <span
+                        className={`state-pill ${
+                          details.snowflakeTable.schedulingState?.toUpperCase() === "ACTIVE" ||
+                          details.snowflakeTable.schedulingState?.toUpperCase() === "RUNNING"
+                            ? "active"
+                            : ""
+                        }`}
+                      >
+                        {details.snowflakeTable.schedulingState ?? "—"}
+                      </span>
+                    </dd>
+                  </div>
+                </>
+              )}
+              {(details.snowflakeTable.subtype === "external" ||
+                details.snowflakeTable.externalLocation) && (
+                <>
+                  <div>
+                    <dt>External location</dt>
+                    <dd className="mono">{details.snowflakeTable.externalLocation ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt>File format</dt>
+                    <dd className="mono">{details.snowflakeTable.fileFormat ?? "—"}</dd>
+                  </div>
+                </>
+              )}
+            </dl>
+          )}
 
         {details.routine && (
           <dl className="object-meta-grid" aria-label="Routine properties">
@@ -588,6 +661,40 @@ export function ObjectInspectorView({
           }
           onMaintained={() => setRefreshNonce((n) => n + 1)}
         />
+      )}
+
+      {details.snowflakeTable && details.snowflakeTable.columns.length > 0 && (
+        <section className="object-section" aria-label="Object columns">
+          <h3 className="object-section-title">Columns</h3>
+          <table className="structure-table" aria-label="Columns">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Nullable</th>
+                <th>Key</th>
+              </tr>
+            </thead>
+            <tbody>
+              {details.snowflakeTable.columns.map((col) => (
+                <tr key={col.id}>
+                  <td className="mono">{col.name}</td>
+                  <td className="mono">{col.databaseType}</td>
+                  <td>{col.nullable ? "YES" : "NO"}</td>
+                  <td>
+                    {col.primaryKey ? (
+                      <span className="key-badge">PK</span>
+                    ) : col.foreignKey ? (
+                      "FK"
+                    ) : (
+                      "—"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
       )}
 
       {details.constraints.length > 0 && (

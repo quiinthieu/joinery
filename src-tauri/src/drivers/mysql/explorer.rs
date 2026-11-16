@@ -432,6 +432,7 @@ async fn relation_details_on(
         routine: None,
         sequence: None,
         storage,
+        snowflake_table: None,
         uses,
         used_by,
     })
@@ -1172,6 +1173,7 @@ async fn routine_details_on(
         }),
         sequence: None,
         storage: None,
+        snowflake_table: None,
         uses: Vec::new(),
         used_by: Vec::new(),
     })
@@ -1263,6 +1265,7 @@ async fn sequence_details_on(
         routine: None,
         sequence,
         storage: None,
+        snowflake_table: None,
         uses: Vec::new(),
         used_by: Vec::new(),
     })
@@ -1361,6 +1364,7 @@ async fn trigger_details_on(
         routine: None,
         sequence: None,
         storage: None,
+        snowflake_table: None,
         uses,
         used_by: Vec::new(),
     })
@@ -1457,6 +1461,7 @@ async fn index_details_on(
         routine: None,
         sequence: None,
         storage,
+        snowflake_table: None,
         uses,
         used_by: Vec::new(),
     })

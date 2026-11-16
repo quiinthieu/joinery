@@ -877,6 +877,16 @@ async fn rpc(
             "search_database_data" => {
                 json!(studio.search_database_data(arg(&args, "request")?).await?)
             }
+            "snowflake_query_history" => {
+                json!(studio.snowflake_query_history(arg(&args, "request")?).await?)
+            }
+            "snowflake_query_operator_profile" => {
+                json!(
+                    studio
+                        .snowflake_query_operator_profile(arg(&args, "request")?)
+                        .await?
+                )
+            }
             "local_history_entries" => json!(studio.local_history_entries(
                 arg::<Option<String>>(&args, "tabKey")?.as_deref()
             )?),

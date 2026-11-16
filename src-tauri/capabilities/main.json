@@ -139,6 +139,8 @@
     "allow-delete-virtual-foreign-key",
     "allow-run-workspace-sql",
     "allow-search-database-data",
+    "allow-snowflake-query-history",
+    "allow-snowflake-query-operator-profile",
     "allow-local-history-entries",
     "allow-record-local-history",
     "allow-delete-local-history-entry",

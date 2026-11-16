@@ -454,6 +454,27 @@ pub trait Driver: Send + Sync {
             "Full-text data search is unavailable for this engine",
         ))
     }
+    /// Bounded post-execution Snowflake session query history.
+    async fn snowflake_query_history(
+        &self,
+        _limit: u32,
+        _redact_sql: bool,
+    ) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake session query history is unavailable for this engine",
+        ))
+    }
+    /// Bounded post-execution Snowflake operator profile for a single query ID.
+    async fn snowflake_query_operator_profile(
+        &self,
+        _query_id: &str,
+    ) -> AppResult<SnowflakeOperatorProfile> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake operator profile inspection is unavailable for this engine",
+        ))
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

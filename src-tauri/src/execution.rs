@@ -5680,6 +5680,67 @@ impl Studio {
         }
     }
 
+    pub async fn snowflake_query_history(
+        &self,
+        request: SnowflakeQueryHistoryRequest,
+    ) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let limit = request.limit.unwrap_or(25);
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::invalid(
+                "Snowflake query history limit must be between 1 and 100",
+            ));
+        }
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Post-execution query history is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        let redact_sql = !session.profile.store_query_text;
+        let _lane = Self::relation_lane(&session).await?;
+        let result = session
+            .driver
+            .snowflake_query_history(limit, redact_sql)
+            .await;
+        Self::publish_relation(&session, result)
+    }
+
+    pub async fn snowflake_query_operator_profile(
+        &self,
+        request: SnowflakeOperatorProfileRequest,
+    ) -> AppResult<SnowflakeOperatorProfile> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let query_id = request.query_id.trim();
+        if !(8..=64).contains(&query_id.len())
+            || !query_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            return Err(AppError::invalid("Provide a valid Snowflake query ID"));
+        }
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Post-execution operator profile inspection is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        let _lane = Self::relation_lane(&session).await?;
+        let result = session
+            .driver
+            .snowflake_query_operator_profile(query_id)
+            .await;
+        Self::publish_relation(&session, result)
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         let grid_runs = {

@@ -634,6 +634,22 @@ export async function runNativeSmoke() {
           }),
       ],
       [
+        "snowflake_query_history",
+        "invalidInput",
+        () =>
+          client.call("snowflake_query_history", {
+            request: { sessionId: "missing-native-fixture", limit: 0 },
+          }),
+      ],
+      [
+        "snowflake_query_operator_profile",
+        "invalidInput",
+        () =>
+          client.call("snowflake_query_operator_profile", {
+            request: { sessionId: "missing-native-fixture", queryId: "bad" },
+          }),
+      ],
+      [
         "delete_sql_snippet",
         "notFound",
         () => client.call("delete_sql_snippet", { id: "missing-native-smoke-snippet" }),

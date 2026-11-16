@@ -440,6 +440,7 @@ async fn relation_details(
         routine: None,
         sequence: None,
         storage,
+        snowflake_table: None,
         uses,
         used_by,
     })
@@ -805,6 +806,7 @@ async fn routine_details(
         }),
         sequence: None,
         storage: None,
+        snowflake_table: None,
         uses,
         used_by,
     })
@@ -891,6 +893,7 @@ async fn sequence_details(
         routine: None,
         sequence: Some(sequence),
         storage: None,
+        snowflake_table: None,
         uses,
         used_by,
     })
@@ -1022,6 +1025,7 @@ async fn trigger_details(
         routine: None,
         sequence: None,
         storage: None,
+        snowflake_table: None,
     })
 }
 
@@ -1176,6 +1180,7 @@ async fn index_details(client: &Client, requested: &DatabaseObjectRef) -> AppRes
         routine: None,
         sequence: None,
         storage,
+        snowflake_table: None,
     })
 }
 

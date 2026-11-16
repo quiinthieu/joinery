@@ -195,6 +195,8 @@ fn build_desktop() {
             "delete_virtual_foreign_key",
             "run_workspace_sql",
             "search_database_data",
+            "snowflake_query_history",
+            "snowflake_query_operator_profile",
             "local_history_entries",
             "record_local_history",
             "delete_local_history_entry",

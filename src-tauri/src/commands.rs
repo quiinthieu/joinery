@@ -1357,6 +1357,22 @@ pub async fn search_database_data(
 }
 
 #[tauri::command]
+pub async fn snowflake_query_history(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeQueryHistoryRequest,
+) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+    studio.snowflake_query_history(request).await
+}
+
+#[tauri::command]
+pub async fn snowflake_query_operator_profile(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeOperatorProfileRequest,
+) -> AppResult<SnowflakeOperatorProfile> {
+    studio.snowflake_query_operator_profile(request).await
+}
+
+#[tauri::command]
 pub async fn local_history_entries(
     studio: State<'_, Arc<Studio>>,
     tab_key: Option<String>,

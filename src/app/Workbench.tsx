@@ -88,6 +88,7 @@ import {
 import { SessionStructureView } from "../features/studio/SessionStructureView";
 import { RelationBrowser } from "../features/studio/RelationBrowser";
 import { SnowflakeDdlNotice } from "../features/studio/SnowflakeDdlNotice";
+import { SnowflakeQueryProfileModal } from "../features/studio/SnowflakeQueryProfileModal";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -207,6 +208,7 @@ export function Workbench({
     [txBusy, setTxBusy] = useState(false),
     [relationBrowserSession, setRelationBrowserSession] = useState<string | null>(null),
     [relationBrowserRevision, setRelationBrowserRevision] = useState<number | null>(null),
+    [queryProfileSession, setQueryProfileSession] = useState<string | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const consoleMode = !!session && isSnowflakeConsoleSession(state, session.id);
@@ -986,6 +988,25 @@ export function Workbench({
                   <Table2 size={13} /> Browse relations
                 </button>
               )}
+              {!consoleMode &&
+                session?.engine === "snowflake" &&
+                session?.capabilities.relationBrowsing && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !!state.sessionMetadataRefreshRequired[session.id]}
+                    title={
+                      state.sessionMetadataRefreshRequired[session.id]
+                        ? "Refresh completion context before inspecting query profiles"
+                        : "Inspect Snowflake session QUERY_HISTORY and per-operator stats"
+                    }
+                    onClick={() => {
+                      assertOrdinarySession(session.id);
+                      setQueryProfileSession(session.id);
+                    }}
+                  >
+                    <Gauge size={13} /> Query profile
+                  </button>
+                )}
               <button
                 className="button ghost small"
                 aria-label="Open SQL file"
@@ -1256,6 +1277,17 @@ export function Workbench({
             sessionId={session.id}
             ownerTabId={tab.id}
             onClose={() => setRelationBrowserSession(null)}
+          />
+        )}
+      {!consoleMode &&
+        queryProfileSession &&
+        session?.id === queryProfileSession &&
+        !state.sessionMetadataRefreshRequired[session.id] &&
+        !running && (
+          <SnowflakeQueryProfileModal
+            key={`${tab.id}:${session.id}:query-profile`}
+            sessionId={session.id}
+            onClose={() => setQueryProfileSession(null)}
           />
         )}
       {tab.kind === "query" && profile?.engine === "redis" && (

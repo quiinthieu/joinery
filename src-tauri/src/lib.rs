@@ -282,6 +282,8 @@ pub fn run() {
             commands::delete_virtual_foreign_key,
             commands::run_workspace_sql,
             commands::search_database_data,
+            commands::snowflake_query_history,
+            commands::snowflake_query_operator_profile,
             commands::local_history_entries,
             commands::record_local_history,
             commands::delete_local_history_entry,

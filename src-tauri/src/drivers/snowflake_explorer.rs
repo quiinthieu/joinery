@@ -11,8 +11,9 @@ use crate::domain::{
     AppError, AppResult, ConstraintInfo, ConstraintKind, DatabaseObjectKind, DatabaseObjectRef,
     DatabaseObjectSummary, DependencyEdge, DiagramColumn, DiagramKeyRow, EngineKind, ErrorCode,
     ObjectDdlStatus, ObjectDetails, RoutineInfo, SchemaDiagram, SchemaSnapshot, SequenceInfo,
-    SnapshotColumn, SnapshotRoutine, SnapshotSequence, SnapshotTable, TableRef, TableStorageStats,
-    UnsupportedSchemaObject,
+    SnapshotColumn, SnapshotRoutine, SnapshotSequence, SnapshotTable, SnowflakeOperatorProfile,
+    SnowflakeOperatorStat, SnowflakeQueryHistoryEntry, SnowflakeTableSubtype, TableRef,
+    TableStorageStats, UnsupportedSchemaObject,
 };
 use crate::relation_inspection::{
     RelationAvailability, RelationCheckConstraint, RelationConstraintMapping,
@@ -219,13 +220,18 @@ pub(crate) fn parse_tables(
         }
         let name = required_cell(&row[2])?;
         metadata::quote_identifier(name)?;
-        let kind = match required_cell(&row[3])? {
+        let table_type = required_cell(&row[3])?;
+        let kind = match table_type {
             "MATERIALIZED VIEW" => DatabaseObjectKind::MaterializedView,
             "VIEW" => DatabaseObjectKind::View,
             "BASE TABLE" | "TEMPORARY TABLE" | "EXTERNAL TABLE" | "EVENT TABLE" => {
                 DatabaseObjectKind::Table
             }
             _ => continue,
+        };
+        let signature = match table_type {
+            "EXTERNAL TABLE" | "EVENT TABLE" => Some(table_type.to_owned()),
+            _ => None,
         };
         let estimated_rows = optional_metric(&row[4])?;
         let total_bytes = optional_metric(&row[5])?;
@@ -237,7 +243,7 @@ pub(crate) fn parse_tables(
                 identity: None,
             },
             owner_table: None,
-            signature: None,
+            signature,
             estimated_rows,
             total_bytes,
         });
@@ -868,20 +874,103 @@ pub(crate) fn extract_view_dependencies(
         }
     }
 
-    let Ok(statements) = Parser::new(&SnowflakeDialect {})
+    fn slice_query_after_top_level_as(ddl: &str) -> Option<&str> {
+        use sqlparser::keywords::Keyword;
+        use sqlparser::tokenizer::{Token, Tokenizer};
+        let tokens = Tokenizer::new(&SnowflakeDialect {}, ddl)
+            .tokenize_with_location()
+            .ok()?;
+        let non_ws: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.token, Token::Whitespace(_)))
+            .collect();
+        let mut depth = 0i32;
+        for (idx, tok) in non_ws.iter().enumerate() {
+            match &tok.token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth = (depth - 1).max(0),
+                Token::Word(w)
+                    if depth == 0 && w.quote_style.is_none() && w.keyword == Keyword::AS =>
+                {
+                    let next = non_ws.get(idx + 1)?;
+                    let starts_query = match &next.token {
+                        Token::Word(nw) if nw.quote_style.is_none() => {
+                            matches!(nw.keyword, Keyword::SELECT | Keyword::WITH)
+                        }
+                        Token::LParen => true,
+                        _ => false,
+                    };
+                    if starts_query {
+                        let target_line = next.span.start.line as usize;
+                        let target_col = next.span.start.column as usize;
+                        if target_line == 0 || target_col == 0 {
+                            return None;
+                        }
+                        let mut cur_line = 1usize;
+                        let mut line_byte_start = 0usize;
+                        for (b_idx, ch) in ddl.char_indices() {
+                            if cur_line == target_line {
+                                line_byte_start = b_idx;
+                                break;
+                            }
+                            if ch == '\n' {
+                                cur_line += 1;
+                            }
+                        }
+                        if cur_line != target_line {
+                            return None;
+                        }
+                        let col_offset = ddl[line_byte_start..]
+                            .char_indices()
+                            .nth(target_col - 1)
+                            .map(|(off, _)| off)?;
+                        return ddl.get(line_byte_start + col_offset..);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    let statements = match Parser::new(&SnowflakeDialect {})
         .with_recursion_limit(32)
         .try_with_sql(ddl)
         .and_then(|mut parser| parser.parse_statements())
-    else {
-        return Vec::new();
+    {
+        Ok(stmts) => stmts,
+        Err(_) => {
+            let Some(query_sql) = slice_query_after_top_level_as(ddl) else {
+                return Vec::new();
+            };
+            let Ok(stmts) = Parser::new(&SnowflakeDialect {})
+                .with_recursion_limit(32)
+                .try_with_sql(query_sql)
+                .and_then(|mut parser| parser.parse_statements())
+            else {
+                return Vec::new();
+            };
+            stmts
+        }
     };
     let mut visitor = RelationVisitor {
         refs: Vec::new(),
         ctes: HashSet::new(),
     };
     for stmt in &statements {
-        if let sqlparser::ast::Statement::CreateView(create) = stmt {
-            let _ = create.query.visit(&mut visitor);
+        match stmt {
+            sqlparser::ast::Statement::CreateView(create) => {
+                let _ = create.query.visit(&mut visitor);
+            }
+            sqlparser::ast::Statement::CreateTable(create) => {
+                if let Some(query) = &create.query {
+                    let _ = query.visit(&mut visitor);
+                }
+            }
+            sqlparser::ast::Statement::Query(query) => {
+                let _ = query.visit(&mut visitor);
+            }
+            _ => {}
         }
     }
     let mut edges = Vec::new();
@@ -932,9 +1021,373 @@ pub(crate) fn empty_details(object: DatabaseObjectRef) -> ObjectDetails {
         routine: None,
         sequence: None,
         storage: None,
+        snowflake_table: None,
         uses: Vec::new(),
         used_by: Vec::new(),
     }
+}
+
+pub(crate) fn classify_table_subtype(target: &BrowseRelation) -> SnowflakeTableSubtype {
+    match target.table_type.as_str() {
+        "EXTERNAL TABLE" => SnowflakeTableSubtype::External,
+        "EVENT TABLE" => SnowflakeTableSubtype::Event,
+        "TEMPORARY TABLE" => SnowflakeTableSubtype::Temporary,
+        _ if target.traits.dynamic == Some(true) => SnowflakeTableSubtype::Dynamic,
+        _ if target.traits.hybrid == Some(true) => SnowflakeTableSubtype::Hybrid,
+        _ if target.traits.iceberg == Some(true) => SnowflakeTableSubtype::Iceberg,
+        _ if target.traits.transient == Some(true) => SnowflakeTableSubtype::Transient,
+        _ => SnowflakeTableSubtype::Base,
+    }
+}
+
+fn escape_show_like_exact(name: &str) -> AppResult<String> {
+    metadata::quote_identifier(name)?;
+    let mut escaped = String::with_capacity(name.len() + 4);
+    for ch in name.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        if ch == '\'' {
+            escaped.push('\'');
+        }
+        escaped.push(ch);
+    }
+    Ok(format!("'{escaped}'"))
+}
+
+pub(crate) fn dynamic_table_meta_sql(
+    context: &LiveContext,
+    schema: &str,
+    name: &str,
+) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    Ok(format!(
+        "SHOW DYNAMIC TABLES LIKE {} IN SCHEMA {}.{}",
+        escape_show_like_exact(name)?,
+        metadata::quote_identifier(db)?,
+        metadata::quote_identifier(schema)?,
+    ))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct DynamicTableMeta {
+    pub target_lag: Option<String>,
+    pub warehouse: Option<String>,
+    pub refresh_mode: Option<String>,
+    pub scheduling_state: Option<String>,
+}
+
+pub(crate) fn parse_dynamic_table_meta(
+    expected_name: &str,
+    result: &MetadataResult,
+) -> DynamicTableMeta {
+    let col_idx = |wanted: &str| {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(wanted))
+    };
+    let Some(name_idx) = col_idx("name") else {
+        return DynamicTableMeta::default();
+    };
+    let lag_idx = col_idx("target_lag");
+    let wh_idx = col_idx("warehouse");
+    let mode_idx = col_idx("refresh_mode");
+    let sched_idx = col_idx("scheduling_state");
+
+    for row in &result.rows {
+        if row.get(name_idx).and_then(Option::as_deref) == Some(expected_name) {
+            let pick = |idx: Option<usize>| {
+                idx.and_then(|i| row.get(i))
+                    .and_then(Clone::clone)
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            };
+            return DynamicTableMeta {
+                target_lag: pick(lag_idx),
+                warehouse: pick(wh_idx),
+                refresh_mode: pick(mode_idx),
+                scheduling_state: pick(sched_idx),
+            };
+        }
+    }
+    DynamicTableMeta::default()
+}
+
+pub(crate) fn external_table_meta_sql(
+    context: &LiveContext,
+    schema: &str,
+    name: &str,
+) -> AppResult<String> {
+    let db = database(context)?;
+    user_schema(schema)?;
+    Ok(format!(
+        "SHOW EXTERNAL TABLES LIKE {} IN SCHEMA {}.{}",
+        escape_show_like_exact(name)?,
+        metadata::quote_identifier(db)?,
+        metadata::quote_identifier(schema)?,
+    ))
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalTableMeta {
+    pub external_location: Option<String>,
+    pub file_format: Option<String>,
+}
+
+pub(crate) fn parse_external_table_meta(
+    expected_name: &str,
+    result: &MetadataResult,
+) -> ExternalTableMeta {
+    let col_idx = |wanted: &str| {
+        result
+            .columns
+            .iter()
+            .position(|c| c.name.eq_ignore_ascii_case(wanted))
+    };
+    let Some(name_idx) = col_idx("name") else {
+        return ExternalTableMeta::default();
+    };
+    let loc_idx = col_idx("location").or_else(|| col_idx("stage"));
+    let fmt_name_idx = col_idx("file_format_name");
+    let fmt_type_idx = col_idx("file_format_type");
+
+    for row in &result.rows {
+        if row.get(name_idx).and_then(Option::as_deref) == Some(expected_name) {
+            let pick = |idx: Option<usize>| {
+                idx.and_then(|i| row.get(i))
+                    .and_then(Clone::clone)
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+            };
+            let file_format = pick(fmt_name_idx).or_else(|| pick(fmt_type_idx));
+            return ExternalTableMeta {
+                external_location: pick(loc_idx),
+                file_format,
+            };
+        }
+    }
+    ExternalTableMeta::default()
+}
+
+pub const MAX_QUERY_HISTORY_LIMIT: u32 = 100;
+pub const MAX_OPERATOR_STATS_ROWS: usize = 500;
+const MAX_QUERY_TEXT_PREVIEW_BYTES: usize = 16 * 1024;
+
+pub(crate) fn is_valid_query_id(query_id: &str) -> bool {
+    let trimmed = query_id.trim();
+    (8..=64).contains(&trimmed.len())
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+pub(crate) fn query_history_sql(limit: u32) -> AppResult<String> {
+    if !(1..=MAX_QUERY_HISTORY_LIMIT).contains(&limit) {
+        return Err(AppError::invalid(format!(
+            "Snowflake query history limit must be between 1 and {MAX_QUERY_HISTORY_LIMIT}"
+        )));
+    }
+    Ok(format!(
+        "SELECT QUERY_ID, QUERY_TEXT, QUERY_TYPE, EXECUTION_STATUS, WAREHOUSE_NAME, WAREHOUSE_SIZE, DATABASE_NAME, SCHEMA_NAME, START_TIME::VARCHAR AS START_TIME, TOTAL_ELAPSED_TIME::VARCHAR AS TOTAL_ELAPSED_TIME, COMPILATION_TIME::VARCHAR AS COMPILATION_TIME, EXECUTION_TIME::VARCHAR AS EXECUTION_TIME, (COALESCE(QUEUED_PROVISIONING_TIME, 0) + COALESCE(QUEUED_REPAIR_TIME, 0) + COALESCE(QUEUED_OVERLOAD_TIME, 0))::VARCHAR AS QUEUED_TIME, BYTES_SCANNED::VARCHAR AS BYTES_SCANNED, PERCENTAGE_SCANNED_FROM_CACHE::VARCHAR AS CACHE_RATIO, BYTES_SPILLED_TO_LOCAL_STORAGE::VARCHAR AS SPILL_LOCAL, BYTES_SPILLED_TO_REMOTE_STORAGE::VARCHAR AS SPILL_REMOTE, PARTITIONS_SCANNED::VARCHAR AS PARTITIONS_SCANNED, PARTITIONS_TOTAL::VARCHAR AS PARTITIONS_TOTAL, ROWS_PRODUCED::VARCHAR AS ROWS_PRODUCED, ERROR_MESSAGE FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => {limit})) ORDER BY START_TIME DESC"
+    ))
+}
+
+fn opt_u64(cell: Option<&Option<String>>) -> Option<u64> {
+    let raw = cell?.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<u64>().ok().or_else(|| {
+        raw.parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .map(|v| v as u64)
+    })
+}
+
+fn opt_f64(cell: Option<&Option<String>>) -> Option<f64> {
+    let raw = cell?.as_deref()?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    raw.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+fn cap_utf8_str(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_owned();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = s[..end].to_owned();
+    out.push('…');
+    out
+}
+
+pub(crate) fn parse_query_history_entries(
+    result: &MetadataResult,
+    redact_sql: bool,
+) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+    if result.columns.len() != 21 || result.rows.len() > MAX_QUERY_HISTORY_LIMIT as usize {
+        return Err(malformed());
+    }
+    let mut entries = Vec::with_capacity(result.rows.len());
+    for row in &result.rows {
+        if row.len() != 21 {
+            return Err(malformed());
+        }
+        let query_id = required_cell(&row[0])?.trim().to_owned();
+        if !is_valid_query_id(&query_id) {
+            continue;
+        }
+        let raw_sql = row[1].as_deref().unwrap_or_default();
+        let query_text = if redact_sql {
+            "[SQL text hidden by connection privacy policy]".to_owned()
+        } else {
+            cap_utf8_str(raw_sql, MAX_QUERY_TEXT_PREVIEW_BYTES)
+        };
+        let clean_opt = |idx: usize| {
+            row[idx]
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        entries.push(SnowflakeQueryHistoryEntry {
+            query_id,
+            query_text,
+            query_type: clean_opt(2).unwrap_or_else(|| "UNKNOWN".into()),
+            execution_status: clean_opt(3).unwrap_or_else(|| "UNKNOWN".into()),
+            warehouse_name: clean_opt(4),
+            warehouse_size: clean_opt(5),
+            database_name: clean_opt(6),
+            schema_name: clean_opt(7),
+            start_time: clean_opt(8).unwrap_or_default(),
+            total_elapsed_ms: opt_u64(row.get(9)),
+            compilation_ms: opt_u64(row.get(10)),
+            execution_ms: opt_u64(row.get(11)),
+            queued_ms: opt_u64(row.get(12)),
+            bytes_scanned: opt_u64(row.get(13)),
+            cache_hit_ratio: opt_f64(row.get(14)),
+            bytes_spilled_local: opt_u64(row.get(15)),
+            bytes_spilled_remote: opt_u64(row.get(16)),
+            partitions_scanned: opt_u64(row.get(17)),
+            partitions_total: opt_u64(row.get(18)),
+            rows_produced: opt_u64(row.get(19)),
+            error_message: clean_opt(20),
+        });
+    }
+    Ok(entries)
+}
+
+pub(crate) fn operator_profile_sql() -> &'static str {
+    "SELECT STEP_ID::VARCHAR AS STEP_ID, OPERATOR_ID::VARCHAR AS OPERATOR_ID, TO_JSON(PARENT_OPERATORS) AS PARENT_OPERATORS, OPERATOR_TYPE, EXECUTION_TIME_BREAKDOWN:overall_percentage::VARCHAR AS OVERALL_PCT, OPERATOR_STATISTICS:input_rows::VARCHAR AS INPUT_ROWS, OPERATOR_STATISTICS:output_rows::VARCHAR AS OUTPUT_ROWS, OPERATOR_STATISTICS:io:bytes_scanned::VARCHAR AS BYTES_SCANNED, OPERATOR_STATISTICS:io:percentage_scanned_from_cache::VARCHAR AS CACHE_RATIO, OPERATOR_STATISTICS:pruning:partitions_scanned::VARCHAR AS PARTITIONS_SCANNED, OPERATOR_STATISTICS:pruning:partitions_total::VARCHAR AS PARTITIONS_TOTAL, OPERATOR_STATISTICS:spilling:bytes_spilled_local_storage::VARCHAR AS SPILL_LOCAL, OPERATOR_STATISTICS:spilling:bytes_spilled_remote_storage::VARCHAR AS SPILL_REMOTE, TO_JSON(OPERATOR_ATTRIBUTES) AS OPERATOR_ATTRIBUTES FROM TABLE(GET_QUERY_OPERATOR_STATS(?)) ORDER BY STEP_ID, OPERATOR_ID LIMIT 500"
+}
+
+fn parse_parent_operator_ids(raw: Option<&str>) -> Vec<u32> {
+    let Some(text) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(text) {
+        return arr
+            .into_iter()
+            .filter_map(|v| {
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .or_else(|| v.as_str().and_then(|s| s.parse::<u32>().ok()))
+            })
+            .collect();
+    }
+    Vec::new()
+}
+
+pub(crate) fn parse_operator_profile(
+    query_id: &str,
+    result: &MetadataResult,
+) -> AppResult<SnowflakeOperatorProfile> {
+    if !is_valid_query_id(query_id) {
+        return Err(AppError::invalid("Provide a valid Snowflake query ID"));
+    }
+    if result.columns.len() != 14 || result.rows.len() > MAX_OPERATOR_STATS_ROWS {
+        return Err(malformed());
+    }
+    let mut operators = Vec::with_capacity(result.rows.len());
+    let mut total_spilled_local_bytes = 0u64;
+    let mut total_spilled_remote_bytes = 0u64;
+    let mut best_bottleneck: Option<(f64, u64, u32)> = None;
+
+    for row in &result.rows {
+        if row.len() != 14 {
+            return Err(malformed());
+        }
+        let step_id = opt_u64(row.first())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(1);
+        let operator_id = opt_u64(row.get(1))
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(malformed)?;
+        let parent_operators = parse_parent_operator_ids(row[2].as_deref());
+        let operator_type = required_cell(&row[3])?.trim().to_owned();
+        let overall_percentage = opt_f64(row.get(4));
+        let input_rows = opt_u64(row.get(5));
+        let output_rows = opt_u64(row.get(6));
+        let bytes_scanned = opt_u64(row.get(7));
+        let cache_hit_ratio = opt_f64(row.get(8));
+        let partitions_scanned = opt_u64(row.get(9));
+        let partitions_total = opt_u64(row.get(10));
+        let bytes_spilled_local = opt_u64(row.get(11));
+        let bytes_spilled_remote = opt_u64(row.get(12));
+        let detail = row[13]
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != "{}" && *s != "null")
+            .map(|s| cap_utf8_str(s, 1024));
+
+        let op_spill = bytes_spilled_local
+            .unwrap_or(0)
+            .saturating_add(bytes_spilled_remote.unwrap_or(0));
+        total_spilled_local_bytes =
+            total_spilled_local_bytes.saturating_add(bytes_spilled_local.unwrap_or(0));
+        total_spilled_remote_bytes =
+            total_spilled_remote_bytes.saturating_add(bytes_spilled_remote.unwrap_or(0));
+
+        let pct = overall_percentage.unwrap_or(0.0);
+        if pct >= 0.20 || op_spill > 0 {
+            let score = (pct, op_spill, operator_id);
+            if best_bottleneck.is_none_or(|prev| (score.0, score.1) > (prev.0, prev.1)) {
+                best_bottleneck = Some(score);
+            }
+        }
+
+        operators.push(SnowflakeOperatorStat {
+            step_id,
+            operator_id,
+            parent_operators,
+            operator_type,
+            overall_percentage,
+            input_rows,
+            output_rows,
+            bytes_scanned,
+            cache_hit_ratio,
+            partitions_scanned,
+            partitions_total,
+            bytes_spilled_local,
+            bytes_spilled_remote,
+            detail,
+        });
+    }
+
+    Ok(SnowflakeOperatorProfile {
+        query_id: query_id.trim().to_owned(),
+        operators,
+        total_spilled_local_bytes,
+        total_spilled_remote_bytes,
+        bottleneck_operator_id: best_bottleneck.map(|(_, _, id)| id),
+    })
 }
 
 const SCHEMA_RELATION_COLUMNS: [&str; 12] = [
@@ -2480,5 +2933,146 @@ mod tests {
             ),
             "CREATE OR REPLACE VIEW \"PUBLIC\".\"ACTIVE_ORDERS\" AS SELECT * FROM PUBLIC.ORDERS"
         );
+    }
+
+    #[test]
+    fn parses_dynamic_and_external_table_metadata_and_post_execution_operator_profile() {
+        let dyn_res = MetadataResult {
+            columns: vec![
+                ColumnInfo {
+                    id: "c0".into(),
+                    name: "name".into(),
+                    database_type: "TEXT".into(),
+                    kind: ColumnKind::Text,
+                    nullable: false,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: false,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c1".into(),
+                    name: "target_lag".into(),
+                    database_type: "TEXT".into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: false,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c2".into(),
+                    name: "warehouse".into(),
+                    database_type: "TEXT".into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: false,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c3".into(),
+                    name: "refresh_mode".into(),
+                    database_type: "TEXT".into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: false,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "c4".into(),
+                    name: "scheduling_state".into(),
+                    database_type: "TEXT".into(),
+                    kind: ColumnKind::Text,
+                    nullable: true,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: false,
+                    insertable: false,
+                    has_default: false,
+                },
+            ],
+            rows: vec![vec![
+                Some("LIVE_ROLLUP".into()),
+                Some("5 minutes".into()),
+                Some("WH_PIPE".into()),
+                Some("INCREMENTAL".into()),
+                Some("ACTIVE".into()),
+            ]],
+            rows_seen: 1,
+            truncated: false,
+        };
+        let dyn_meta = parse_dynamic_table_meta("LIVE_ROLLUP", &dyn_res);
+        assert_eq!(dyn_meta.target_lag.as_deref(), Some("5 minutes"));
+        assert_eq!(dyn_meta.warehouse.as_deref(), Some("WH_PIPE"));
+        assert_eq!(dyn_meta.refresh_mode.as_deref(), Some("INCREMENTAL"));
+        assert_eq!(dyn_meta.scheduling_state.as_deref(), Some("ACTIVE"));
+
+        let op_cols = (0..14)
+            .map(|i| ColumnInfo {
+                id: format!("c{i}"),
+                name: format!("C{i}"),
+                database_type: "TEXT".into(),
+                kind: ColumnKind::Text,
+                nullable: true,
+                primary_key: false,
+                foreign_key: false,
+                editable: false,
+                insertable: false,
+                has_default: false,
+            })
+            .collect();
+        let op_res = MetadataResult {
+            columns: op_cols,
+            rows: vec![
+                vec![
+                    Some("1".into()),
+                    Some("0".into()),
+                    Some("[]".into()),
+                    Some("Result".into()),
+                    Some("0.05".into()),
+                    Some("100".into()),
+                    Some("100".into()),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("{}".into()),
+                ],
+                vec![
+                    Some("1".into()),
+                    Some("1".into()),
+                    Some("[0]".into()),
+                    Some("Join".into()),
+                    Some("0.72".into()),
+                    Some("500000".into()),
+                    Some("100".into()),
+                    Some("1048576".into()),
+                    Some("0.85".into()),
+                    Some("2".into()),
+                    Some("16".into()),
+                    Some("65536".into()),
+                    Some("0".into()),
+                    Some("{\"joinType\":\"INNER\"}".into()),
+                ],
+            ],
+            rows_seen: 2,
+            truncated: false,
+        };
+        let prof = parse_operator_profile("01b77a9e-0000-1111-2222-333344445555", &op_res).unwrap();
+        assert_eq!(prof.operators.len(), 2);
+        assert_eq!(prof.bottleneck_operator_id, Some(1));
+        assert_eq!(prof.total_spilled_local_bytes, 65536);
+        assert_eq!(prof.operators[1].parent_operators, vec![0]);
     }
 }
