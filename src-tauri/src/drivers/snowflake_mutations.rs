@@ -900,16 +900,50 @@ fn canonical_coord_bits(val: f64) -> AppResult<u64> {
     })
 }
 
-fn push_canonical_position(coords: &[f64], is_geography: bool, out: &mut Vec<u8>) -> AppResult<()> {
-    if !(2..=4).contains(&coords.len()) {
-        return Err(invalid());
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpatialDim {
+    Unspecified,
+    Z,
+    M,
+    ZM,
+}
+
+fn push_canonical_position(
+    coords: &[f64],
+    dim: SpatialDim,
+    is_geography: bool,
+    out: &mut Vec<u8>,
+) -> AppResult<()> {
+    match dim {
+        SpatialDim::Unspecified => {
+            if !(2..=4).contains(&coords.len()) {
+                return Err(invalid());
+            }
+        }
+        SpatialDim::Z | SpatialDim::M => {
+            if coords.len() != 3 {
+                return Err(invalid());
+            }
+        }
+        SpatialDim::ZM => {
+            if coords.len() != 4 {
+                return Err(invalid());
+            }
+        }
     }
     if is_geography
         && (!(-180.0..=180.0).contains(&coords[0]) || !(-90.0..=90.0).contains(&coords[1]))
     {
         return Err(invalid());
     }
-    out.push(coords.len() as u8);
+    let dim_tag = match (dim, coords.len()) {
+        (_, 2) => b'2',
+        (SpatialDim::M, 3) => b'M',
+        (_, 3) => b'Z',
+        (_, 4) => b'B',
+        _ => return Err(invalid()),
+    };
+    out.push(dim_tag);
     for &c in coords {
         out.extend_from_slice(&canonical_coord_bits(c)?.to_be_bytes());
     }
@@ -976,7 +1010,7 @@ fn encode_geojson_geometry(
             } else {
                 out.push(1);
                 let pos = parse_geojson_position(coords_val)?;
-                push_canonical_position(&pos, is_geography, out)?;
+                push_canonical_position(&pos, SpatialDim::Unspecified, is_geography, out)?;
             }
         }
         "LINESTRING" => {
@@ -991,7 +1025,7 @@ fn encode_geojson_geometry(
             out.extend_from_slice(&(arr.len() as u32).to_be_bytes());
             for item in arr {
                 let pos = parse_geojson_position(item)?;
-                push_canonical_position(&pos, is_geography, out)?;
+                push_canonical_position(&pos, SpatialDim::Unspecified, is_geography, out)?;
             }
         }
         "POLYGON" => {
@@ -1010,7 +1044,7 @@ fn encode_geojson_geometry(
                 validate_closed_ring(&positions)?;
                 out.extend_from_slice(&(positions.len() as u32).to_be_bytes());
                 for pos in &positions {
-                    push_canonical_position(pos, is_geography, out)?;
+                    push_canonical_position(pos, SpatialDim::Unspecified, is_geography, out)?;
                 }
             }
         }
@@ -1023,7 +1057,7 @@ fn encode_geojson_geometry(
             out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
             for item in pts {
                 let pos = parse_geojson_position(item)?;
-                push_canonical_position(&pos, is_geography, out)?;
+                push_canonical_position(&pos, SpatialDim::Unspecified, is_geography, out)?;
             }
         }
         "MULTILINESTRING" => {
@@ -1041,7 +1075,7 @@ fn encode_geojson_geometry(
                 out.extend_from_slice(&(line_arr.len() as u32).to_be_bytes());
                 for item in line_arr {
                     let pos = parse_geojson_position(item)?;
-                    push_canonical_position(&pos, is_geography, out)?;
+                    push_canonical_position(&pos, SpatialDim::Unspecified, is_geography, out)?;
                 }
             }
         }
@@ -1064,7 +1098,7 @@ fn encode_geojson_geometry(
                     validate_closed_ring(&positions)?;
                     out.extend_from_slice(&(positions.len() as u32).to_be_bytes());
                     for pos in &positions {
-                        push_canonical_position(pos, is_geography, out)?;
+                        push_canonical_position(pos, SpatialDim::Unspecified, is_geography, out)?;
                     }
                 }
             }
@@ -1208,25 +1242,31 @@ impl<'a> WktParser<'a> {
         Ok(rings)
     }
 
-    fn check_empty_or_require_open(&mut self) -> AppResult<bool> {
+    fn check_empty_or_dim(&mut self) -> AppResult<(SpatialDim, bool)> {
         let saved = self.pos;
         if let Some(word) = self.read_word() {
             if word.eq_ignore_ascii_case("EMPTY") {
-                return Ok(true);
+                return Ok((SpatialDim::Unspecified, true));
             }
-            if matches!(word.to_ascii_uppercase().as_str(), "Z" | "M" | "ZM") {
+            let dim = match word.to_ascii_uppercase().as_str() {
+                "Z" => Some(SpatialDim::Z),
+                "M" => Some(SpatialDim::M),
+                "ZM" => Some(SpatialDim::ZM),
+                _ => None,
+            };
+            if let Some(d) = dim {
                 let after_dim = self.pos;
                 if let Some(next_word) = self.read_word() {
                     if next_word.eq_ignore_ascii_case("EMPTY") {
-                        return Ok(true);
+                        return Ok((d, true));
                     }
                     self.pos = after_dim;
                 }
-                return Ok(false);
+                return Ok((d, false));
             }
             self.pos = saved;
         }
-        Ok(false)
+        Ok((SpatialDim::Unspecified, false))
     }
 
     fn parse_geometry(
@@ -1239,7 +1279,7 @@ impl<'a> WktParser<'a> {
             return Err(invalid());
         }
         let kind = self.read_word().ok_or_else(invalid)?.to_ascii_uppercase();
-        let is_empty = self.check_empty_or_require_open()?;
+        let (dim, is_empty) = self.check_empty_or_dim()?;
         match kind.as_str() {
             "POINT" => {
                 out.push(1);
@@ -1254,7 +1294,7 @@ impl<'a> WktParser<'a> {
                         return Err(invalid());
                     }
                     out.push(1);
-                    push_canonical_position(&pos, is_geography, out)?;
+                    push_canonical_position(&pos, dim, is_geography, out)?;
                 }
             }
             "LINESTRING" => {
@@ -1265,7 +1305,7 @@ impl<'a> WktParser<'a> {
                     let pts = self.read_position_list(2)?;
                     out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
                     for p in &pts {
-                        push_canonical_position(p, is_geography, out)?;
+                        push_canonical_position(p, dim, is_geography, out)?;
                     }
                 }
             }
@@ -1279,7 +1319,7 @@ impl<'a> WktParser<'a> {
                     for ring in &rings {
                         out.extend_from_slice(&(ring.len() as u32).to_be_bytes());
                         for p in ring {
-                            push_canonical_position(p, is_geography, out)?;
+                            push_canonical_position(p, dim, is_geography, out)?;
                         }
                     }
                 }
@@ -1310,7 +1350,7 @@ impl<'a> WktParser<'a> {
                     }
                     out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
                     for p in &pts {
-                        push_canonical_position(p, is_geography, out)?;
+                        push_canonical_position(p, dim, is_geography, out)?;
                     }
                 }
             }
@@ -1337,7 +1377,7 @@ impl<'a> WktParser<'a> {
                     for line in &lines {
                         out.extend_from_slice(&(line.len() as u32).to_be_bytes());
                         for p in line {
-                            push_canonical_position(p, is_geography, out)?;
+                            push_canonical_position(p, dim, is_geography, out)?;
                         }
                     }
                 }
@@ -1367,7 +1407,7 @@ impl<'a> WktParser<'a> {
                         for ring in rings {
                             out.extend_from_slice(&(ring.len() as u32).to_be_bytes());
                             for p in ring {
-                                push_canonical_position(p, is_geography, out)?;
+                                push_canonical_position(p, dim, is_geography, out)?;
                             }
                         }
                     }
@@ -1425,11 +1465,15 @@ fn canonicalize_spatial(text: &str, is_geography: bool) -> AppResult<Vec<u8>> {
             .and_then(serde_json::Value::as_str)
         {
             let tail = crs_name.rsplit(':').next().ok_or_else(invalid)?.trim();
-            let parsed: u32 = tail.parse().map_err(|_| invalid())?;
-            if parsed > 999_999 {
-                return Err(invalid());
+            if tail.eq_ignore_ascii_case("CRS84") {
+                4326
+            } else {
+                let parsed: u32 = tail.parse().map_err(|_| invalid())?;
+                if parsed > 999_999 {
+                    return Err(invalid());
+                }
+                parsed
             }
-            parsed
         } else {
             default_srid
         };

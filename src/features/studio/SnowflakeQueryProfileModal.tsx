@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, AlertTriangle, Gauge, RefreshCw, Search, X } from "lucide-react";
 import type { SnowflakeOperatorProfile, SnowflakeQueryHistoryEntry } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
@@ -42,10 +42,17 @@ export function SnowflakeQueryProfileModal({
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
 
+  const historySeqRef = useRef(0);
+  const profileSeqRef = useRef(0);
+  const selectedQueryIdRef = useRef(selectedQueryId);
+  selectedQueryIdRef.current = selectedQueryId;
+
   const loadOperatorProfile = useCallback(
     async (queryId: string) => {
       const trimmed = queryId.trim();
       if (!trimmed) return;
+      const reqId = ++profileSeqRef.current;
+      selectedQueryIdRef.current = trimmed;
       setSelectedQueryId(trimmed);
       setQueryIdInput(trimmed);
       setProfileLoading(true);
@@ -55,12 +62,16 @@ export function SnowflakeQueryProfileModal({
         const result = await client.call("snowflake_query_operator_profile", {
           request: { sessionId, queryId: trimmed },
         });
+        if (profileSeqRef.current !== reqId) return;
         setProfile(result);
       } catch (err) {
+        if (profileSeqRef.current !== reqId) return;
         setProfile(null);
         setProfileError(messageOf(err));
       } finally {
-        setProfileLoading(false);
+        if (profileSeqRef.current === reqId) {
+          setProfileLoading(false);
+        }
       }
     },
     [sessionId],
@@ -68,6 +79,7 @@ export function SnowflakeQueryProfileModal({
 
   const loadHistory = useCallback(
     async (nextLimit: number) => {
+      const reqId = ++historySeqRef.current;
       setHistoryLoading(true);
       setHistoryError(null);
       try {
@@ -75,25 +87,27 @@ export function SnowflakeQueryProfileModal({
         const entries = await client.call("snowflake_query_history", {
           request: { sessionId, limit: nextLimit },
         });
+        if (historySeqRef.current !== reqId) return;
         setHistory(entries);
-        if (!selectedQueryId && entries.length > 0) {
+        if (!selectedQueryIdRef.current && entries.length > 0) {
           void loadOperatorProfile(entries[0].queryId);
         }
       } catch (err) {
+        if (historySeqRef.current !== reqId) return;
         setHistory([]);
         setHistoryError(messageOf(err));
       } finally {
-        setHistoryLoading(false);
+        if (historySeqRef.current === reqId) {
+          setHistoryLoading(false);
+        }
       }
     },
-    [loadOperatorProfile, selectedQueryId, sessionId],
+    [loadOperatorProfile, sessionId],
   );
 
   useEffect(() => {
     void loadHistory(limit);
-    // Intentionally load initial session history once on mount or limit change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, limit]);
+  }, [loadHistory, limit]);
 
   useEffect(() => {
     if (initialQueryId) {
@@ -101,11 +115,30 @@ export function SnowflakeQueryProfileModal({
     }
   }, [initialQueryId, loadOperatorProfile]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      historySeqRef.current += 1;
+      profileSeqRef.current += 1;
+    };
+  }, [onClose]);
+
   const selectedEntry = history.find((item) => item.queryId === selectedQueryId) ?? null;
-  const bottleneckOp =
-    profile && profile.bottleneckOperatorId !== null
-      ? (profile.operators.find((op) => op.operatorId === profile.bottleneckOperatorId) ?? null)
-      : null;
+  const isBottleneckOp = (op: SnowflakeOperatorProfile["operators"][number]) =>
+    profile !== null &&
+    profile.bottleneckOperatorId !== null &&
+    op.operatorId === profile.bottleneckOperatorId &&
+    (profile.bottleneckStepId === undefined ||
+      profile.bottleneckStepId === null ||
+      op.stepId === profile.bottleneckStepId);
+  const bottleneckOp = profile ? (profile.operators.find(isBottleneckOp) ?? null) : null;
 
   return (
     <div
@@ -416,7 +449,7 @@ export function SnowflakeQueryProfileModal({
                     </thead>
                     <tbody>
                       {profile.operators.map((op) => {
-                        const isBottleneck = profile.bottleneckOperatorId === op.operatorId;
+                        const isBottleneck = isBottleneckOp(op);
                         const spillTotal =
                           (op.bytesSpilledLocal ?? 0) + (op.bytesSpilledRemote ?? 0);
                         const pctValue =
@@ -428,7 +461,11 @@ export function SnowflakeQueryProfileModal({
                         return (
                           <tr
                             key={`${op.stepId}:${op.operatorId}`}
-                            data-testid={`snowflake-operator-${op.operatorId}`}
+                            data-testid={
+                              op.stepId === 1
+                                ? `snowflake-operator-${op.operatorId}`
+                                : `snowflake-operator-${op.stepId}-${op.operatorId}`
+                            }
                           >
                             <td className="mono">{`${op.stepId}.${op.operatorId}`}</td>
                             <td className="mono">

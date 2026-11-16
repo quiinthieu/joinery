@@ -3032,6 +3032,9 @@ pub struct SnowflakeOperatorProfile {
     pub total_spilled_local_bytes: u64,
     #[ts(type = "number")]
     pub total_spilled_remote_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bottleneck_step_id: Option<u32>,
     pub bottleneck_operator_id: Option<u32>,
 }
 

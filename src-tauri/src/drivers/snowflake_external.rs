@@ -4130,10 +4130,27 @@ impl Driver for SnowflakeExternal {
                                 &object.schema,
                                 &object.name,
                             )?;
-                            if let Ok(res) =
-                                self.metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES).await
+                            match self
+                                .metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES)
+                                .await
                             {
-                                dyn_meta = explorer::parse_dynamic_table_meta(&object.name, &res);
+                                Ok(res) => {
+                                    dyn_meta =
+                                        explorer::parse_dynamic_table_meta(&object.name, &res);
+                                }
+                                Err(err)
+                                    if self.is_closed()
+                                        || matches!(
+                                            err.code,
+                                            ErrorCode::ConnectionFailed
+                                                | ErrorCode::ConnectionClosed
+                                                | ErrorCode::Cancelled
+                                                | ErrorCode::OutcomeUnknown
+                                        ) =>
+                                {
+                                    return Err(err);
+                                }
+                                Err(_) => {}
                             }
                             if let ObjectDdlStatus::Available { ddl, .. } = &details.ddl {
                                 let schema_rows =
@@ -4167,10 +4184,27 @@ impl Driver for SnowflakeExternal {
                                 &object.schema,
                                 &object.name,
                             )?;
-                            if let Ok(res) =
-                                self.metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES).await
+                            match self
+                                .metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES)
+                                .await
                             {
-                                ext_meta = explorer::parse_external_table_meta(&object.name, &res);
+                                Ok(res) => {
+                                    ext_meta =
+                                        explorer::parse_external_table_meta(&object.name, &res);
+                                }
+                                Err(err)
+                                    if self.is_closed()
+                                        || matches!(
+                                            err.code,
+                                            ErrorCode::ConnectionFailed
+                                                | ErrorCode::ConnectionClosed
+                                                | ErrorCode::Cancelled
+                                                | ErrorCode::OutcomeUnknown
+                                        ) =>
+                                {
+                                    return Err(err);
+                                }
+                                Err(_) => {}
                             }
                         }
 
@@ -4777,9 +4811,11 @@ impl Driver for SnowflakeExternal {
         use super::snowflake_explorer as explorer;
         self.grid.require_ordinary()?;
         self.require_ordinary_mode()?;
-        let sql = explorer::query_history_sql(limit)?;
+        // Validate limit eagerly before acquiring the metadata lane.
+        explorer::query_history_sql(None, limit, redact_sql)?;
         self.metadata_operation(async {
             let context = self.live_metadata_context().await?;
+            let sql = explorer::query_history_sql(context.database.as_deref(), limit, redact_sql)?;
             let result = self
                 .metadata_read(&sql, limit as usize, browsing::PREVIEW_MAX_BYTES)
                 .await?;

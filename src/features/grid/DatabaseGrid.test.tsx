@@ -30,6 +30,7 @@ vi.mock("../../state/studio", () => ({
     tab: { connectionId: string | null },
     sessions: typeof mocks.studioState.sessions,
   ) => (tab.connectionId ? sessions[tab.connectionId] : undefined),
+  isSnowflakeConsoleSession: () => false,
 }));
 
 vi.mock("../../data/result-cache", () => ({

@@ -3034,8 +3034,13 @@ function SnowflakeCellInspectorModal({
         setError(parsed.error);
         return;
       }
+      const isGeography = databaseType.trim().toUpperCase().startsWith("GEOGRAPHY");
+      if (isGeography && parsed.srid !== null && parsed.srid !== 4326) {
+        setError("Snowflake GEOGRAPHY requires WGS84 SRID 4326");
+        return;
+      }
       if (
-        databaseType.trim().toUpperCase().startsWith("GEOGRAPHY") &&
+        isGeography &&
         parsed.bbox &&
         (parsed.bbox[0] < -180 ||
           parsed.bbox[2] > 180 ||

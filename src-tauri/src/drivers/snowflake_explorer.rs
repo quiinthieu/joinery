@@ -1042,15 +1042,17 @@ pub(crate) fn classify_table_subtype(target: &BrowseRelation) -> SnowflakeTableS
 
 fn escape_show_like_exact(name: &str) -> AppResult<String> {
     metadata::quote_identifier(name)?;
-    let mut escaped = String::with_capacity(name.len() + 4);
+    let mut escaped = String::with_capacity(name.len() + 8);
+    // Snowflake parses backslash escapes inside string literals before evaluating `SHOW ... LIKE`,
+    // so literal `\` needs `\\\\` and literal `%`/`_` wildcards need `\\%`/`\\_` in SQL source.
     for ch in name.chars() {
-        if matches!(ch, '\\' | '%' | '_') {
-            escaped.push('\\');
+        match ch {
+            '\\' => escaped.push_str("\\\\\\\\"),
+            '%' => escaped.push_str("\\\\%"),
+            '_' => escaped.push_str("\\\\_"),
+            '\'' => escaped.push_str("''"),
+            other => escaped.push(other),
         }
-        if ch == '\'' {
-            escaped.push('\'');
-        }
-        escaped.push(ch);
     }
     Ok(format!("'{escaped}'"))
 }
@@ -1183,14 +1185,30 @@ pub(crate) fn is_valid_query_id(query_id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-pub(crate) fn query_history_sql(limit: u32) -> AppResult<String> {
+pub(crate) fn query_history_sql(
+    database: Option<&str>,
+    limit: u32,
+    redact_sql: bool,
+) -> AppResult<String> {
     if !(1..=MAX_QUERY_HISTORY_LIMIT).contains(&limit) {
         return Err(AppError::invalid(format!(
             "Snowflake query history limit must be between 1 and {MAX_QUERY_HISTORY_LIMIT}"
         )));
     }
+    let query_text_proj = if redact_sql {
+        "NULL::VARCHAR AS QUERY_TEXT".to_owned()
+    } else {
+        format!(
+            "LEFT(QUERY_TEXT, {}) AS QUERY_TEXT",
+            MAX_QUERY_TEXT_PREVIEW_BYTES + 1
+        )
+    };
+    let fn_qualifier = match database.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(db) => format!("{}.INFORMATION_SCHEMA", metadata::quote_identifier(db)?),
+        None => "INFORMATION_SCHEMA".to_owned(),
+    };
     Ok(format!(
-        "SELECT QUERY_ID, QUERY_TEXT, QUERY_TYPE, EXECUTION_STATUS, WAREHOUSE_NAME, WAREHOUSE_SIZE, DATABASE_NAME, SCHEMA_NAME, START_TIME::VARCHAR AS START_TIME, TOTAL_ELAPSED_TIME::VARCHAR AS TOTAL_ELAPSED_TIME, COMPILATION_TIME::VARCHAR AS COMPILATION_TIME, EXECUTION_TIME::VARCHAR AS EXECUTION_TIME, (COALESCE(QUEUED_PROVISIONING_TIME, 0) + COALESCE(QUEUED_REPAIR_TIME, 0) + COALESCE(QUEUED_OVERLOAD_TIME, 0))::VARCHAR AS QUEUED_TIME, BYTES_SCANNED::VARCHAR AS BYTES_SCANNED, PERCENTAGE_SCANNED_FROM_CACHE::VARCHAR AS CACHE_RATIO, BYTES_SPILLED_TO_LOCAL_STORAGE::VARCHAR AS SPILL_LOCAL, BYTES_SPILLED_TO_REMOTE_STORAGE::VARCHAR AS SPILL_REMOTE, PARTITIONS_SCANNED::VARCHAR AS PARTITIONS_SCANNED, PARTITIONS_TOTAL::VARCHAR AS PARTITIONS_TOTAL, ROWS_PRODUCED::VARCHAR AS ROWS_PRODUCED, ERROR_MESSAGE FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => {limit})) ORDER BY START_TIME DESC"
+        "SELECT QUERY_ID, {query_text_proj}, QUERY_TYPE, EXECUTION_STATUS, WAREHOUSE_NAME, WAREHOUSE_SIZE, DATABASE_NAME, SCHEMA_NAME, START_TIME::VARCHAR AS START_TIME, TOTAL_ELAPSED_TIME::VARCHAR AS TOTAL_ELAPSED_TIME, COMPILATION_TIME::VARCHAR AS COMPILATION_TIME, EXECUTION_TIME::VARCHAR AS EXECUTION_TIME, (COALESCE(QUEUED_PROVISIONING_TIME, 0) + COALESCE(QUEUED_REPAIR_TIME, 0) + COALESCE(QUEUED_OVERLOAD_TIME, 0))::VARCHAR AS QUEUED_TIME, BYTES_SCANNED::VARCHAR AS BYTES_SCANNED, PERCENTAGE_SCANNED_FROM_CACHE::VARCHAR AS CACHE_RATIO, BYTES_SPILLED_TO_LOCAL_STORAGE::VARCHAR AS SPILL_LOCAL, BYTES_SPILLED_TO_REMOTE_STORAGE::VARCHAR AS SPILL_REMOTE, PARTITIONS_SCANNED::VARCHAR AS PARTITIONS_SCANNED, PARTITIONS_TOTAL::VARCHAR AS PARTITIONS_TOTAL, ROWS_PRODUCED::VARCHAR AS ROWS_PRODUCED, ERROR_MESSAGE FROM TABLE({fn_qualifier}.QUERY_HISTORY_BY_SESSION(RESULT_LIMIT => {limit})) ORDER BY START_TIME DESC"
     ))
 }
 
@@ -1318,7 +1336,7 @@ pub(crate) fn parse_operator_profile(
     let mut operators = Vec::with_capacity(result.rows.len());
     let mut total_spilled_local_bytes = 0u64;
     let mut total_spilled_remote_bytes = 0u64;
-    let mut best_bottleneck: Option<(f64, u64, u32)> = None;
+    let mut best_bottleneck: Option<(f64, u64, u32, u32)> = None;
 
     for row in &result.rows {
         if row.len() != 14 {
@@ -1357,7 +1375,7 @@ pub(crate) fn parse_operator_profile(
 
         let pct = overall_percentage.unwrap_or(0.0);
         if pct >= 0.20 || op_spill > 0 {
-            let score = (pct, op_spill, operator_id);
+            let score = (pct, op_spill, step_id, operator_id);
             if best_bottleneck.is_none_or(|prev| (score.0, score.1) > (prev.0, prev.1)) {
                 best_bottleneck = Some(score);
             }
@@ -1386,7 +1404,8 @@ pub(crate) fn parse_operator_profile(
         operators,
         total_spilled_local_bytes,
         total_spilled_remote_bytes,
-        bottleneck_operator_id: best_bottleneck.map(|(_, _, id)| id),
+        bottleneck_step_id: best_bottleneck.map(|(_, _, step, _)| step),
+        bottleneck_operator_id: best_bottleneck.map(|(_, _, _, id)| id),
     })
 }
 
@@ -3071,8 +3090,25 @@ mod tests {
         };
         let prof = parse_operator_profile("01b77a9e-0000-1111-2222-333344445555", &op_res).unwrap();
         assert_eq!(prof.operators.len(), 2);
+        assert_eq!(prof.bottleneck_step_id, Some(1));
         assert_eq!(prof.bottleneck_operator_id, Some(1));
         assert_eq!(prof.total_spilled_local_bytes, 65536);
         assert_eq!(prof.operators[1].parent_operators, vec![0]);
+
+        // Two-pass Snowflake string + LIKE escaping and privacy-aware query_history_sql
+        let ctx = sample_context();
+        let show_dyn = dynamic_table_meta_sql(&ctx, "PUBLIC", "LIVE_ROLLUP%1").unwrap();
+        assert_eq!(
+            show_dyn,
+            "SHOW DYNAMIC TABLES LIKE 'LIVE\\\\_ROLLUP\\\\%1' IN SCHEMA \"DB\".\"PUBLIC\""
+        );
+        let redacted_hist = query_history_sql(Some("DB"), 25, true).unwrap();
+        assert!(redacted_hist.contains("NULL::VARCHAR AS QUERY_TEXT"));
+        assert!(
+            redacted_hist.contains("TABLE(\"DB\".INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(")
+        );
+        let open_hist = query_history_sql(None, 25, false).unwrap();
+        assert!(open_hist.contains("LEFT(QUERY_TEXT, 16385) AS QUERY_TEXT"));
+        assert!(open_hist.contains("TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION("));
     }
 }

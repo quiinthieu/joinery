@@ -95,13 +95,15 @@ sessions:
   Added `SnowflakeTableSubtype` (`Standard`, `Dynamic`, `External`, `Hybrid`,
   `Event`, `Iceberg`, `Transient`, `Temporary`), `SnowflakeTableDetails`
   (`SHOW DYNAMIC TABLES` `target_lag`/`warehouse`/`refresh_mode`/`scheduling_state`,
-  `SHOW EXTERNAL TABLES` `location`/`file_format_name`/`file_format_type`/`auto_refresh`,
+  `SHOW EXTERNAL TABLES` `location`/`file_format_name`/`file_format_type` with
+  two-pass Snowflake string + `LIKE` escaping,
   and Dynamic Table upstream `dynamic table source` dependency extraction via
   `sqlparser` AST + top-level `AS` tokenizer fallback), and post-execution
   `snowflake_query_history` (`INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION` with
-  SQL text redaction when `!store_query_text`) + `snowflake_operator_profile`
+  wire-level `NULL::VARCHAR` SQL text redaction when `!store_query_text`) +
+  `snowflake_query_operator_profile`
   (`GET_QUERY_OPERATOR_STATS(?)` operator DAG, row counts, partition pruning,
-  local/remote disk spill bytes, and bottleneck breakdown) surfaced in
+  local/remote disk spill bytes, and `(step_id, operator_id)` bottleneck breakdown) surfaced in
   `ObjectInspectorView.tsx`, `Workbench.tsx`, and
   `SnowflakeQueryProfileModal.tsx`.
 - **AST-Aware SQL `Find Usages`, `Extract CTE`, and `Expand Wildcard` Refactorings (`a7a1e4e`)**:
@@ -131,25 +133,25 @@ sessions:
 Local verification recorded on `feat/datagrip-2026-3-workflows`:
 
 - Frontend, formatting, contracts & build: `pnpm format:check` clean,
-  `pnpm contracts && tsc -b` clean, `vitest run` **`1,090/1,090` tests passed
-  across `79` test files** (`0` failed), and `pnpm build` (`vite build`) clean
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,093/1,093` tests passed
+  across `79` test files** (`0` failed), and `pnpm build` + `vite build --mode native-smoke` clean
   with `DatabaseGrid` and `SqlEditor` code-split (`0` errors).
 - Rust static analysis & unit/integration suites: `cargo fmt --check`,
   `cargo check`, and strict
   `cargo clippy --all-targets --all-features -- -D warnings` clean (`0`
-  warnings), `736` non-socket `--lib` unit tests passed (`0` failed, `5`
+  warnings), `738` non-socket `--lib` unit tests passed (`0` failed, `5`
   ignored, including new `sql_refactor`, `snowflake_mutations`,
-  `snowflake_explorer`, `data_search`, `workspace_sql`, and `local_history`
+  `snowflake_explorer`, `drivers::snowflake_external::special_snowflake_tables_and_post_execution_query_profile_round_trip`,
+  `data_search`, `workspace_sql`, and `local_history`
   tests), plus `112/112` non-socket integration tests (`43/43`
   `tests/snowflake_process.rs`, `33/33` `tests/snowflake_external.rs` including
-  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`
-  and `special_snowflake_tables_and_post_execution_query_profile_round_trip`,
+  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`,
   `11/11` `tests/snowflake_profile.rs`, `9/9`
   `tests/snowflake_table_qualification_cli.rs`, `8/8`
   `tests/history_lifecycle.rs`, `2/2` `tests/groups.rs`, `2/2`
   `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, `1/1`
   `tests/recovery.rs`, and `1/1` end-to-end `tests/sqlite.rs` against a real
-  embedded SQLite 3 database) passed (`848` Rust tests total).
+  embedded SQLite 3 database) passed (`850` standard non-socket Rust tests total).
 - Node & Python verification suites: `165/165` non-loopback `snowflake-helper`
   unit tests, `136/136` `pnpm test:snowflake:qualification`, `23/23`
   `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`

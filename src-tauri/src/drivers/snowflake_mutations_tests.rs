@@ -996,11 +996,13 @@ fn spatial_geography_and_geometry_compile_wkt_ewkt_geojson_and_detect_cross_form
         ErrorCode::Conflict
     );
 
-    // Reject out-of-range GEOGRAPHY lon/lat, non-4326 GEOGRAPHY SRID, and unclosed polygons
+    // Reject out-of-range GEOGRAPHY lon/lat, non-4326 GEOGRAPHY SRID, mismatched WKT Z/M arity, and unclosed polygons
     for bad_geo in [
         "POINT(181 0)",
         "POINT(0 -91)",
         "SRID=3857;POINT(-122.4 37.7)",
+        "POINT Z (-122.4 37.7)",
+        "POINT ZM (-122.4 37.7 10)",
         "POLYGON((0 0, 1 0, 1 1, 0 1))",
         "LINESTRING(0 0)",
         "{\"type\":\"Point\",\"coordinates\":[200,10]}",
@@ -1018,4 +1020,42 @@ fn spatial_geography_and_geometry_compile_wkt_ewkt_geojson_and_detect_cross_form
             "expected invalid spatial input for {bad_geo}"
         );
     }
+
+    // GeoJSON CRS84 URN is accepted as WGS84 SRID 4326 on GEOGRAPHY, and POINT Z vs POINT M do NOT collide!
+    let crs84_batch = compile(
+        &spatial_target,
+        &[Mutation::Insert {
+            values: vec![
+                (0, text("3")),
+                (
+                    1,
+                    text("{\"type\":\"Point\",\"coordinates\":[-122.4,37.7],\"crs\":{\"type\":\"name\",\"properties\":{\"name\":\"urn:ogc:def:crs:OGC:1.3:CRS84\"}}}"),
+                ),
+                (2, text("POINT Z (1 2 3)")),
+            ],
+        }],
+    )
+    .unwrap();
+    parse_batch(&crs84_batch);
+
+    let z_orig = OriginalRow::new(
+        &spatial_target,
+        vec![text("4"), CellValue::Null, text("POINT Z (1 2 3)")],
+    )
+    .unwrap();
+    let m_insert = Mutation::Insert {
+        values: vec![
+            (0, text("4")),
+            (1, CellValue::Null),
+            (2, text("POINT M (1 2 3)")),
+        ],
+    };
+    assert!(
+        compile(
+            &spatial_target,
+            &[Mutation::Delete { original: z_orig }, m_insert]
+        )
+        .is_ok(),
+        "POINT Z (1 2 3) and POINT M (1 2 3) have distinct canonical dimensions and must not conflict"
+    );
 }

@@ -46,11 +46,12 @@ describe("SnowflakeQueryProfileModal", () => {
       queryId: "01b4a9c0-0001-9f12-0000-00420001a111",
       totalSpilledLocalBytes: 524288,
       totalSpilledRemoteBytes: 0,
+      bottleneckStepId: 2,
       bottleneckOperatorId: 2,
       operators: [
         {
           stepId: 1,
-          operatorId: 1,
+          operatorId: 2,
           parentOperators: [],
           operatorType: "Result",
           overallPercentage: 0.08,
@@ -65,7 +66,7 @@ describe("SnowflakeQueryProfileModal", () => {
           detail: null,
         },
         {
-          stepId: 1,
+          stepId: 2,
           operatorId: 2,
           parentOperators: [1],
           operatorType: "TableScan",
@@ -104,9 +105,12 @@ describe("SnowflakeQueryProfileModal", () => {
     expect(screen.getAllByText("4 / 16").length).toBeGreaterThan(0);
 
     await waitFor(() => {
-      expect(screen.getByTestId("snowflake-operator-2")).toBeTruthy();
+      expect(screen.getByTestId("snowflake-operator-2-2")).toBeTruthy();
     });
-    expect(screen.getByText("Bottleneck")).toBeTruthy();
+    // Only step 2 operator 2 gets the Bottleneck badge, NOT step 1 operator 2!
+    expect(screen.getAllByText("Bottleneck")).toHaveLength(1);
+    expect(screen.getByTestId("snowflake-operator-2").textContent).not.toContain("Bottleneck");
+    expect(screen.getByTestId("snowflake-operator-2-2").textContent).toContain("Bottleneck");
     expect(screen.getByText("PROD_DB.PUBLIC.ORDERS")).toBeTruthy();
     expect(screen.getByText("#2 TableScan (92.0%)")).toBeTruthy();
 
@@ -124,7 +128,7 @@ describe("SnowflakeQueryProfileModal", () => {
       });
     });
 
-    fireEvent.click(screen.getByLabelText("Close query profile"));
+    fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
