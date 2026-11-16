@@ -833,6 +833,8 @@ fn validate(connection: &Connection, control: &RecoveryControl) -> AppResult<()>
         ("bookmarks", 2 * 1024 * 1024),
         ("sql-format-settings", 4096),
         ("sql-snippets", 512 * 1024 * 6 + 65536),
+        ("virtual-foreign-keys", 512 * 1024 * 4 + 65536),
+        ("local-history", 2 * 1024 * 1024 * 4 + 65536),
     ] {
         let valid:bool=connection.query_row("SELECT NOT EXISTS(SELECT 1 FROM settings WHERE key=?1 AND (typeof(value)!='text' OR length(CAST(value AS BLOB))>?2))",rusqlite::params![key,limit],|r|r.get(0)).map_err(db_error)?;
         if !valid {

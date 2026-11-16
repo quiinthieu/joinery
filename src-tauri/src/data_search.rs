@@ -141,9 +141,11 @@ pub fn build_postgres_search_sql(
         .map(|(idx, col)| {
             let q = quote_double(&col.name);
             if col.kind == ColumnKind::Binary {
-                format!("encode({table_sql}.{q}, 'hex') AS __joinery_c{idx}")
+                format!(
+                    "CASE WHEN {table_sql}.{q} IS NULL THEN NULL ELSE '0x' || pg_catalog.encode({table_sql}.{q}, 'hex') END AS __joinery_c{idx}"
+                )
             } else {
-                format!("{table_sql}.{q}::text AS __joinery_c{idx}")
+                format!("{table_sql}.{q}::pg_catalog.text AS __joinery_c{idx}")
             }
         })
         .collect::<Vec<_>>()
@@ -152,12 +154,16 @@ pub fn build_postgres_search_sql(
     let predicates = searchable
         .iter()
         .map(|col| {
-            let expr = format!("{table_sql}.{}::text", quote_double(&col.name));
+            let expr = format!("{table_sql}.{}::pg_catalog.text", quote_double(&col.name));
             match (mode, case_sensitive) {
-                (DataSearchMatchMode::Exact, true) => format!("{expr} = $1::text"),
-                (DataSearchMatchMode::Exact, false) => format!("LOWER({expr}) = LOWER($1::text)"),
-                (_, true) => format!("{expr} LIKE $1::text ESCAPE '{LIKE_ESCAPE_CHAR}'"),
-                (_, false) => format!("{expr} ILIKE $1::text ESCAPE '{LIKE_ESCAPE_CHAR}'"),
+                (DataSearchMatchMode::Exact, true) => format!("{expr} = $1::pg_catalog.text"),
+                (DataSearchMatchMode::Exact, false) => {
+                    format!("pg_catalog.lower({expr}) = pg_catalog.lower($1::pg_catalog.text)")
+                }
+                (_, true) => format!("{expr} LIKE $1::pg_catalog.text ESCAPE '{LIKE_ESCAPE_CHAR}'"),
+                (_, false) => {
+                    format!("{expr} ILIKE $1::pg_catalog.text ESCAPE '{LIKE_ESCAPE_CHAR}'")
+                }
             }
         })
         .collect::<Vec<_>>()
@@ -224,6 +230,18 @@ pub fn build_mysql_search_sql(
     Some((sql, binds, names))
 }
 
+pub fn snowflake_search_expr(col: &ColumnInfo) -> String {
+    let q = quote_double(&col.name);
+    let upper = col.database_type.trim().to_ascii_uppercase();
+    if upper.starts_with("OBJECT") || upper.starts_with("ARRAY") {
+        format!("TO_JSON({q})")
+    } else if upper.starts_with("GEOGRAPHY") || upper.starts_with("GEOMETRY") {
+        format!("ST_ASEWKT({q})")
+    } else {
+        format!("TO_VARCHAR({q})")
+    }
+}
+
 pub fn build_snowflake_search_sql(
     database: &str,
     schema: &TableSchema,
@@ -245,21 +263,14 @@ pub fn build_snowflake_search_sql(
     let projection = schema
         .columns
         .iter()
-        .map(|col| {
-            let q = quote_double(&col.name);
-            if col.kind == ColumnKind::Binary {
-                format!("HEX_ENCODE({q}) AS {q}")
-            } else {
-                format!("TO_VARCHAR({q}) AS {q}")
-            }
-        })
+        .map(|col| quote_double(&col.name))
         .collect::<Vec<_>>()
         .join(", ");
 
     let mut binds = Vec::with_capacity(searchable.len());
     let mut predicates = Vec::with_capacity(searchable.len());
     for col in &searchable {
-        let expr = format!("TO_VARCHAR({})", quote_double(&col.name));
+        let expr = snowflake_search_expr(col);
         let pred = match (mode, case_sensitive) {
             (DataSearchMatchMode::Exact, true) => format!("{expr} = ?"),
             (DataSearchMatchMode::Exact, false) => format!("LOWER({expr}) = LOWER(?)"),
@@ -441,8 +452,8 @@ mod tests {
         .unwrap();
         assert_eq!(searchable, vec!["id", "email"]);
         assert_eq!(pg_bind, "%100!%!_vip!!%");
-        assert!(pg_sql.contains("ILIKE $1::text ESCAPE '!'"));
-        assert!(!pg_sql.contains("\"avatar\"::text ILIKE"));
+        assert!(pg_sql.contains("ILIKE $1::pg_catalog.text ESCAPE '!'"));
+        assert!(!pg_sql.contains("\"avatar\"::pg_catalog.text ILIKE"));
 
         let (my_sql, my_binds, _) = build_mysql_search_sql(
             &schema,
@@ -455,18 +466,48 @@ mod tests {
         assert_eq!(my_binds.len(), 2);
         assert!(my_sql.contains("COLLATE utf8mb4_bin LIKE ? ESCAPE '!'"));
 
+        let mut sf_schema = schema.clone();
+        sf_schema.columns.push(ColumnInfo {
+            id: "payload".into(),
+            name: "payload".into(),
+            database_type: "OBJECT".into(),
+            kind: ColumnKind::Json,
+            nullable: true,
+            primary_key: false,
+            foreign_key: false,
+            editable: false,
+            insertable: false,
+            has_default: false,
+        });
+        sf_schema.columns.push(ColumnInfo {
+            id: "coords".into(),
+            name: "coords".into(),
+            database_type: "GEOGRAPHY".into(),
+            kind: ColumnKind::Unknown,
+            nullable: true,
+            primary_key: false,
+            foreign_key: false,
+            editable: false,
+            insertable: false,
+            has_default: false,
+        });
+
         let (sf_sql, sf_binds, _) = build_snowflake_search_sql(
             "ANALYTICS",
-            &schema,
+            &sf_schema,
             "vip",
             DataSearchMatchMode::StartsWith,
             false,
             10,
         )
         .unwrap();
-        assert!(sf_sql.contains("FROM \"ANALYTICS\".\"public\".\"customers\""));
+        assert!(sf_sql.starts_with(
+            "SELECT \"id\", \"email\", \"avatar\", \"payload\", \"coords\" FROM \"ANALYTICS\".\"public\".\"customers\""
+        ));
         assert!(sf_sql.contains("STARTSWITH(LOWER(TO_VARCHAR(\"email\")), LOWER(?))"));
-        assert_eq!(sf_binds.len(), 2);
+        assert!(sf_sql.contains("STARTSWITH(LOWER(TO_JSON(\"payload\")), LOWER(?))"));
+        assert!(sf_sql.contains("STARTSWITH(LOWER(ST_ASEWKT(\"coords\")), LOWER(?))"));
+        assert_eq!(sf_binds.len(), 4);
     }
 
     #[test]

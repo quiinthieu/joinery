@@ -1128,7 +1128,12 @@ impl Driver for Postgres {
             }
             let schema = match self.schema(table).await {
                 Ok(s) => s,
-                Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                Err(err)
+                    if matches!(
+                        err.code,
+                        ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                    ) && !self.is_closed() =>
+                {
                     skipped_tables += 1;
                     continue;
                 }
@@ -1151,7 +1156,11 @@ impl Driver for Postgres {
                 Ok(stream) => stream,
                 Err(err) => {
                     let mapped = pg_error(err);
-                    if mapped.code == ErrorCode::Database && !self.is_closed() {
+                    if matches!(
+                        mapped.code,
+                        ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                    ) && !self.is_closed()
+                    {
                         skipped_tables += 1;
                         continue;
                     }
@@ -1180,7 +1189,11 @@ impl Driver for Postgres {
                 }
             }
             if let Some(err) = row_err {
-                if err.code == ErrorCode::Database && !self.is_closed() {
+                if matches!(
+                    err.code,
+                    ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                ) && !self.is_closed()
+                {
                     skipped_tables += 1;
                     continue;
                 }

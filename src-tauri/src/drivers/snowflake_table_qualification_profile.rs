@@ -182,6 +182,7 @@ fn validate_workspace(workspace: &Bootstrap) -> AppResult<()> {
         || !workspace.saved_queries.is_empty()
         || !workspace.bookmarks.is_empty()
         || !workspace.sql_snippets.is_empty()
+        || !workspace.virtual_foreign_keys.is_empty()
         || staging.len() != 1
         || staging[0].environment != Environment::Staging
         || staging[0].parent_id.is_some()

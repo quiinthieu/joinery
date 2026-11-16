@@ -137,7 +137,11 @@ pub(super) fn enforce_profile_privacy(
     connection: &Connection,
     profile: &ConnectionProfile,
 ) -> AppResult<()> {
-    if profile.store_query_text && profile.store_drafts {
+    let reviewed_console = profile
+        .snowflake
+        .as_ref()
+        .is_some_and(|sf| sf.reviewed_console);
+    if !reviewed_console && profile.store_query_text && profile.store_drafts {
         return Ok(());
     }
     let mut items = read_entries(connection)?;
@@ -146,19 +150,13 @@ pub(super) fn enforce_profile_privacy(
         if entry.connection_id.as_deref() != Some(profile.id.as_str()) {
             return true;
         }
-        if !profile.store_query_text && !profile.store_drafts {
+        if reviewed_console {
             return false;
         }
-        if entry.trigger == LocalHistoryTrigger::Executed && !profile.store_query_text {
-            return false;
+        match entry.trigger {
+            LocalHistoryTrigger::Executed => profile.store_query_text,
+            LocalHistoryTrigger::Snapshot | LocalHistoryTrigger::Saved => profile.store_drafts,
         }
-        if entry.trigger != LocalHistoryTrigger::Executed
-            && !profile.store_drafts
-            && !profile.store_query_text
-        {
-            return false;
-        }
-        true
     });
     if items.len() != before {
         write_entries(connection, &items)?;
@@ -248,12 +246,22 @@ impl Persistence {
                     "Connection profile no longer exists",
                 ));
             };
-            if !profile.store_query_text && !profile.store_drafts {
+            if profile
+                .snowflake
+                .as_ref()
+                .is_some_and(|sf| sf.reviewed_console)
+            {
                 return Ok(None);
             }
-            if input.trigger == LocalHistoryTrigger::Executed && !profile.store_query_text {
+            let allowed = match input.trigger {
+                LocalHistoryTrigger::Executed => profile.store_query_text,
+                LocalHistoryTrigger::Snapshot | LocalHistoryTrigger::Saved => profile.store_drafts,
+            };
+            if !allowed {
                 return Ok(None);
             }
+        } else if input.trigger != LocalHistoryTrigger::Snapshot {
+            return Ok(None);
         }
 
         let mut items = read_entries(&tx)?;
@@ -439,22 +447,65 @@ mod tests {
             MAX_LOCAL_HISTORY_PER_TAB
         );
 
-        // Turning off both privacy flags on normal_prof purges its local history immediately.
-        let mut locked_down = normal_prof.clone();
+        // Turning off store_drafts while keeping store_query_text purges Snapshot/Saved revisions
+        // while retaining Executed revisions; turning off store_query_text purges the rest.
+        store
+            .record_local_history(LocalHistoryInput {
+                tab_key: "tab-exec".into(),
+                title: "Executed Query".into(),
+                connection_id: Some(normal_prof.id.clone()),
+                trigger: LocalHistoryTrigger::Executed,
+                sql: "SELECT 'exec';".into(),
+            })
+            .unwrap()
+            .unwrap();
+        let mut no_drafts = normal_prof.clone();
+        no_drafts.store_drafts = false;
+        store.save_profile(&no_drafts).unwrap();
+        let after_no_drafts = store.local_history_entries(None).unwrap();
+        assert_eq!(after_no_drafts.len(), 1);
+        assert_eq!(after_no_drafts[0].trigger, LocalHistoryTrigger::Executed);
+        // Recording a Snapshot when store_drafts=false is rejected safely.
+        assert!(
+            store
+                .record_local_history(LocalHistoryInput {
+                    tab_key: "tab-1".into(),
+                    title: "Query 1".into(),
+                    connection_id: Some(normal_prof.id.clone()),
+                    trigger: LocalHistoryTrigger::Snapshot,
+                    sql: "SELECT 'blocked-draft';".into(),
+                })
+                .unwrap()
+                .is_none()
+        );
+
+        let mut locked_down = no_drafts;
         locked_down.store_query_text = false;
-        locked_down.store_drafts = false;
         store.save_profile(&locked_down).unwrap();
         assert!(store.local_history_entries(None).unwrap().is_empty());
 
-        // Detached file history is cleared on clear_history(), and corrupt settings fail backup.
+        // Unconnected automatic file save is never persisted; explicit manual Snapshot is cleared on clear_history().
+        assert!(
+            store
+                .record_local_history(LocalHistoryInput {
+                    tab_key: "file:report.sql".into(),
+                    title: "report.sql".into(),
+                    connection_id: None,
+                    trigger: LocalHistoryTrigger::Saved,
+                    sql: "SELECT 'unconnected-file';".into(),
+                })
+                .unwrap()
+                .is_none()
+        );
         store
             .record_local_history(LocalHistoryInput {
-                tab_key: "file:report.sql".into(),
-                title: "report.sql".into(),
+                tab_key: "tab:scratch".into(),
+                title: "Scratch".into(),
                 connection_id: None,
-                trigger: LocalHistoryTrigger::Saved,
+                trigger: LocalHistoryTrigger::Snapshot,
                 sql: "SELECT 42;".into(),
             })
+            .unwrap()
             .unwrap();
         assert_eq!(store.local_history_entries(None).unwrap().len(), 1);
         store.clear_history().unwrap();

@@ -3357,7 +3357,11 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        self.schema_for_session(&session, table).await
+        let mut schema = self.schema_for_session(&session, table).await?;
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
+        }
+        Ok(schema)
     }
     async fn resolve_statement_provenance(
         &self,
@@ -3817,9 +3821,6 @@ impl Studio {
         table: &TableRef,
     ) -> AppResult<TableSchema> {
         let mut schema = session.driver.schema(table).await?;
-        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
-            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
-        }
         if safety::effective_mode(&session.profile) == SafeMode::ReadOnly {
             schema.editable = false;
             for c in &mut schema.columns {
@@ -4052,10 +4053,19 @@ impl Studio {
             page.has_more = false;
             page.next_key = None;
         }
+        let mut display_schema = target.schema.clone();
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(
+                &mut display_schema,
+                &vfks,
+                &session.profile.id,
+                false,
+            );
+        }
         let result = self.results.create(
             &format!("table:{session_id}"),
             0,
-            target.schema.columns.clone(),
+            display_schema.columns,
             Some(target.schema),
         )?;
         self.results

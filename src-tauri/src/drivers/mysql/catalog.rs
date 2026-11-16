@@ -241,8 +241,28 @@ impl Mysql {
         };
         let max_tables = validate_search_request(&request)?;
         let started = std::time::Instant::now();
-        let all_tables: Vec<TableRef> =
-            self.catalog().await?.into_iter().map(|t| t.table).collect();
+        let all_tables: Vec<TableRef> = if !request.schemas.is_empty() || !request.tables.is_empty()
+        {
+            let rows = self
+                    .metadata(|conn| {
+                        Box::pin(fetch(
+                            conn,
+                            "SELECT TABLE_SCHEMA,TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA NOT IN ('information_schema','mysql','performance_schema','sys') AND TABLE_TYPE<>'SEQUENCE' ORDER BY TABLE_SCHEMA,TABLE_NAME LIMIT 10001",
+                            vec![],
+                            10_000,
+                            4 * 1024 * 1024,
+                        ))
+                    })
+                    .await?;
+            rows.into_iter()
+                .map(|r| TableRef {
+                    schema: cell(&r, 0).into(),
+                    name: cell(&r, 1).into(),
+                })
+                .collect()
+        } else {
+            self.catalog().await?.into_iter().map(|t| t.table).collect()
+        };
         let (candidates, mut truncated) = filter_candidate_tables(all_tables, &request, max_tables);
 
         self.metadata(move |conn| {
@@ -262,7 +282,14 @@ impl Mysql {
                     }
                     let schema = match schema_on(conn, table).await {
                         Ok(s) => s,
-                        Err(err) if err.code == ErrorCode::Database => {
+                        Err(err)
+                            if matches!(
+                                err.code,
+                                ErrorCode::Database
+                                    | ErrorCode::PermissionDenied
+                                    | ErrorCode::Unsupported
+                            ) =>
+                        {
                             skipped_tables += 1;
                             continue;
                         }
@@ -288,7 +315,12 @@ impl Mysql {
                             Ok(it) => it,
                             Err(err) => {
                                 let mapped = mysql_error(err);
-                                if mapped.code == ErrorCode::Database {
+                                if matches!(
+                                    mapped.code,
+                                    ErrorCode::Database
+                                        | ErrorCode::PermissionDenied
+                                        | ErrorCode::Unsupported
+                                ) {
                                     skipped_tables += 1;
                                     continue;
                                 }
@@ -297,18 +329,46 @@ impl Mysql {
                         };
                     let mut raw_rows = Vec::new();
                     let mut row_failed = false;
+                    let mut fatal_err: Option<AppError> = None;
+                    // Always drain all bounded rows (<= 11) so `conn` stays in clean idle state.
                     while let Some(row_res) = result_iter.next().await.transpose() {
+                        if fatal_err.is_some() || row_failed {
+                            if let Err(err) = row_res {
+                                let mapped = mysql_error(err);
+                                if !matches!(
+                                    mapped.code,
+                                    ErrorCode::Database
+                                        | ErrorCode::PermissionDenied
+                                        | ErrorCode::Unsupported
+                                ) {
+                                    fatal_err = Some(mapped);
+                                }
+                            }
+                            continue;
+                        }
                         match row_res.map_err(mysql_error).and_then(text_row) {
                             Ok(row) => {
                                 if raw_rows.len() <= MAX_SEARCH_ROWS_PER_TABLE {
                                     raw_rows.push(row);
                                 }
                             }
-                            Err(err) if err.code == ErrorCode::Database => {
+                            Err(err)
+                                if matches!(
+                                    err.code,
+                                    ErrorCode::Database
+                                        | ErrorCode::PermissionDenied
+                                        | ErrorCode::Unsupported
+                                ) =>
+                            {
                                 row_failed = true;
                             }
-                            Err(err) => return Err(err),
+                            Err(err) => {
+                                fatal_err = Some(err);
+                            }
                         }
+                    }
+                    if let Some(err) = fatal_err {
+                        return Err(err);
                     }
                     if row_failed {
                         skipped_tables += 1;

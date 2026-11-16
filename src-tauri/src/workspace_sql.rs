@@ -26,6 +26,7 @@ pub const MAX_WORKSPACE_SQL_BYTES: usize = 128 * 1024;
 pub const MAX_WORKSPACE_OUTPUT_ROWS: usize = 50_000;
 pub const MAX_WORKSPACE_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
 const WORKSPACE_QUERY_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_SQLITE_VALUE_BYTES: i32 = 4 * 1024 * 1024;
 
 pub struct MountedSnapshot {
     pub alias: String,
@@ -33,6 +34,7 @@ pub struct MountedSnapshot {
     pub rows: Vec<TextRow>,
 }
 
+#[derive(Debug)]
 pub struct WorkspaceQueryOutput {
     pub columns: Vec<ColumnInfo>,
     pub rows: Vec<TextRow>,
@@ -85,41 +87,108 @@ fn deduplicate_column_names(columns: &[ColumnInfo]) -> Vec<String> {
     names
 }
 
-fn sqlite_column_affinity(kind: ColumnKind) -> &'static str {
-    match kind {
-        ColumnKind::Integer | ColumnKind::Boolean => "INTEGER",
-        ColumnKind::Decimal => "REAL",
-        ColumnKind::Text
-        | ColumnKind::Temporal
-        | ColumnKind::Json
-        | ColumnKind::Binary
-        | ColumnKind::Unknown => "TEXT",
+fn is_canonical_integer(trimmed: &str) -> bool {
+    let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
     }
+    digits == "0" || !digits.starts_with('0')
+}
+
+fn lossless_sqlite_real(trimmed: &str) -> Option<f64> {
+    let unsigned = trimmed.strip_prefix('-').unwrap_or(trimmed);
+    let (int_part, frac_part) = unsigned.split_once('.')?;
+    if int_part.is_empty()
+        || frac_part.is_empty()
+        || !int_part.bytes().all(|b| b.is_ascii_digit())
+        || !frac_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    if int_part.len() > 1 && int_part.starts_with('0') {
+        return None;
+    }
+    let trimmed_frac = frac_part.trim_end_matches('0');
+    // Preserve trailing non-trivial scale digits > 1 place (e.g. "1.2300") as exact text
+    // unless it is a simple ".0" whole float like "12.0".
+    if frac_part.len() > 1 && trimmed_frac.len() != frac_part.len() {
+        return None;
+    }
+    let val: f64 = trimmed.parse().ok()?;
+    if !val.is_finite() {
+        return None;
+    }
+    let normalized = if trimmed_frac.is_empty() {
+        if int_part == "0" {
+            "0".to_owned()
+        } else if trimmed.starts_with('-') {
+            format!("-{int_part}")
+        } else {
+            int_part.to_owned()
+        }
+    } else if int_part == "0" && trimmed_frac.is_empty() {
+        "0".to_owned()
+    } else if trimmed.starts_with('-') {
+        format!("-{int_part}.{trimmed_frac}")
+    } else {
+        format!("{int_part}.{trimmed_frac}")
+    };
+    let rendered = if val == 0.0 {
+        "0".to_owned()
+    } else {
+        val.to_string()
+    };
+    (rendered == normalized).then_some(if val == 0.0 { 0.0 } else { val })
 }
 
 fn cell_to_sqlite_value(cell: &Option<String>, kind: ColumnKind) -> SqlValue {
     let Some(text) = cell else {
         return SqlValue::Null;
     };
+    let trimmed = text.trim();
     match kind {
-        ColumnKind::Integer => text
-            .trim()
-            .parse::<i64>()
-            .map(SqlValue::Integer)
-            .unwrap_or_else(|_| SqlValue::Text(text.clone())),
-        ColumnKind::Decimal => text
-            .trim()
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite())
-            .map(SqlValue::Real)
-            .unwrap_or_else(|| SqlValue::Text(text.clone())),
-        ColumnKind::Boolean => match text.trim().to_ascii_lowercase().as_str() {
+        ColumnKind::Integer => {
+            if trimmed == text.as_str()
+                && is_canonical_integer(trimmed)
+                && let Ok(v) = trimmed.parse::<i64>()
+            {
+                SqlValue::Integer(v)
+            } else {
+                SqlValue::Text(text.clone())
+            }
+        }
+        ColumnKind::Decimal => {
+            if trimmed == text.as_str() && is_canonical_integer(trimmed) {
+                if let Ok(v) = trimmed.parse::<i64>() {
+                    return SqlValue::Integer(v);
+                }
+                return SqlValue::Text(text.clone());
+            }
+            if trimmed == text.as_str()
+                && let Some(v) = lossless_sqlite_real(trimmed)
+            {
+                SqlValue::Real(v)
+            } else {
+                SqlValue::Text(text.clone())
+            }
+        }
+        ColumnKind::Boolean => match trimmed.to_ascii_lowercase().as_str() {
             "true" | "t" | "1" => SqlValue::Integer(1),
             "false" | "f" | "0" => SqlValue::Integer(0),
             _ => SqlValue::Text(text.clone()),
         },
         _ => SqlValue::Text(text.clone()),
+    }
+}
+
+fn widen_column_kind(current: ColumnKind, observed: ColumnKind) -> ColumnKind {
+    match (current, observed) {
+        (ColumnKind::Unknown, next) => next,
+        (same, next) if same == next => same,
+        (ColumnKind::Integer, ColumnKind::Decimal) | (ColumnKind::Decimal, ColumnKind::Integer) => {
+            ColumnKind::Decimal
+        }
+        _ => ColumnKind::Text,
     }
 }
 
@@ -330,6 +399,8 @@ pub fn execute_workspace_query_with_timeout(
     let mut conn = Connection::open_in_memory().map_err(|e| {
         AppError::internal(format!("Could not open in-memory workspace engine: {e}"))
     })?;
+    conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_SQLITE_VALUE_BYTES)
+        .map_err(|_| AppError::internal("Could not configure workspace value length limit"))?;
     conn.set_limit(
         Limit::SQLITE_LIMIT_SQL_LENGTH,
         MAX_WORKSPACE_SQL_BYTES as i32,
@@ -351,16 +422,12 @@ pub fn execute_workspace_query_with_timeout(
             .map_err(|_| AppError::internal("Could not stage mounted result tables"))?;
         for snap in &snapshots {
             let col_names = deduplicate_column_names(&snap.columns);
+            // Declare columns with NONE affinity (untyped) so SQLite preserves each value's
+            // exact storage class (i64 INTEGER, lossless f64 REAL, or exact >53/>63-bit TEXT)
+            // without silently coercing large numeric strings into lossy IEEE-754 floats.
             let col_defs: Vec<String> = col_names
                 .iter()
-                .zip(snap.columns.iter())
-                .map(|(name, col)| {
-                    format!(
-                        "{} {}",
-                        quote_sqlite_ident(name),
-                        sqlite_column_affinity(col.kind)
-                    )
-                })
+                .map(|name| quote_sqlite_ident(name))
                 .collect();
             let create_sql = format!(
                 "CREATE TABLE {} ({})",
@@ -466,21 +533,19 @@ pub fn execute_workspace_query_with_timeout(
             let rendered = match val {
                 ValueRef::Null => None,
                 ValueRef::Integer(i) => {
-                    if *inferred_kind == ColumnKind::Unknown {
-                        *inferred_kind = ColumnKind::Integer;
-                    }
+                    *inferred_kind = widen_column_kind(*inferred_kind, ColumnKind::Integer);
                     Some(i.to_string())
                 }
                 ValueRef::Real(f) => {
-                    *inferred_kind = ColumnKind::Decimal;
+                    *inferred_kind = widen_column_kind(*inferred_kind, ColumnKind::Decimal);
                     Some(f.to_string())
                 }
                 ValueRef::Text(bytes) => {
-                    *inferred_kind = ColumnKind::Text;
+                    *inferred_kind = widen_column_kind(*inferred_kind, ColumnKind::Text);
                     Some(String::from_utf8_lossy(bytes).into_owned())
                 }
                 ValueRef::Blob(bytes) => {
-                    *inferred_kind = ColumnKind::Binary;
+                    *inferred_kind = widen_column_kind(*inferred_kind, ColumnKind::Binary);
                     Some(format!("0x{}", hex::encode(bytes)))
                 }
             };
@@ -633,10 +698,9 @@ mod tests {
             "INSERT INTO t VALUES (2)",
             "SELECT 1; SELECT 2",
             "SELECT load_extension('evil')",
+            "EXPLAIN DELETE FROM t",
         ] {
-            let err = execute_workspace_query(snap(), forbidden)
-                .err()
-                .unwrap_or_else(|| panic!("expected {forbidden} to be rejected"));
+            let err = execute_workspace_query(snap(), forbidden).unwrap_err();
             assert!(
                 matches!(
                     err.code,
@@ -660,8 +724,65 @@ mod tests {
              SELECT MAX(x) FROM inf",
             Duration::from_millis(25),
         )
-        .err()
-        .expect("runaway recursive query must time out");
+        .expect_err("runaway recursive query must time out");
         assert_eq!(err.code, ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn preserves_high_precision_numbers_without_ieee754_rounding_and_caps_value_length() {
+        let snap = vec![MountedSnapshot {
+            alias: "sf_ledger".into(),
+            columns: vec![
+                col("id_u128", ColumnKind::Integer),
+                col("exact_int54_as_dec", ColumnKind::Decimal),
+                col("exact_dec38", ColumnKind::Decimal),
+                col("scaled_trailing", ColumnKind::Decimal),
+            ],
+            rows: vec![
+                vec![
+                    Some("99999999999999999999999999999999999999".into()),
+                    Some("9007199254740993".into()),
+                    Some("123456789012345678901234567890.12".into()),
+                    Some("1.2300".into()),
+                ],
+                vec![
+                    Some("42".into()),
+                    Some("7".into()),
+                    Some("19.5".into()),
+                    Some("12.0".into()),
+                ],
+            ],
+        }];
+
+        let out = execute_workspace_query(
+            snap,
+            "SELECT id_u128, exact_int54_as_dec, exact_dec38, scaled_trailing FROM sf_ledger",
+        )
+        .unwrap();
+        assert_eq!(
+            out.rows[0],
+            vec![
+                Some("99999999999999999999999999999999999999".into()),
+                Some("9007199254740993".into()),
+                Some("123456789012345678901234567890.12".into()),
+                Some("1.2300".into()),
+            ]
+        );
+        // Mixed >63-bit TEXT + 64-bit INTEGER/REAL widens column kind to Text instead of overwriting.
+        assert_eq!(out.columns[0].kind, ColumnKind::Text);
+        assert_eq!(out.columns[1].kind, ColumnKind::Integer);
+        assert_eq!(out.columns[2].kind, ColumnKind::Text);
+
+        // Single-value allocation bomb > 4 MiB is rejected by SQLITE_LIMIT_LENGTH.
+        let bomb_err = execute_workspace_query(
+            vec![MountedSnapshot {
+                alias: "t".into(),
+                columns: vec![col("x", ColumnKind::Integer)],
+                rows: vec![vec![Some("1".into())]],
+            }],
+            "SELECT zeroblob(10000000) FROM t",
+        )
+        .unwrap_err();
+        assert_eq!(bomb_err.code, ErrorCode::Database);
     }
 }

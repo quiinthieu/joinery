@@ -4507,14 +4507,33 @@ impl Driver for SnowflakeExternal {
             let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
             let schemas = metadata::parse_schemas(&context, &schema_rows)?;
             let mut discovered = Vec::new();
+            let mut skipped_tables = 0usize;
             for s in &schemas {
                 if !request.schemas.is_empty() && !request.schemas.iter().any(|wanted| wanted == s)
                 {
                     continue;
                 }
-                let table_rows = self
+                if !request.tables.is_empty()
+                    && !request.tables.iter().any(|wanted| &wanted.schema == s)
+                {
+                    continue;
+                }
+                let table_rows = match self
                     .read_spec(&metadata::explorer_tables_read(&context, s)?)
-                    .await?;
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database | ErrorCode::PermissionDenied
+                        ) && !self.is_closed() =>
+                    {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
                 for obj in explorer::parse_tables(&context, s, &table_rows)? {
                     discovered.push(TableRef {
                         schema: obj.object.schema,
@@ -4526,7 +4545,6 @@ impl Driver for SnowflakeExternal {
                 filter_candidate_tables(discovered, request, max_tables);
 
             let mut scanned_tables = 0usize;
-            let mut skipped_tables = 0usize;
             let mut total_row_hits = 0usize;
             let mut report_bytes = 0usize;
             let mut matches = Vec::new();
@@ -4550,7 +4568,14 @@ impl Driver for SnowflakeExternal {
                     .await
                 {
                     Ok(r) => r,
-                    Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database
+                                | ErrorCode::PermissionDenied
+                                | ErrorCode::Unsupported
+                        ) && !self.is_closed() =>
+                    {
                         skipped_tables += 1;
                         continue;
                     }
@@ -4585,7 +4610,14 @@ impl Driver for SnowflakeExternal {
                     .await
                 {
                     Ok(r) => r,
-                    Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database
+                                | ErrorCode::PermissionDenied
+                                | ErrorCode::Unsupported
+                        ) && !self.is_closed() =>
+                    {
                         skipped_tables += 1;
                         continue;
                     }
