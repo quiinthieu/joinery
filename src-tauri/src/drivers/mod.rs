@@ -447,6 +447,13 @@ pub trait Driver: Send + Sync {
             "Schema snapshots are unavailable for this engine",
         ))
     }
+    /// Bounded, parameterized full-text data search across tables.
+    async fn search_data(&self, _request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Full-text data search is unavailable for this engine",
+        ))
+    }
     async fn browse(
         &self,
         schema: &TableSchema,

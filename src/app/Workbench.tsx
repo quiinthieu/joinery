@@ -24,6 +24,7 @@ import {
   FileCode2,
   FolderOpen,
   Gauge,
+  Layers,
   Loader2,
   Pencil,
   Play,
@@ -1512,6 +1513,15 @@ export function Workbench({
                 >
                   <ExternalLink size={12} />
                   Open in tab
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || isConsoleOwnedResult(result)}
+                  onClick={() => state.openUtility("workspaceSql")}
+                >
+                  <Layers size={12} />
+                  Workspace SQL…
                 </button>
               </>
             )}

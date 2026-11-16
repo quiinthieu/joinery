@@ -26,6 +26,7 @@ import type {
   SqlSnippetInput,
   VirtualForeignKey,
   VirtualForeignKeyInput,
+  WorkspaceSqlResponse,
   TableInfo,
   TableRef,
   TableSchema,
@@ -102,7 +103,9 @@ export type TabKind =
   | "history"
   | "processes"
   | "diagram"
-  | "schemaDiff";
+  | "schemaDiff"
+  | "workspaceSql"
+  | "dataSearch";
 export type TabStatus =
   | "idle"
   | "queued"
@@ -311,6 +314,7 @@ interface StudioState {
   setResultLayout(tabId: string, resultId: string, layout: SavedTableLayout | null): void;
   detachResultToTab(tabId: string, resultId?: string): string | null;
   openOriginatingSql(resultTabId: string): string | null;
+  setWorkspaceSqlResult(tabId: string, sql: string, response: WorkspaceSqlResponse): void;
   setSession(session: SessionInfo): void;
   bindQuerySession(tabId: string, session: SessionInfo, label?: string): boolean;
   attachQuerySession(tabId: string, sessionId: string | null): boolean;
@@ -368,7 +372,7 @@ interface StudioState {
   deleteVirtualForeignKey(id: string): Promise<void>;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
-  openUtility(kind: "history" | "processes" | "benchmark"): void;
+  openUtility(kind: "history" | "processes" | "benchmark" | "workspaceSql" | "dataSearch"): void;
   openDiagram(connectionId: string, schema: string): void;
   openSchemaDiff(connectionId: string, schema: string): void;
   openTable(
@@ -478,7 +482,14 @@ export function isTabProtectedFromBulkClose(
   );
 }
 function snapshotClosedTab(candidate: StudioTab): ClosedTabSnapshot | null {
-  if (candidate.metadataOrigin || candidate.kind === "result") return null;
+  if (
+    candidate.metadataOrigin ||
+    candidate.kind === "result" ||
+    candidate.kind === "workspaceSql" ||
+    candidate.kind === "dataSearch"
+  ) {
+    return null;
+  }
   return {
     id: candidate.id,
     kind: candidate.kind,
@@ -1066,7 +1077,9 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
   detachResultToTab(tabId, resultId) {
     const state = get();
-    const sourceTab = state.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    const sourceTab = state.tabs.find(
+      (entry) => entry.id === tabId && (entry.kind === "query" || entry.kind === "workspaceSql"),
+    );
     if (!sourceTab) return null;
     if (["queued", "running"].includes(sourceTab.status)) {
       get().notify("Wait for the query to finish before opening its result in a tab.");
@@ -1154,6 +1167,34 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
     }
     return get().openQuery(resultTab.connectionId, resultTab.originSql ?? "");
+  },
+  setWorkspaceSqlResult(tabId, sql, response) {
+    const current = get().tabs.find((entry) => entry.id === tabId && entry.kind === "workspaceSql");
+    if (!current) return;
+    for (const old of current.results) {
+      if (old.id !== response.result.id) {
+        dirtyStore.clearTab(old.id, [old.id]);
+        resultCache.release(old.id);
+        if (!isConsoleOwnedResult(old)) {
+          void client.call("release_result", { resultId: old.id }).catch(() => {});
+        }
+      }
+    }
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              sql,
+              results: [response.result],
+              activeResultId: response.result.id,
+              status: "completed",
+              elapsedMs: response.elapsedMs,
+              error: null,
+            }
+          : entry,
+      ),
+    }));
   },
   async startSnowflakeConsole(tabId, plan, approval) {
     const storageProblem = consoleReceiptStorageProblem();
@@ -3324,7 +3365,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
     const next = tab(
       kind,
-      { history: "Query history", processes: "Processes", benchmark: "Grid benchmark" }[kind],
+      {
+        history: "Query history",
+        processes: "Processes",
+        benchmark: "Grid benchmark",
+        workspaceSql: "Workspace SQL",
+        dataSearch: "Data search",
+      }[kind],
       get().selectedConnectionId,
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));

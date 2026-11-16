@@ -5549,6 +5549,101 @@ impl Studio {
         .map_err(|_| AppError::internal("Data comparison task could not complete"))?
     }
 
+    pub async fn run_workspace_sql(
+        &self,
+        request: WorkspaceSqlRequest,
+    ) -> AppResult<WorkspaceSqlResponse> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let snapshots =
+            crate::workspace_sql::materialize_mounts(&self.results, &request.mounts, |rid| {
+                self.console.owns_result(rid)
+            })?;
+        let sql = request.sql;
+        let out = tokio::task::spawn_blocking(move || {
+            crate::workspace_sql::execute_workspace_query(snapshots, &sql)
+        })
+        .await
+        .map_err(|_| AppError::internal("Workspace SQL task could not complete"))??;
+
+        let created = self.results.create_with_editability(
+            &format!("workspace-sql-{}", new_id()),
+            0,
+            out.columns,
+            None,
+            Some(ResultEditability::ReadOnly {
+                reason: "Cross-source workspace query result".into(),
+            }),
+        )?;
+        let mut truncated = out.truncated;
+        for chunk in out.rows.chunks(512) {
+            match self.results.append(&created.id, chunk.to_vec()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    truncated = true;
+                    break;
+                }
+                Err(err) => {
+                    self.results.release(&created.id);
+                    return Err(err);
+                }
+            }
+        }
+        let finished = match self.results.finish(&created.id, truncated) {
+            Ok(info) => info,
+            Err(err) => {
+                self.results.release(&created.id);
+                return Err(err);
+            }
+        };
+        Ok(WorkspaceSqlResponse {
+            result: finished,
+            elapsed_ms: out.elapsed_ms,
+            mounted_rows: out.mounted_rows,
+            truncated,
+        })
+    }
+
+    pub async fn search_database_data(
+        &self,
+        request: DataSearchRequest,
+    ) -> AppResult<DataSearchReport> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        crate::data_search::validate_search_request(&request)?;
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Full-text data search is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        if snowflake_dml::sdk_profile(&session.profile) {
+            let _lane = Self::relation_lane(&session).await?;
+            let result = session.driver.search_data(&request).await;
+            Self::publish_relation(&session, result)
+        } else {
+            let _lane = tokio::time::timeout(Duration::from_secs(3), session.lane.lock())
+                .await
+                .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+            if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "This database session is disconnected",
+                ));
+            }
+            if session.active_run.lock().is_some() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Wait for the running query to finish first",
+                ));
+            }
+            session.metadata_gate.lock().check(None, false)?;
+            session.driver.search_data(&request).await
+        }
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         let grid_runs = {

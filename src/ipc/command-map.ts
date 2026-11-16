@@ -28,6 +28,8 @@ import type {
   CsvImportOptions,
   CsvImportPreview,
   DataCompareReport,
+  DataSearchReport,
+  DataSearchRequest,
   DatabaseObjectRef,
   DatabaseObjectSummary,
   DdlStatement,
@@ -76,6 +78,8 @@ import type {
   SqlSnippetInput,
   VirtualForeignKey,
   VirtualForeignKeyInput,
+  WorkspaceSqlRequest,
+  WorkspaceSqlResponse,
   SshHostKey,
   TableChanges,
   TableInfo,
@@ -686,6 +690,14 @@ export interface JoineryCommandMap {
   delete_virtual_foreign_key: {
     args: { id: string };
     result: void;
+  };
+  run_workspace_sql: {
+    args: { request: WorkspaceSqlRequest };
+    result: WorkspaceSqlResponse;
+  };
+  search_database_data: {
+    args: { request: DataSearchRequest };
+    result: DataSearchReport;
   };
   native_smoke_fixture: {
     args?: Record<string, unknown>;

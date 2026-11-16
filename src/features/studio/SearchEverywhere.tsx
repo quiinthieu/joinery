@@ -8,6 +8,7 @@ import {
   FileCode2,
   Gauge,
   History,
+  Layers,
   Network,
   Search,
   type LucideIcon,
@@ -54,6 +55,10 @@ function TabKindGlyph({ kind }: { kind: TabKind }) {
       return <Network size={16} />;
     case "schemaDiff":
       return <ArrowLeftRight size={16} />;
+    case "workspaceSql":
+      return <Layers size={16} />;
+    case "dataSearch":
+      return <Search size={16} />;
     case "benchmark":
       return <Gauge size={16} />;
   }

@@ -873,6 +873,10 @@ async fn rpc(
                 studio.delete_virtual_foreign_key(&arg::<String>(&args, "id")?)?;
                 Value::Null
             }
+            "run_workspace_sql" => json!(studio.run_workspace_sql(arg(&args, "request")?).await?),
+            "search_database_data" => {
+                json!(studio.search_database_data(arg(&args, "request")?).await?)
+            }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_open_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

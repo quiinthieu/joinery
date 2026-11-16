@@ -1339,3 +1339,19 @@ pub async fn delete_virtual_foreign_key(
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn run_workspace_sql(
+    studio: State<'_, Arc<Studio>>,
+    request: WorkspaceSqlRequest,
+) -> AppResult<WorkspaceSqlResponse> {
+    studio.run_workspace_sql(request).await
+}
+
+#[tauri::command]
+pub async fn search_database_data(
+    studio: State<'_, Arc<Studio>>,
+    request: DataSearchRequest,
+) -> AppResult<DataSearchReport> {
+    studio.search_database_data(request).await
+}

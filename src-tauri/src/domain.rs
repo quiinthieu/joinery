@@ -2818,6 +2818,88 @@ pub struct DataCompareReport {
     pub diffs_truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceResultMount {
+    pub alias: String,
+    pub result_ids: Vec<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceSqlRequest {
+    pub mounts: Vec<WorkspaceResultMount>,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSqlResponse {
+    pub result: ResultInfo,
+    pub elapsed_ms: u32,
+    pub mounted_rows: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum DataSearchMatchMode {
+    #[default]
+    Contains,
+    Exact,
+    StartsWith,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataSearchRequest {
+    pub session_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub schemas: Vec<String>,
+    #[serde(default)]
+    pub tables: Vec<TableRef>,
+    #[serde(default)]
+    pub match_mode: DataSearchMatchMode,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub max_tables: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchRowHit {
+    pub matched_columns: Vec<String>,
+    pub row: Vec<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchTableMatch {
+    pub table: TableRef,
+    pub columns: Vec<ColumnInfo>,
+    pub searchable_columns: Vec<String>,
+    pub rows: Vec<DataSearchRowHit>,
+    pub has_more_in_table: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchReport {
+    pub query: String,
+    pub match_mode: DataSearchMatchMode,
+    pub case_sensitive: bool,
+    pub scanned_tables: usize,
+    pub skipped_tables: usize,
+    pub total_row_hits: usize,
+    pub truncated: bool,
+    pub elapsed_ms: u32,
+    pub matches: Vec<DataSearchTableMatch>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

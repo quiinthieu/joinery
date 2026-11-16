@@ -571,6 +571,14 @@ export function Sidebar({
           <History size={15} />
           Query history
         </button>
+        <button onClick={() => state.openUtility("workspaceSql")}>
+          <Layers size={15} />
+          Workspace SQL
+        </button>
+        <button onClick={() => state.openUtility("dataSearch")}>
+          <Search size={15} />
+          Data search
+        </button>
         <button
           disabled={Boolean(selectedSession && !selectedSession.capabilities.processes)}
           title={

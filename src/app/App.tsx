@@ -23,6 +23,7 @@ import {
   Gauge,
   History,
   Keyboard,
+  Layers,
   LockKeyhole,
   Network,
   PanelLeftClose,
@@ -53,6 +54,8 @@ import { MetadataRecovery } from "../features/studio/MetadataRecovery";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
+import { WorkspaceSqlView } from "../features/studio/WorkspaceSqlView";
+import { DataSearchView } from "../features/studio/DataSearchView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { SnowflakeConsoleReview } from "../features/studio/SnowflakeConsoleReview";
 import { SnowflakeConsoleReceipts } from "../features/studio/SnowflakeConsoleReceipts";
@@ -1472,6 +1475,10 @@ export function App() {
                   <Network size={13} />
                 ) : tab.kind === "schemaDiff" ? (
                   <ArrowLeftRight size={13} />
+                ) : tab.kind === "workspaceSql" ? (
+                  <Layers size={13} />
+                ) : tab.kind === "dataSearch" ? (
+                  <Search size={13} />
                 ) : (
                   <Gauge size={13} />
                 )}
@@ -1550,6 +1557,8 @@ export function App() {
               />
             ) : current.kind === "history" ? (
               <HistoryView />
+            ) : current.kind === "workspaceSql" ? (
+              <WorkspaceSqlView tab={current} />
             ) : session &&
               isSnowflakeConsoleSession(state, session.id) &&
               current.kind !== "query" &&
@@ -1560,6 +1569,8 @@ export function App() {
                 connection. Open a separate profile with reviewed console off; temporary objects and
                 transactions are not shared.
               </p>
+            ) : current.kind === "dataSearch" ? (
+              <DataSearchView tab={current} />
             ) : current.kind === "processes" ? (
               <ProcessesView tab={current} onCancel={(process) => void cancelProcess(process)} />
             ) : current.kind === "diagram" ? (
@@ -2479,6 +2490,20 @@ export function App() {
               contextBadge: "Workspace",
               icon: History,
               action: () => state.openUtility("history"),
+            },
+            {
+              label: "Workspace SQL: Query across retained results",
+              shortcut: "",
+              contextBadge: "Workspace",
+              icon: Layers,
+              action: () => state.openUtility("workspaceSql"),
+            },
+            {
+              label: "Full-text data search across tables",
+              shortcut: "",
+              contextBadge: "Navigation",
+              icon: Search,
+              action: () => state.openUtility("dataSearch"),
             },
             {
               label: "Grid benchmark",

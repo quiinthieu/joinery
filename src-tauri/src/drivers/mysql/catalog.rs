@@ -230,6 +230,133 @@ impl Mysql {
         }
         outcome
     }
+    pub(super) async fn search_rows(
+        &self,
+        request: DataSearchRequest,
+    ) -> AppResult<DataSearchReport> {
+        use crate::data_search::{
+            MAX_SEARCH_REPORT_BYTES, MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS,
+            build_mysql_search_sql, build_table_match, estimate_table_match_bytes,
+            filter_candidate_tables, validate_search_request,
+        };
+        let max_tables = validate_search_request(&request)?;
+        let started = std::time::Instant::now();
+        let all_tables: Vec<TableRef> =
+            self.catalog().await?.into_iter().map(|t| t.table).collect();
+        let (candidates, mut truncated) = filter_candidate_tables(all_tables, &request, max_tables);
+
+        self.metadata(move |conn| {
+            Box::pin(async move {
+                let mut scanned_tables = 0usize;
+                let mut skipped_tables = 0usize;
+                let mut total_row_hits = 0usize;
+                let mut report_bytes = 0usize;
+                let mut matches = Vec::new();
+
+                for table in &candidates {
+                    if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
+                        || report_bytes >= MAX_SEARCH_REPORT_BYTES
+                    {
+                        truncated = true;
+                        break;
+                    }
+                    let schema = match schema_on(conn, table).await {
+                        Ok(s) => s,
+                        Err(err) if err.code == ErrorCode::Database => {
+                            skipped_tables += 1;
+                            continue;
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    let Some((sql, raw_binds, searchable)) = build_mysql_search_sql(
+                        &schema,
+                        &request.query,
+                        request.match_mode,
+                        request.case_sensitive,
+                        MAX_SEARCH_ROWS_PER_TABLE,
+                    ) else {
+                        skipped_tables += 1;
+                        continue;
+                    };
+                    scanned_tables += 1;
+                    let params = raw_binds
+                        .into_iter()
+                        .map(|s| bind(Some(s)))
+                        .collect::<Vec<_>>();
+                    let mut result_iter =
+                        match conn.exec_iter(sql, Params::Positional(params)).await {
+                            Ok(it) => it,
+                            Err(err) => {
+                                let mapped = mysql_error(err);
+                                if mapped.code == ErrorCode::Database {
+                                    skipped_tables += 1;
+                                    continue;
+                                }
+                                return Err(mapped);
+                            }
+                        };
+                    let mut raw_rows = Vec::new();
+                    let mut row_failed = false;
+                    while let Some(row_res) = result_iter.next().await.transpose() {
+                        match row_res.map_err(mysql_error).and_then(text_row) {
+                            Ok(row) => {
+                                if raw_rows.len() <= MAX_SEARCH_ROWS_PER_TABLE {
+                                    raw_rows.push(row);
+                                }
+                            }
+                            Err(err) if err.code == ErrorCode::Database => {
+                                row_failed = true;
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    if row_failed {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    let allowed_rows = MAX_SEARCH_TOTAL_ROW_HITS
+                        .saturating_sub(total_row_hits)
+                        .min(MAX_SEARCH_ROWS_PER_TABLE);
+                    if let Some(m) = build_table_match(
+                        &schema,
+                        searchable,
+                        raw_rows,
+                        &request.query,
+                        request.match_mode,
+                        request.case_sensitive,
+                        allowed_rows,
+                    ) {
+                        let bytes = estimate_table_match_bytes(&m);
+                        if report_bytes.saturating_add(bytes) > MAX_SEARCH_REPORT_BYTES
+                            && !matches.is_empty()
+                        {
+                            truncated = true;
+                            break;
+                        }
+                        report_bytes += bytes;
+                        total_row_hits += m.rows.len();
+                        if m.has_more_in_table && allowed_rows < MAX_SEARCH_ROWS_PER_TABLE {
+                            truncated = true;
+                        }
+                        matches.push(m);
+                    }
+                }
+
+                Ok(DataSearchReport {
+                    query: request.query.clone(),
+                    match_mode: request.match_mode,
+                    case_sensitive: request.case_sensitive,
+                    scanned_tables,
+                    skipped_tables,
+                    total_row_hits,
+                    truncated,
+                    elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+                    matches,
+                })
+            })
+        })
+        .await
+    }
     pub(super) async fn apply_rows(
         &self,
         schema: &TableSchema,

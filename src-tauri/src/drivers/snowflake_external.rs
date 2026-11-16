@@ -4484,6 +4484,156 @@ impl Driver for SnowflakeExternal {
         })
         .await
     }
+    async fn search_data(&self, request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        use super::snowflake_explorer as explorer;
+        use crate::data_search::{
+            MAX_SEARCH_REPORT_BYTES, MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS,
+            build_snowflake_search_sql, build_table_match, estimate_table_match_bytes,
+            filter_candidate_tables, validate_search_request,
+        };
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        let max_tables = validate_search_request(request)?;
+        let started = std::time::Instant::now();
+
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let Some(database) = context.database.clone() else {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "Select an active Snowflake database before searching table data",
+                ));
+            };
+            let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+            let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+            let mut discovered = Vec::new();
+            for s in &schemas {
+                if !request.schemas.is_empty() && !request.schemas.iter().any(|wanted| wanted == s)
+                {
+                    continue;
+                }
+                let table_rows = self
+                    .read_spec(&metadata::explorer_tables_read(&context, s)?)
+                    .await?;
+                for obj in explorer::parse_tables(&context, s, &table_rows)? {
+                    discovered.push(TableRef {
+                        schema: obj.object.schema,
+                        name: obj.object.name,
+                    });
+                }
+            }
+            let (candidates, mut truncated) =
+                filter_candidate_tables(discovered, request, max_tables);
+
+            let mut scanned_tables = 0usize;
+            let mut skipped_tables = 0usize;
+            let mut total_row_hits = 0usize;
+            let mut report_bytes = 0usize;
+            let mut matches = Vec::new();
+
+            for table in &candidates {
+                if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
+                    || report_bytes >= MAX_SEARCH_REPORT_BYTES
+                {
+                    truncated = true;
+                    break;
+                }
+                let col_sql = match metadata::resolved_columns_sql(&context, table) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                };
+                let col_rows = match self
+                    .metadata_read(&col_sql, 0, metadata::COLUMN_MAX_BYTES)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                let schema = match metadata::parse_resolved_columns(table, col_rows) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                };
+                let Some((sql, binds, searchable)) = build_snowflake_search_sql(
+                    &database,
+                    &schema,
+                    &request.query,
+                    request.match_mode,
+                    request.case_sensitive,
+                    MAX_SEARCH_ROWS_PER_TABLE,
+                ) else {
+                    skipped_tables += 1;
+                    continue;
+                };
+                scanned_tables += 1;
+                let res = match self
+                    .metadata_read_bound(
+                        &sql,
+                        binds,
+                        MAX_SEARCH_ROWS_PER_TABLE + 1,
+                        browsing::PREVIEW_MAX_BYTES,
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(err) if err.code == ErrorCode::Database && !self.is_closed() => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                let allowed_rows = MAX_SEARCH_TOTAL_ROW_HITS
+                    .saturating_sub(total_row_hits)
+                    .min(MAX_SEARCH_ROWS_PER_TABLE);
+                if let Some(m) = build_table_match(
+                    &schema,
+                    searchable,
+                    res.rows,
+                    &request.query,
+                    request.match_mode,
+                    request.case_sensitive,
+                    allowed_rows,
+                ) {
+                    let bytes = estimate_table_match_bytes(&m);
+                    if report_bytes.saturating_add(bytes) > MAX_SEARCH_REPORT_BYTES
+                        && !matches.is_empty()
+                    {
+                        truncated = true;
+                        break;
+                    }
+                    report_bytes += bytes;
+                    total_row_hits += m.rows.len();
+                    if m.has_more_in_table && allowed_rows < MAX_SEARCH_ROWS_PER_TABLE {
+                        truncated = true;
+                    }
+                    matches.push(m);
+                }
+            }
+
+            self.recheck_metadata_context(&context).await?;
+            Ok(DataSearchReport {
+                query: request.query.clone(),
+                match_mode: request.match_mode,
+                case_sensitive: request.case_sensitive,
+                scanned_tables,
+                skipped_tables,
+                total_row_hits,
+                truncated,
+                elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+                matches,
+            })
+        })
+        .await
+    }
     async fn schema(&self, _: &TableRef) -> AppResult<TableSchema> {
         Err(unsupported())
     }

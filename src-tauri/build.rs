@@ -193,6 +193,8 @@ fn build_desktop() {
             "delete_sql_snippet",
             "save_virtual_foreign_key",
             "delete_virtual_foreign_key",
+            "run_workspace_sql",
+            "search_database_data",
             "native_smoke_fixture",
             "native_smoke_checkpoint",
             "native_smoke_report",

@@ -3,6 +3,7 @@ use serde::Serialize;
 pub mod compare;
 pub mod connection_attempts;
 pub mod console_contract;
+pub mod data_search;
 pub mod ddl;
 pub mod domain;
 pub mod drivers;
@@ -27,6 +28,7 @@ pub mod snowflake_cleanup;
 pub mod snowflake_runtime;
 pub mod sql_text;
 pub mod ssh;
+pub mod workspace_sql;
 
 #[cfg(feature = "desktop")]
 mod commands;
@@ -278,6 +280,8 @@ pub fn run() {
             commands::delete_sql_snippet,
             commands::save_virtual_foreign_key,
             commands::delete_virtual_foreign_key,
+            commands::run_workspace_sql,
+            commands::search_database_data,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]
