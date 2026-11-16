@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useMemo, useRef, useState } from "react";
 import {
   Clock3,
   Columns3,
@@ -23,11 +23,13 @@ import {
   useStudio,
   type StudioTab,
 } from "../../state/studio";
-import DatabaseGrid, { type CellTarget, type DatabaseGridHandle } from "../grid/DatabaseGrid";
+import type { CellTarget, DatabaseGridHandle } from "../grid/DatabaseGrid";
 import { CopyAsMenu } from "../grid/CopyAsMenu";
 import { RecordCardView, TransposeGridView } from "../grid/GridAltViews";
 import { ValueDialog } from "../grid/ValueDialog";
 import { resolveTableLayout } from "../grid/table-layout";
+
+const DatabaseGrid = lazy(() => import("../grid/DatabaseGrid"));
 
 export interface MountableDataset {
   key: string;
@@ -446,14 +448,16 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                   onOpenValue={(target) => setValueTarget(target)}
                 />
               ) : (
-                <DatabaseGrid
-                  ref={gridRef}
-                  tab={tab}
-                  result={activeResult}
-                  theme={state.theme}
-                  onSelect={() => {}}
-                  onOpenValue={(target) => setValueTarget(target)}
-                />
+                <Suspense fallback={<div className="grid-empty">Loading result grid…</div>}>
+                  <DatabaseGrid
+                    ref={gridRef}
+                    tab={tab}
+                    result={activeResult}
+                    theme={state.theme}
+                    onSelect={() => {}}
+                    onOpenValue={(target) => setValueTarget(target)}
+                  />
+                </Suspense>
               )}
             </div>
           </>

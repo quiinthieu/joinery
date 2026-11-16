@@ -1760,6 +1760,7 @@ async fn referencing_foreign_keys_group_composite_inbound_constraints_on_mysql_a
                 },
                 columns: vec!["note_order".into(), "note_line".into()],
                 target_columns: vec!["order_id".into(), "line_no".into()],
+                virtual_relationship: false,
             }],
             "port {port}"
         );

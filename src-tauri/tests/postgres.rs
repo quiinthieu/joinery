@@ -1457,12 +1457,14 @@ async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreada
                 },
                 columns: vec!["note_order".into()],
                 target_columns: vec!["id".into()],
+                virtual_relationship: false,
             },
             InboundForeignKey {
                 name: "order_lines_order_id_fkey".into(),
                 source: order_lines.clone(),
                 columns: vec!["order_id".into()],
                 target_columns: vec!["id".into()],
+                virtual_relationship: false,
             },
         ]
     );
@@ -1481,6 +1483,7 @@ async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreada
             },
             columns: vec!["note_order".into(), "note_line".into()],
             target_columns: vec!["order_id".into(), "line_no".into()],
+            virtual_relationship: false,
         }]
     );
 

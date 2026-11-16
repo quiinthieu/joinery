@@ -220,7 +220,9 @@ describe("WorkspaceSqlView and DataSearchView", () => {
 
     const updatedWsTab = useStudio.getState().tabs.find((t) => t.id === wsTab.id)!;
     rerender(<WorkspaceSqlView tab={updatedWsTab} />);
-    expect(screen.getByTestId("mock-workspace-grid").textContent).toContain("Grid rows: 2");
+    expect((await screen.findByTestId("mock-workspace-grid")).textContent).toContain(
+      "Grid rows: 2",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /Run workspace SQL/i }));
     await waitFor(() => {

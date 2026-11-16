@@ -160,10 +160,10 @@ fn ensure_single_select_like_statement(raw_sql: &str) -> AppResult<&str> {
                         "Workspace SQL runs one read-only SELECT or WITH statement at a time",
                     ));
                 }
-                if first_keyword.is_none() {
-                    if let Token::Word(w) = &other {
-                        first_keyword = Some(w.value.to_ascii_uppercase());
-                    }
+                if first_keyword.is_none()
+                    && let Token::Word(w) = &other
+                {
+                    first_keyword = Some(w.value.to_ascii_uppercase());
                 }
                 current_has_tokens = true;
             }
@@ -461,26 +461,26 @@ pub fn execute_workspace_query_with_timeout(
         }
         let mut text_row = Vec::with_capacity(col_count);
         let mut row_bytes = 24usize;
-        for idx in 0..col_count {
+        for (idx, inferred_kind) in inferred_kinds.iter_mut().enumerate().take(col_count) {
             let val = row.get_ref(idx).map_err(map_sqlite_err)?;
             let rendered = match val {
                 ValueRef::Null => None,
                 ValueRef::Integer(i) => {
-                    if inferred_kinds[idx] == ColumnKind::Unknown {
-                        inferred_kinds[idx] = ColumnKind::Integer;
+                    if *inferred_kind == ColumnKind::Unknown {
+                        *inferred_kind = ColumnKind::Integer;
                     }
                     Some(i.to_string())
                 }
                 ValueRef::Real(f) => {
-                    inferred_kinds[idx] = ColumnKind::Decimal;
+                    *inferred_kind = ColumnKind::Decimal;
                     Some(f.to_string())
                 }
                 ValueRef::Text(bytes) => {
-                    inferred_kinds[idx] = ColumnKind::Text;
+                    *inferred_kind = ColumnKind::Text;
                     Some(String::from_utf8_lossy(bytes).into_owned())
                 }
                 ValueRef::Blob(bytes) => {
-                    inferred_kinds[idx] = ColumnKind::Binary;
+                    *inferred_kind = ColumnKind::Binary;
                     Some(format!("0x{}", hex::encode(bytes)))
                 }
             };
