@@ -148,6 +148,7 @@ import {
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
 import { LibraryModal, SaveQueryDialog, type LibraryTab } from "../features/studio/LibraryModal";
+import { LocalHistoryModal, localHistoryTabKey } from "../features/studio/LocalHistoryModal";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -184,6 +185,7 @@ type Dialog =
   | { kind: "compare"; tabId?: string }
   | { kind: "library"; tab: LibraryTab }
   | { kind: "saveQuery"; tabId: string }
+  | { kind: "localHistory"; tabId?: string }
   | {
       kind: "parameters";
       origin: SqlExecutionOrigin;
@@ -739,6 +741,28 @@ export function App() {
     const revision = active.revision + 1;
     const executionState = useStudio.getState();
     const executionSession = querySessionForTab(active, executionState.sessions);
+    if (
+      active.kind === "query" &&
+      active.sql.trim() &&
+      !(executionSession && isSnowflakeConsoleSession(executionState, executionSession.id))
+    ) {
+      const ownerProfile = active.connectionId
+        ? executionState.bootstrap?.profiles.find((p) => p.id === active.connectionId)
+        : undefined;
+      if (!ownerProfile || ownerProfile.storeQueryText) {
+        void Promise.resolve(
+          client.call("record_local_history", {
+            input: {
+              tabKey: localHistoryTabKey(active),
+              title: active.title,
+              connectionId: active.connectionId,
+              trigger: "executed",
+              sql: active.sql,
+            },
+          }),
+        ).catch(() => {});
+      }
+    }
     state.updateTab(tabId, {
       status: "queued",
       error: null,
@@ -1656,6 +1680,7 @@ export function App() {
                 onOpenSqlFile={handleOpenSqlFile}
                 onSaveSqlFile={(saveAs) => handleSaveSqlFile(current.id, Boolean(saveAs))}
                 onSaveToLibrary={() => setDialog({ kind: "saveQuery", tabId: current.id })}
+                onOpenLocalHistory={() => setDialog({ kind: "localHistory", tabId: current.id })}
                 onToggleBookmark={() => handleToggleBookmark(current)}
                 onQueryChange={(query, options) => void applyTableQuery(current.id, query, options)}
               />
@@ -2135,6 +2160,16 @@ export function App() {
           </div>
         </Modal>
       )}
+      {dialog?.kind === "localHistory" && (
+        <LocalHistoryModal
+          tab={
+            dialog.tabId
+              ? (state.tabs.find((t) => t.id === dialog.tabId) ?? null)
+              : (current ?? null)
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "palette" && (
         <SearchEverywhere
           initialScope={dialog.initialScope ?? "all"}
@@ -2490,6 +2525,13 @@ export function App() {
               contextBadge: "Workspace",
               icon: History,
               action: () => state.openUtility("history"),
+            },
+            {
+              label: "SQL Local History: Revisions & diff…",
+              shortcut: "",
+              contextBadge: "SQL & Files",
+              icon: History,
+              action: () => setDialog({ kind: "localHistory", tabId: current?.id }),
             },
             {
               label: "Workspace SQL: Query across retained results",

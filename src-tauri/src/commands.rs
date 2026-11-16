@@ -1355,3 +1355,47 @@ pub async fn search_database_data(
 ) -> AppResult<DataSearchReport> {
     studio.search_database_data(request).await
 }
+
+#[tauri::command]
+pub async fn local_history_entries(
+    studio: State<'_, Arc<Studio>>,
+    tab_key: Option<String>,
+) -> AppResult<Vec<LocalHistoryEntry>> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.local_history_entries(tab_key.as_deref()))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn record_local_history(
+    studio: State<'_, Arc<Studio>>,
+    input: LocalHistoryInput,
+) -> AppResult<Option<LocalHistoryEntry>> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.record_local_history(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_local_history_entry(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_local_history_entry(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn clear_local_history(
+    studio: State<'_, Arc<Studio>>,
+    tab_key: Option<String>,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.clear_local_history(tab_key.as_deref()))
+        .await
+        .map_err(join_error)?
+}

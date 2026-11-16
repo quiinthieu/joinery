@@ -3103,6 +3103,24 @@ export const useStudio = create<StudioState>((set, get) => ({
       subtitle: "SQL file",
       target: { kind: "tab", tabId },
     });
+    if (contentToSave.trim()) {
+      const boundProfile = current.connectionId
+        ? get().bootstrap?.profiles.find((p) => p.id === current.connectionId)
+        : undefined;
+      if (!boundProfile || boundProfile.storeDrafts || boundProfile.storeQueryText) {
+        void Promise.resolve(
+          client.call("record_local_history", {
+            input: {
+              tabKey: `file:${saved.fileName}`.slice(0, 160),
+              title: saved.fileName,
+              connectionId: current.connectionId,
+              trigger: "saved",
+              sql: contentToSave,
+            },
+          }),
+        ).catch(() => {});
+      }
+    }
     get().notify(`Saved ${saved.fileName}`);
     return true;
   },

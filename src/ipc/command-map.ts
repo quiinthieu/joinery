@@ -43,6 +43,8 @@ import type {
   InboundForeignKey,
   IndexConstraintAction,
   IndexConstraintPreview,
+  LocalHistoryEntry,
+  LocalHistoryInput,
   LockWaitSnapshot,
   RecoveryBackup,
   RecoveryOperation,
@@ -698,6 +700,22 @@ export interface JoineryCommandMap {
   search_database_data: {
     args: { request: DataSearchRequest };
     result: DataSearchReport;
+  };
+  local_history_entries: {
+    args: { tabKey?: string | null };
+    result: LocalHistoryEntry[];
+  };
+  record_local_history: {
+    args: { input: LocalHistoryInput };
+    result: LocalHistoryEntry | null;
+  };
+  delete_local_history_entry: {
+    args: { id: string };
+    result: void;
+  };
+  clear_local_history: {
+    args: { tabKey?: string | null };
+    result: void;
   };
   native_smoke_fixture: {
     args?: Record<string, unknown>;

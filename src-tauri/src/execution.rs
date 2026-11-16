@@ -504,6 +504,32 @@ impl Studio {
         self.persistence.delete_virtual_foreign_key(id).map(|_| ())
     }
 
+    pub fn local_history_entries(
+        &self,
+        tab_key: Option<&str>,
+    ) -> AppResult<Vec<LocalHistoryEntry>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        self.persistence.local_history_entries(tab_key)
+    }
+
+    pub fn record_local_history(
+        &self,
+        input: LocalHistoryInput,
+    ) -> AppResult<Option<LocalHistoryEntry>> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.record_local_history(input)
+    }
+
+    pub fn delete_local_history_entry(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.delete_local_history_entry(id)
+    }
+
+    pub fn clear_local_history(&self, tab_key: Option<&str>) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.clear_local_history(tab_key)
+    }
+
     pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
         let _configuration = self.configuration_mutation_guard()?;
         self.persistence.save_saved_query(input)

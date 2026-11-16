@@ -24,6 +24,7 @@ import {
   FileCode2,
   FolderOpen,
   Gauge,
+  History,
   Layers,
   Loader2,
   Pencil,
@@ -151,6 +152,7 @@ interface Props {
   onOpenSqlFile(): void;
   onSaveSqlFile(saveAs?: boolean): void;
   onSaveToLibrary(): void;
+  onOpenLocalHistory?(): void;
   onToggleBookmark(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -180,6 +182,7 @@ export function Workbench({
   onOpenSqlFile,
   onSaveSqlFile,
   onSaveToLibrary,
+  onOpenLocalHistory,
   onToggleBookmark,
   onQueryChange,
 }: Props) {
@@ -1031,6 +1034,18 @@ export function Workbench({
                 <Code2 size={13} />
                 Format
               </button>
+              {onOpenLocalHistory && (
+                <button
+                  type="button"
+                  className="button ghost small"
+                  aria-label="Open SQL Local History"
+                  title="SQL Local History (revisions & diff)"
+                  onClick={onOpenLocalHistory}
+                >
+                  <History size={13} />
+                  Local history
+                </button>
+              )}
               {dmlPending && session ? (
                 <SnowflakeDmlPendingControl
                   onDisconnect={() =>

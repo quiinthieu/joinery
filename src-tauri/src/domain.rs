@@ -2900,6 +2900,39 @@ pub struct DataSearchReport {
     pub matches: Vec<DataSearchTableMatch>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalHistoryTrigger {
+    Executed,
+    Saved,
+    Snapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalHistoryEntry {
+    pub id: String,
+    pub tab_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    pub trigger: LocalHistoryTrigger,
+    pub sql: String,
+    #[ts(type = "number")]
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalHistoryInput {
+    pub tab_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    pub trigger: LocalHistoryTrigger,
+    pub sql: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

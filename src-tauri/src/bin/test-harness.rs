@@ -877,6 +877,18 @@ async fn rpc(
             "search_database_data" => {
                 json!(studio.search_database_data(arg(&args, "request")?).await?)
             }
+            "local_history_entries" => json!(studio.local_history_entries(
+                arg::<Option<String>>(&args, "tabKey")?.as_deref()
+            )?),
+            "record_local_history" => json!(studio.record_local_history(arg(&args, "input")?)?),
+            "delete_local_history_entry" => {
+                studio.delete_local_history_entry(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "clear_local_history" => {
+                studio.clear_local_history(arg::<Option<String>>(&args, "tabKey")?.as_deref())?;
+                Value::Null
+            }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.
             "test_queue_open_file" => {
                 let file_name: Option<String> = arg(&args, "fileName")?;

@@ -138,6 +138,10 @@
     "allow-save-virtual-foreign-key",
     "allow-delete-virtual-foreign-key",
     "allow-run-workspace-sql",
-    "allow-search-database-data"
+    "allow-search-database-data",
+    "allow-local-history-entries",
+    "allow-record-local-history",
+    "allow-delete-local-history-entry",
+    "allow-clear-local-history"
   ]
 }

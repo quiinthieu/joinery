@@ -275,6 +275,9 @@ fn main() {
         DataSearchRowHit::decl(),
         DataSearchTableMatch::decl(),
         DataSearchReport::decl(),
+        LocalHistoryTrigger::decl(),
+        LocalHistoryEntry::decl(),
+        LocalHistoryInput::decl(),
         ErrorCode::decl(),
         AppError::decl(),
     ];

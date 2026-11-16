@@ -282,6 +282,10 @@ pub fn run() {
             commands::delete_virtual_foreign_key,
             commands::run_workspace_sql,
             commands::search_database_data,
+            commands::local_history_entries,
+            commands::record_local_history,
+            commands::delete_local_history_entry,
+            commands::clear_local_history,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]
