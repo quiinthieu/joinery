@@ -74,6 +74,46 @@ describe("SQL AST refactoring and workspace Find Usages", () => {
     );
   });
 
+  it("rejects correlated outer aliases and recursive CTE self-references while supporting comma-joined derived tables", () => {
+    // Correlated outer alias `c.id` cannot be hoisted into a top-level CTE
+    const correlatedDoc =
+      "SELECT c.id FROM public.customers c WHERE EXISTS (SELECT 1 FROM public.orders o WHERE o.customer_id = c.id);";
+    const corrState = makeEditorState(correlatedDoc, "postgres", {
+      anchor: correlatedDoc.indexOf("SELECT 1"),
+    });
+    expect(() => analyzeExtractCte(corrState, "postgres")).toThrow(/correlated subquery/i);
+
+    // Shadowed inner alias `c` IS local to the subquery and extracts cleanly
+    const shadowedDoc =
+      "SELECT c.id FROM public.customers c WHERE c.id IN (SELECT c.customer_id FROM public.orders c);";
+    const shadState = makeEditorState(shadowedDoc, "postgres", {
+      anchor: shadowedDoc.indexOf("SELECT c.customer_id"),
+    });
+    expect(analyzeExtractCte(shadState, "postgres").replacementKind).toBe("expressionSubquery");
+
+    // Subquery inside a WITH RECURSIVE CTE referencing that recursive CTE itself cannot precede it
+    const recDoc =
+      "WITH RECURSIVE tree AS (SELECT 1 AS n UNION ALL SELECT sub.n FROM (SELECT n + 1 AS n FROM tree WHERE n < 5) sub) SELECT * FROM tree;";
+    const recState = makeEditorState(recDoc, "postgres", {
+      anchor: recDoc.indexOf("SELECT n + 1"),
+    });
+    expect(() => analyzeExtractCte(recState, "postgres")).toThrow(
+      /recursive subquery that references enclosing CTE/i,
+    );
+
+    // Comma-joined derived table (`FROM a, (SELECT ...) b`) is recognized as a derivedTable, not expressionSubquery
+    const commaDoc =
+      "SELECT a.id, b.cnt FROM public.customers a, (SELECT COUNT(*) AS cnt FROM public.orders) b;";
+    const commaState = makeEditorState(commaDoc, "postgres", {
+      anchor: commaDoc.indexOf("SELECT COUNT"),
+    });
+    const commaPlan = analyzeExtractCte(commaState, "postgres");
+    expect(commaPlan.replacementKind).toBe("derivedTable");
+    expect(commaPlan.preview(commaState, "order_counts").previewSql).toBe(
+      "WITH order_counts AS (\n  SELECT COUNT(*) AS cnt FROM public.orders\n)\nSELECT a.id, b.cnt FROM public.customers a, order_counts b;",
+    );
+  });
+
   it("expands *, alias.*, and local CTE wildcards with dialect-accurate identifier quoting", () => {
     const ordersSchema: TableSchema = {
       table: { schema: "public", name: "orders" },
@@ -187,6 +227,32 @@ describe("SQL AST refactoring and workspace Find Usages", () => {
     expect(ctePlan.tablesToFetch).toEqual([]);
     const cteDone = ctePlan.finish(cteState, []);
     expect(cteDone.insert).toBe("order_id, amount");
+
+    // Self-join (`FROM public.orders o1 JOIN public.orders orders`) expands `orders.*` once (only the `orders` alias)
+    const selfJoinSql =
+      "SELECT orders.* FROM public.orders o1 JOIN public.orders orders ON orders.id = o1.id;";
+    const selfStarPos = selfJoinSql.indexOf("orders.*") + "orders.".length;
+    const selfState = makeEditorState(selfJoinSql, "postgres", { anchor: selfStarPos });
+    const selfPlan = prepareExpandWildcard(selfState, selfStarPos, {
+      engine: "postgres",
+      tables,
+      defaultSchema: "public",
+    });
+    expect(selfPlan.finish(selfState, [ordersSchema]).insert).toBe(
+      'orders.order_id, orders."Order Total"',
+    );
+
+    // Table hidden behind explicit alias (`FROM public.orders o1`) rejects `orders.*`
+    const hiddenSql = "SELECT orders.* FROM public.orders o1;";
+    const hiddenPos = hiddenSql.indexOf("orders.*") + "orders.".length;
+    const hiddenState = makeEditorState(hiddenSql, "postgres", { anchor: hiddenPos });
+    expect(() =>
+      prepareExpandWildcard(hiddenState, hiddenPos, {
+        engine: "postgres",
+        tables,
+        defaultSchema: "public",
+      }),
+    ).toThrow(/Qualifier "orders" does not match any table or alias/i);
   });
 
   it("renders SqlRefactorDialog and ObjectInspectorView workspace SQL usages navigation", async () => {

@@ -99,6 +99,7 @@ pub fn find_sql_usages(request: &SqlFindUsagesRequest) -> AppResult<SqlFindUsage
                 role: statement_role(&stmt),
                 cte_stack: Vec::new(),
                 select_scopes: Vec::new(),
+                subquery_depth: 0,
                 seen_spans: HashSet::new(),
                 hits: &mut hits,
                 truncated: &mut truncated,
@@ -397,6 +398,7 @@ struct UsageCollector<'a> {
     role: &'static str,
     cte_stack: Vec<HashSet<String>>,
     select_scopes: Vec<SelectScope>,
+    subquery_depth: usize,
     seen_spans: HashSet<(usize, usize)>,
     hits: &'a mut Vec<SqlUsageHit>,
     truncated: &'a mut bool,
@@ -784,15 +786,27 @@ impl Visitor for UsageCollector<'_> {
     type Break = ();
 
     fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
-        // Nested subqueries inside expressions (`WHERE EXISTS (SELECT ...)`, scalar subqueries)
-        // get their own lexical CTE + FROM scope; return Continue only after manually analyzing
-        // so we don't double-visit. Instead, we cannot skip children in `sqlparser::Visitor`
-        // without breaking, so `pre_visit_expr` intercepts `Expr::Subquery` / `Expr::InSubquery` / `Expr::Exists`!
-        let _ = query;
+        // Nested subqueries inside expressions (`WHERE EXISTS (SELECT ...)`, `IN (SELECT ...)`,
+        // scalar `(SELECT ...)`) get their own lexical CTE + FROM scope on top of outer scopes
+        // so correlated aliases still resolve while unqualified inner columns do not inherit
+        // outer `unambiguous_single_target_in_scope()`. Suppress `sqlparser`'s automatic child
+        // walk via `subquery_depth` until `post_visit_query`.
+        if self.subquery_depth == 0 {
+            self.analyze_query(query);
+        }
+        self.subquery_depth += 1;
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _query: &Query) -> ControlFlow<Self::Break> {
+        self.subquery_depth = self.subquery_depth.saturating_sub(1);
         ControlFlow::Continue(())
     }
 
     fn pre_visit_relation(&mut self, relation: &ObjectName) -> ControlFlow<Self::Break> {
+        if self.subquery_depth > 0 {
+            return ControlFlow::Continue(());
+        }
         if self.select_scopes.is_empty()
             && self.target_column.is_none()
             && let Some(id) = self.match_object_name(relation)
@@ -803,6 +817,9 @@ impl Visitor for UsageCollector<'_> {
     }
 
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
+        if self.subquery_depth > 0 {
+            return ControlFlow::Continue(());
+        }
         match expr {
             Expr::Function(func) => {
                 if self.target_column.is_none()
@@ -958,5 +975,76 @@ mod tests {
         // Unquoted `o.notes` folds to `NOTES` and matches; quoted `o."notes"` is lowercase and does NOT match `NOTES`.
         assert_eq!(sf.hits.len(), 1);
         assert_eq!(sf.hits[0].span.line, 1);
+    }
+
+    #[test]
+    fn analyzes_expression_subqueries_with_correlated_outer_aliases_and_no_false_positives() {
+        let subquery_sql = "SELECT c.id FROM public.customers c WHERE EXISTS (SELECT 1 FROM public.orders o WHERE o.total_cents > 100 AND o.customer_id = c.id AND EXISTS (SELECT 1 FROM public.order_items oi WHERE oi.order_id = o.id));";
+
+        // 1. Table usages inside EXISTS subquery (`public.orders`) are found!
+        let orders_tbl = find_sql_usages(&SqlFindUsagesRequest {
+            engine: EngineKind::Postgres,
+            connection_id: None,
+            database: None,
+            default_schema: Some("public".into()),
+            schema: "public".into(),
+            object_name: "orders".into(),
+            column_name: None,
+            include_saved_queries: false,
+            documents: vec![doc("sub-1", "Correlated EXISTS", subquery_sql)],
+        })
+        .unwrap();
+        assert_eq!(orders_tbl.hits.len(), 1);
+
+        // 2. Column usages inside EXISTS (`o.total_cents`) and nested EXISTS (`o.id`) are found!
+        let orders_total = find_sql_usages(&SqlFindUsagesRequest {
+            engine: EngineKind::Postgres,
+            connection_id: None,
+            database: None,
+            default_schema: Some("public".into()),
+            schema: "public".into(),
+            object_name: "orders".into(),
+            column_name: Some("total_cents".into()),
+            include_saved_queries: false,
+            documents: vec![doc("sub-1", "Correlated EXISTS", subquery_sql)],
+        })
+        .unwrap();
+        assert_eq!(orders_total.hits.len(), 1);
+
+        // 3. Correlated outer column `c.id` inside inner EXISTS resolves to `customers.id`!
+        let customers_id = find_sql_usages(&SqlFindUsagesRequest {
+            engine: EngineKind::Postgres,
+            connection_id: None,
+            database: None,
+            default_schema: Some("public".into()),
+            schema: "public".into(),
+            object_name: "customers".into(),
+            column_name: Some("id".into()),
+            include_saved_queries: false,
+            documents: vec![doc("sub-1", "Correlated EXISTS", subquery_sql)],
+        })
+        .unwrap();
+        // Both `SELECT c.id` and `o.customer_id = c.id` match!
+        assert_eq!(customers_id.hits.len(), 2);
+
+        // 4. Unqualified column in an inner subquery (`SELECT total_cents FROM public.customers`)
+        // does NOT inherit the outer query's single-table `public.orders` scope!
+        let no_false_positive = find_sql_usages(&SqlFindUsagesRequest {
+            engine: EngineKind::Postgres,
+            connection_id: None,
+            database: None,
+            default_schema: Some("public".into()),
+            schema: "public".into(),
+            object_name: "orders".into(),
+            column_name: Some("total_cents".into()),
+            include_saved_queries: false,
+            documents: vec![doc(
+                "sub-fp",
+                "Inner unqualified non-target",
+                "SELECT id FROM public.orders WHERE EXISTS (SELECT total_cents FROM public.customers);",
+            )],
+        })
+        .unwrap();
+        assert_eq!(no_false_positive.hits.len(), 0);
     }
 }

@@ -855,14 +855,26 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     if (!editor || latest.current.engine === "redis") return;
     const state = editor.state;
     const request = navRequestSeq.current;
-    const context = renameContext();
+    const initialSessionId = latest.current.sessionId;
     setRefactorBusy(true);
     try {
-      const snapshot =
-        latest.current.sessionId &&
-        !isSnowflakeConsoleSession(useStudio.getState(), latest.current.sessionId)
-          ? liveRef.current
-          : null;
+      if (initialSessionId) {
+        await contextLoadRef.current;
+        if (
+          view.current !== editor ||
+          !editor.state.doc.eq(state.doc) ||
+          latest.current.sessionId !== initialSessionId ||
+          navRequestSeq.current !== request
+        ) {
+          return;
+        }
+      }
+      const context = renameContext();
+      const sessionId = latest.current.sessionId;
+      const consoleMode = Boolean(
+        sessionId && isSnowflakeConsoleSession(useStudio.getState(), sessionId),
+      );
+      const snapshot = sessionId && !consoleMode ? liveRef.current : null;
       const plan = prepareExpandWildcard(state, state.selection.main.head, {
         engine: latest.current.engine,
         tables: snapshot?.tables ?? latest.current.tables,
@@ -872,18 +884,25 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       });
       const schemas: TableSchema[] = [];
       if (plan.tablesToFetch.length > 0) {
-        const sessionId = latest.current.sessionId;
         if (!sessionId) {
           throw new Error("Connect this console before expanding catalog table wildcards.");
+        }
+        if (consoleMode) {
+          throw new Error("Catalog wildcard expansion is disabled on reviewed console sessions.");
+        }
+        if (useStudio.getState().sessions[sessionId]?.capabilities.relationBrowsing && !snapshot) {
+          throw new Error("Current console metadata is unavailable. Refresh and retry.");
         }
         for (const table of plan.tablesToFetch) {
           if (
             view.current !== editor ||
             !editor.state.doc.eq(state.doc) ||
-            navRequestSeq.current !== request
+            navRequestSeq.current !== request ||
+            renameContext() !== context
           ) {
             return;
           }
+          revokeSchemaSelectionBeforeWork(sessionId);
           const schema = snapshot
             ? await client.call<TableSchema>("inspection_schema", {
                 sessionId,
@@ -955,7 +974,12 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const openWorkspaceHit = (hit: SqlUsageHit) => {
     clearNavigation();
     if (hit.sourceKind === "openTab") {
-      useStudio.setState({ activeTabId: hit.documentId });
+      const studio = useStudio.getState();
+      if (studio.tabs.some((t) => t.id === hit.documentId)) {
+        useStudio.setState({ activeTabId: hit.documentId });
+      } else {
+        studio.notify("That tab was closed.");
+      }
     } else if (hit.savedQueryId) {
       useStudio.getState().openSavedQuery(hit.savedQueryId);
     }

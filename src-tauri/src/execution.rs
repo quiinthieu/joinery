@@ -5773,6 +5773,12 @@ impl Studio {
     ) -> AppResult<SqlFindUsagesReport> {
         let _recovery_activity = self.begin_recovery_activity()?;
         if request.include_saved_queries {
+            let profile_engines: std::collections::HashMap<String, EngineKind> = self
+                .persistence
+                .profiles()?
+                .into_iter()
+                .map(|p| (p.id, p.engine))
+                .collect();
             let existing_saved_ids: std::collections::HashSet<String> = request
                 .documents
                 .iter()
@@ -5784,7 +5790,10 @@ impl Studio {
                 }
                 let matches_conn = match (&request.connection_id, &sq.connection_id) {
                     (Some(req_cid), Some(sq_cid)) => req_cid == sq_cid,
-                    (Some(_), None) | (None, _) => true,
+                    (Some(_), None) | (None, None) => true,
+                    (None, Some(sq_cid)) => profile_engines
+                        .get(sq_cid)
+                        .is_none_or(|engine| *engine == request.engine),
                 };
                 if matches_conn {
                     request.documents.push(SqlUsageDocument {

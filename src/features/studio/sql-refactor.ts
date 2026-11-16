@@ -177,6 +177,155 @@ function collectUsedRelationNames(
   }
 }
 
+function collectDirectRelationAliases(
+  tokens: readonly SqlToken[],
+  engine: EngineKind,
+  into: Set<string>,
+) {
+  for (let i = 0; i < tokens.length; i++) {
+    const word = kw(tokens[i]);
+    if (word === "FROM" || word === "JOIN" || tokens[i]?.text === ",") {
+      let j = i + 1;
+      if (kw(tokens[j]) === "LATERAL") j++;
+      if (tokens[j]?.kind === "Parens") {
+        j++;
+        if (kw(tokens[j]) === "AS" && isName(tokens[j + 1])) {
+          const aliasId = tokenToIdent(tokens[j + 1]);
+          into.add(normKey(aliasId.value, aliasId.quoted, engine));
+        } else if (isName(tokens[j]) && !CLAUSE_STOP_KEYWORDS.has(tokens[j].text.toUpperCase())) {
+          const aliasId = tokenToIdent(tokens[j]);
+          into.add(normKey(aliasId.value, aliasId.quoted, engine));
+        }
+      } else if (isName(tokens[j])) {
+        const parts: Identifier[] = [];
+        while (isName(tokens[j])) {
+          parts.push(tokenToIdent(tokens[j]));
+          if (tokens[j + 1]?.text === ".") {
+            j += 2;
+          } else {
+            j++;
+            break;
+          }
+        }
+        let aliasId: Identifier | null = null;
+        if (kw(tokens[j]) === "AS" && isName(tokens[j + 1])) {
+          aliasId = tokenToIdent(tokens[j + 1]);
+        } else if (isName(tokens[j]) && !CLAUSE_STOP_KEYWORDS.has(tokens[j].text.toUpperCase())) {
+          aliasId = tokenToIdent(tokens[j]);
+        }
+        const boundId = aliasId ?? parts[parts.length - 1];
+        if (boundId) {
+          into.add(normKey(boundId.value, boundId.quoted, engine));
+        }
+      }
+    }
+  }
+}
+
+function collectEnclosingOuterAliases(
+  tokens: readonly SqlToken[],
+  targetFrom: number,
+  targetTo: number,
+  engine: EngineKind,
+  into: Set<string>,
+) {
+  let bodyTokens = tokens;
+  const nestedWith = parseTopLevelWith(tokens, engine);
+  if (nestedWith) {
+    for (const cte of nestedWith.ctes) {
+      if (targetFrom >= cte.parens.from && targetTo <= cte.parens.to) {
+        collectEnclosingOuterAliases(cte.parens.children ?? [], targetFrom, targetTo, engine, into);
+        return;
+      }
+    }
+    bodyTokens = tokens.slice(nestedWith.bodyStartIndex);
+  }
+  const hasFromOutsideTarget = bodyTokens.some(
+    (t) => kw(t) === "FROM" && (t.to <= targetFrom || t.from >= targetTo),
+  );
+  if (hasFromOutsideTarget) {
+    const nonTargetSlice = bodyTokens.filter((t) => t.to <= targetFrom || t.from >= targetTo);
+    collectDirectRelationAliases(nonTargetSlice, engine, into);
+  }
+  for (const tok of bodyTokens) {
+    if (tok.kind === "Parens" && tok.children && tok.from < targetFrom && tok.to > targetTo) {
+      collectEnclosingOuterAliases(tok.children, targetFrom, targetTo, engine, into);
+    }
+  }
+}
+
+function assertSubquerySelfContained(
+  subTokens: readonly SqlToken[],
+  engine: EngineKind,
+  outerAliases: ReadonlySet<string>,
+  recursiveSelfNames: ReadonlySet<string>,
+  inheritedBound: ReadonlySet<string> = new Set(),
+) {
+  const localBound = new Set(inheritedBound);
+  let scanTokens = subTokens;
+  const nestedWith = parseTopLevelWith(subTokens, engine);
+  if (nestedWith) {
+    for (const cte of nestedWith.ctes) {
+      if (nestedWith.recursive) {
+        localBound.add(cte.norm);
+      }
+      assertSubquerySelfContained(
+        cte.parens.children ?? [],
+        engine,
+        outerAliases,
+        recursiveSelfNames,
+        localBound,
+      );
+      localBound.add(cte.norm);
+    }
+    scanTokens = subTokens.slice(nestedWith.bodyStartIndex);
+  }
+  collectDirectRelationAliases(scanTokens, engine, localBound);
+
+  for (let i = 0; i < scanTokens.length; i++) {
+    const tok = scanTokens[i];
+    const word = kw(tok);
+    if ((word === "FROM" || word === "JOIN") && isName(scanTokens[i + 1])) {
+      if (scanTokens[i + 2]?.text !== ".") {
+        const relId = tokenToIdent(scanTokens[i + 1]);
+        const relNorm = normKey(relId.value, relId.quoted, engine);
+        if (!inheritedBound.has(relNorm) && recursiveSelfNames.has(relNorm)) {
+          throw new Error(
+            `Cannot extract a recursive subquery that references enclosing CTE "${relId.value}" before its declaration.`,
+          );
+        }
+      }
+    }
+    if (
+      isName(tok) &&
+      scanTokens[i - 1]?.text !== "." &&
+      scanTokens[i + 1]?.text === "." &&
+      (isName(scanTokens[i + 2]) || scanTokens[i + 2]?.text === "*") &&
+      scanTokens[i + 3]?.text !== "."
+    ) {
+      const prevKw = kw(scanTokens[i - 1]);
+      if (prevKw !== "FROM" && prevKw !== "JOIN" && prevKw !== "INTO" && prevKw !== "UPDATE") {
+        const qualId = tokenToIdent(tok);
+        const qualNorm = normKey(qualId.value, qualId.quoted, engine);
+        if (!localBound.has(qualNorm) && outerAliases.has(qualNorm)) {
+          throw new Error(
+            `Cannot extract a correlated subquery that references outer alias "${qualId.value}" into a top-level CTE.`,
+          );
+        }
+      }
+    }
+    if (tok.kind === "Parens" && tok.children) {
+      assertSubquerySelfContained(
+        tok.children,
+        engine,
+        outerAliases,
+        recursiveSelfNames,
+        localBound,
+      );
+    }
+  }
+}
+
 export interface ExtractCtePlan {
   defaultName: string;
   subquerySql: string;
@@ -244,6 +393,7 @@ export function analyzeExtractCte(
     innerSql: string;
     kind: "derivedTable" | "expressionSubquery" | "wrapStatement";
     enclosingCteIndex: number | null;
+    subTokens?: readonly SqlToken[];
   }
 
   const isSelectParens = (p: SqlToken): boolean => {
@@ -310,7 +460,11 @@ export function analyzeExtractCte(
           state.sliceDoc(sTo, enclosing.parens.to - 1).trim() === ""))
     ) {
       const prevKw = kw(enclosing.prevToken);
-      const isDerived = prevKw === "FROM" || prevKw === "JOIN" || prevKw === "LATERAL";
+      const isDerived =
+        prevKw === "FROM" ||
+        prevKw === "JOIN" ||
+        prevKw === "LATERAL" ||
+        enclosing.prevToken?.text === ",";
       const inner = state.sliceDoc(enclosing.parens.from + 1, enclosing.parens.to - 1).trim();
       found = {
         replaceFrom: enclosing.parens.from,
@@ -318,6 +472,7 @@ export function analyzeExtractCte(
         innerSql: inner,
         kind: isDerived ? "derivedTable" : "expressionSubquery",
         enclosingCteIndex: enclosing.cteIdx,
+        subTokens: enclosing.parens.children,
       };
     } else {
       const selectedSql = state.sliceDoc(sFrom, sTo).trim();
@@ -380,7 +535,11 @@ export function analyzeExtractCte(
       );
     }
     const prevKw = kw(enclosing.prevToken);
-    const isDerived = prevKw === "FROM" || prevKw === "JOIN" || prevKw === "LATERAL";
+    const isDerived =
+      prevKw === "FROM" ||
+      prevKw === "JOIN" ||
+      prevKw === "LATERAL" ||
+      enclosing.prevToken?.text === ",";
     const inner = state.sliceDoc(enclosing.parens.from + 1, enclosing.parens.to - 1).trim();
     found = {
       replaceFrom: enclosing.parens.from,
@@ -388,7 +547,31 @@ export function analyzeExtractCte(
       innerSql: inner,
       kind: isDerived ? "derivedTable" : "expressionSubquery",
       enclosingCteIndex: enclosing.cteIdx,
+      subTokens: enclosing.parens.children,
     };
+  }
+
+  if (found.kind !== "wrapStatement") {
+    const outerAliases = new Set<string>();
+    collectEnclosingOuterAliases(
+      cleanTokens,
+      found.replaceFrom,
+      found.replaceTo,
+      engine,
+      outerAliases,
+    );
+    const recursiveSelfNames = new Set<string>();
+    if (withHeader?.recursive && found.enclosingCteIndex !== null) {
+      for (let i = found.enclosingCteIndex; i < withHeader.ctes.length; i++) {
+        recursiveSelfNames.add(withHeader.ctes[i].norm);
+      }
+    }
+    const checkTokens =
+      found.subTokens ??
+      cleanTokens.filter((t) => t.from >= found.replaceFrom && t.to <= found.replaceTo);
+    if (outerAliases.size > 0 || recursiveSelfNames.size > 0) {
+      assertSubquerySelfContained(checkTokens, engine, outerAliases, recursiveSelfNames);
+    }
   }
 
   let candidateIdx = 1;
@@ -833,9 +1016,7 @@ export function prepareExpandWildcard(
           targetWildcard.qualifierIdent!.quoted,
           engine,
         );
-        return (
-          r.qualifierNorm === want || (r.source.kind === "table" && r.source.tableNorm === want)
-        );
+        return r.qualifierNorm === want;
       })
     : relations;
 
