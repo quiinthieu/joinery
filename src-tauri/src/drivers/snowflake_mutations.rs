@@ -8,13 +8,15 @@
 //!
 //! Supports UTF-8 text, exact fixed-point decimals (precision 1..=38, scale
 //! 0..=38), IEEE-754 float, Boolean, hex binary, proleptic Gregorian date,
-//! nanosecond-scale time and NTZ/LTZ/TZ timestamps, and strict RFC 8259 JSON
-//! semi-structured types (VARIANT, ARRAY, OBJECT) on up to 1,000 columns. Text
-//! stale predicates compare explicit UTF-8 binary conversions, not SQL
-//! collation. UPDATE DEFAULT and mixed batches with unknown INSERT postimages
-//! remain explicit compiler limits rather than guessed server effects. Quoted
-//! identifier resolution requires corroborating the session's
-//! QUOTED_IDENTIFIERS_IGNORE_CASE setting; quoting is not an identity proof.
+//! nanosecond-scale time and NTZ/LTZ/TZ timestamps, strict RFC 8259 JSON
+//! semi-structured types (VARIANT, ARRAY, OBJECT), and WKT/EWKT/GeoJSON spatial
+//! types (GEOGRAPHY, GEOMETRY) on up to 1,000 columns. Text stale predicates
+//! compare explicit UTF-8 binary conversions, and spatial stale predicates
+//! compare ST_ASEWKB binary conversions. UPDATE DEFAULT and mixed batches with
+//! unknown INSERT postimages remain explicit compiler limits rather than guessed
+//! server effects. Quoted identifier resolution requires corroborating the
+//! session's QUOTED_IDENTIFIERS_IGNORE_CASE setting; quoting is not an identity
+//! proof.
 use crate::domain::{AppError, AppResult, ErrorCode};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -28,8 +30,6 @@ const MAX_JSON_DEPTH: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnsupportedType {
-    Geography,
-    Geometry,
     Vector,
     Unknown,
 }
@@ -49,6 +49,8 @@ pub enum ScalarType {
     Variant,
     Array,
     Object,
+    Geography,
+    Geometry,
     Unsupported(UnsupportedType),
 }
 
@@ -210,6 +212,8 @@ pub enum BindingKind {
     Variant,
     Array,
     Object,
+    Geography,
+    Geometry,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Binding {
@@ -885,6 +889,586 @@ fn canonicalize_json(text: &str, expected: JsonKind) -> AppResult<Vec<u8>> {
     Ok(out)
 }
 
+fn canonical_coord_bits(val: f64) -> AppResult<u64> {
+    if !val.is_finite() {
+        return Err(invalid());
+    }
+    Ok(if val == 0.0 {
+        0.0f64.to_bits()
+    } else {
+        val.to_bits()
+    })
+}
+
+fn push_canonical_position(coords: &[f64], is_geography: bool, out: &mut Vec<u8>) -> AppResult<()> {
+    if !(2..=4).contains(&coords.len()) {
+        return Err(invalid());
+    }
+    if is_geography
+        && (!(-180.0..=180.0).contains(&coords[0]) || !(-90.0..=90.0).contains(&coords[1]))
+    {
+        return Err(invalid());
+    }
+    out.push(coords.len() as u8);
+    for &c in coords {
+        out.extend_from_slice(&canonical_coord_bits(c)?.to_be_bytes());
+    }
+    Ok(())
+}
+
+fn parse_geojson_position(val: &serde_json::Value) -> AppResult<Vec<f64>> {
+    let arr = val.as_array().ok_or_else(invalid)?;
+    if !(2..=4).contains(&arr.len()) {
+        return Err(invalid());
+    }
+    arr.iter()
+        .map(|n| n.as_f64().filter(|f| f.is_finite()).ok_or_else(invalid))
+        .collect()
+}
+
+fn validate_closed_ring(ring: &[Vec<f64>]) -> AppResult<()> {
+    if ring.is_empty() {
+        return Ok(());
+    }
+    if ring.len() < 4 {
+        return Err(invalid());
+    }
+    let first = &ring[0];
+    let last = ring.last().ok_or_else(invalid)?;
+    if first.len() != last.len() {
+        return Err(invalid());
+    }
+    for (&a, &b) in first.iter().zip(last.iter()) {
+        if canonical_coord_bits(a)? != canonical_coord_bits(b)? {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+fn encode_geojson_geometry(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    is_geography: bool,
+    depth: usize,
+    out: &mut Vec<u8>,
+) -> AppResult<()> {
+    if depth > MAX_JSON_DEPTH {
+        return Err(invalid());
+    }
+    let raw_type = obj
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(invalid)?;
+    if raw_type.eq_ignore_ascii_case("Feature") {
+        let geom = obj
+            .get("geometry")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(invalid)?;
+        return encode_geojson_geometry(geom, is_geography, depth + 1, out);
+    }
+    match raw_type.to_ascii_uppercase().as_str() {
+        "POINT" => {
+            out.push(1);
+            let coords_val = obj.get("coordinates").ok_or_else(invalid)?;
+            let arr = coords_val.as_array().ok_or_else(invalid)?;
+            if arr.is_empty() {
+                out.push(0);
+            } else {
+                out.push(1);
+                let pos = parse_geojson_position(coords_val)?;
+                push_canonical_position(&pos, is_geography, out)?;
+            }
+        }
+        "LINESTRING" => {
+            out.push(2);
+            let arr = obj
+                .get("coordinates")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            if !arr.is_empty() && arr.len() < 2 {
+                return Err(invalid());
+            }
+            out.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            for item in arr {
+                let pos = parse_geojson_position(item)?;
+                push_canonical_position(&pos, is_geography, out)?;
+            }
+        }
+        "POLYGON" => {
+            out.push(3);
+            let rings = obj
+                .get("coordinates")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            out.extend_from_slice(&(rings.len() as u32).to_be_bytes());
+            for ring_val in rings {
+                let ring_arr = ring_val.as_array().ok_or_else(invalid)?;
+                let positions: Vec<Vec<f64>> = ring_arr
+                    .iter()
+                    .map(parse_geojson_position)
+                    .collect::<AppResult<_>>()?;
+                validate_closed_ring(&positions)?;
+                out.extend_from_slice(&(positions.len() as u32).to_be_bytes());
+                for pos in &positions {
+                    push_canonical_position(pos, is_geography, out)?;
+                }
+            }
+        }
+        "MULTIPOINT" => {
+            out.push(4);
+            let pts = obj
+                .get("coordinates")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
+            for item in pts {
+                let pos = parse_geojson_position(item)?;
+                push_canonical_position(&pos, is_geography, out)?;
+            }
+        }
+        "MULTILINESTRING" => {
+            out.push(5);
+            let lines = obj
+                .get("coordinates")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            out.extend_from_slice(&(lines.len() as u32).to_be_bytes());
+            for line_val in lines {
+                let line_arr = line_val.as_array().ok_or_else(invalid)?;
+                if !line_arr.is_empty() && line_arr.len() < 2 {
+                    return Err(invalid());
+                }
+                out.extend_from_slice(&(line_arr.len() as u32).to_be_bytes());
+                for item in line_arr {
+                    let pos = parse_geojson_position(item)?;
+                    push_canonical_position(&pos, is_geography, out)?;
+                }
+            }
+        }
+        "MULTIPOLYGON" => {
+            out.push(6);
+            let polys = obj
+                .get("coordinates")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            out.extend_from_slice(&(polys.len() as u32).to_be_bytes());
+            for poly_val in polys {
+                let rings = poly_val.as_array().ok_or_else(invalid)?;
+                out.extend_from_slice(&(rings.len() as u32).to_be_bytes());
+                for ring_val in rings {
+                    let ring_arr = ring_val.as_array().ok_or_else(invalid)?;
+                    let positions: Vec<Vec<f64>> = ring_arr
+                        .iter()
+                        .map(parse_geojson_position)
+                        .collect::<AppResult<_>>()?;
+                    validate_closed_ring(&positions)?;
+                    out.extend_from_slice(&(positions.len() as u32).to_be_bytes());
+                    for pos in &positions {
+                        push_canonical_position(pos, is_geography, out)?;
+                    }
+                }
+            }
+        }
+        "GEOMETRYCOLLECTION" => {
+            out.push(7);
+            let geoms = obj
+                .get("geometries")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(invalid)?;
+            out.extend_from_slice(&(geoms.len() as u32).to_be_bytes());
+            for g in geoms {
+                let g_obj = g.as_object().ok_or_else(invalid)?;
+                encode_geojson_geometry(g_obj, is_geography, depth + 1, out)?;
+            }
+        }
+        _ => return Err(invalid()),
+    }
+    Ok(())
+}
+
+struct WktParser<'a> {
+    bytes: &'a [u8],
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> WktParser<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            bytes: text.as_bytes(),
+            text,
+            pos: 0,
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn consume_char(&mut self, expected: u8) -> bool {
+        self.skip_ws();
+        if self.bytes.get(self.pos) == Some(&expected) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn read_word(&mut self) -> Option<&'a str> {
+        self.skip_ws();
+        let start = self.pos;
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_alphabetic() {
+            self.pos += 1;
+        }
+        (self.pos > start).then(|| &self.text[start..self.pos])
+    }
+
+    fn read_f64(&mut self) -> AppResult<f64> {
+        self.skip_ws();
+        let start = self.pos;
+        while self.pos < self.bytes.len()
+            && matches!(
+                self.bytes[self.pos],
+                b'+' | b'-' | b'0'..=b'9' | b'.' | b'e' | b'E'
+            )
+        {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return Err(invalid());
+        }
+        let token = &self.text[start..self.pos];
+        let val: f64 = token.parse().map_err(|_| invalid())?;
+        if !val.is_finite() {
+            return Err(invalid());
+        }
+        Ok(val)
+    }
+
+    fn read_position(&mut self) -> AppResult<Vec<f64>> {
+        let mut coords = Vec::with_capacity(4);
+        coords.push(self.read_f64()?);
+        coords.push(self.read_f64()?);
+        for _ in 0..2 {
+            self.skip_ws();
+            if self
+                .bytes
+                .get(self.pos)
+                .is_some_and(|b| matches!(b, b'+' | b'-' | b'0'..=b'9' | b'.'))
+            {
+                coords.push(self.read_f64()?);
+            } else {
+                break;
+            }
+        }
+        Ok(coords)
+    }
+
+    fn read_position_list(&mut self, min_points: usize) -> AppResult<Vec<Vec<f64>>> {
+        if !self.consume_char(b'(') {
+            return Err(invalid());
+        }
+        let mut pts = Vec::new();
+        loop {
+            pts.push(self.read_position()?);
+            if self.consume_char(b',') {
+                continue;
+            }
+            if self.consume_char(b')') {
+                break;
+            }
+            return Err(invalid());
+        }
+        if pts.len() < min_points {
+            return Err(invalid());
+        }
+        Ok(pts)
+    }
+
+    fn read_polygon_rings(&mut self) -> AppResult<Vec<Vec<Vec<f64>>>> {
+        if !self.consume_char(b'(') {
+            return Err(invalid());
+        }
+        let mut rings = Vec::new();
+        loop {
+            let ring = self.read_position_list(4)?;
+            validate_closed_ring(&ring)?;
+            rings.push(ring);
+            if self.consume_char(b',') {
+                continue;
+            }
+            if self.consume_char(b')') {
+                break;
+            }
+            return Err(invalid());
+        }
+        Ok(rings)
+    }
+
+    fn check_empty_or_require_open(&mut self) -> AppResult<bool> {
+        let saved = self.pos;
+        if let Some(word) = self.read_word() {
+            if word.eq_ignore_ascii_case("EMPTY") {
+                return Ok(true);
+            }
+            if matches!(word.to_ascii_uppercase().as_str(), "Z" | "M" | "ZM") {
+                let after_dim = self.pos;
+                if let Some(next_word) = self.read_word() {
+                    if next_word.eq_ignore_ascii_case("EMPTY") {
+                        return Ok(true);
+                    }
+                    self.pos = after_dim;
+                }
+                return Ok(false);
+            }
+            self.pos = saved;
+        }
+        Ok(false)
+    }
+
+    fn parse_geometry(
+        &mut self,
+        is_geography: bool,
+        depth: usize,
+        out: &mut Vec<u8>,
+    ) -> AppResult<()> {
+        if depth > MAX_JSON_DEPTH {
+            return Err(invalid());
+        }
+        let kind = self.read_word().ok_or_else(invalid)?.to_ascii_uppercase();
+        let is_empty = self.check_empty_or_require_open()?;
+        match kind.as_str() {
+            "POINT" => {
+                out.push(1);
+                if is_empty {
+                    out.push(0);
+                } else {
+                    if !self.consume_char(b'(') {
+                        return Err(invalid());
+                    }
+                    let pos = self.read_position()?;
+                    if !self.consume_char(b')') {
+                        return Err(invalid());
+                    }
+                    out.push(1);
+                    push_canonical_position(&pos, is_geography, out)?;
+                }
+            }
+            "LINESTRING" => {
+                out.push(2);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    let pts = self.read_position_list(2)?;
+                    out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
+                    for p in &pts {
+                        push_canonical_position(p, is_geography, out)?;
+                    }
+                }
+            }
+            "POLYGON" => {
+                out.push(3);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    let rings = self.read_polygon_rings()?;
+                    out.extend_from_slice(&(rings.len() as u32).to_be_bytes());
+                    for ring in &rings {
+                        out.extend_from_slice(&(ring.len() as u32).to_be_bytes());
+                        for p in ring {
+                            push_canonical_position(p, is_geography, out)?;
+                        }
+                    }
+                }
+            }
+            "MULTIPOINT" => {
+                out.push(4);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    if !self.consume_char(b'(') {
+                        return Err(invalid());
+                    }
+                    let mut pts = Vec::new();
+                    loop {
+                        let parenthesized = self.consume_char(b'(');
+                        let p = self.read_position()?;
+                        if parenthesized && !self.consume_char(b')') {
+                            return Err(invalid());
+                        }
+                        pts.push(p);
+                        if self.consume_char(b',') {
+                            continue;
+                        }
+                        if self.consume_char(b')') {
+                            break;
+                        }
+                        return Err(invalid());
+                    }
+                    out.extend_from_slice(&(pts.len() as u32).to_be_bytes());
+                    for p in &pts {
+                        push_canonical_position(p, is_geography, out)?;
+                    }
+                }
+            }
+            "MULTILINESTRING" => {
+                out.push(5);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    if !self.consume_char(b'(') {
+                        return Err(invalid());
+                    }
+                    let mut lines = Vec::new();
+                    loop {
+                        lines.push(self.read_position_list(2)?);
+                        if self.consume_char(b',') {
+                            continue;
+                        }
+                        if self.consume_char(b')') {
+                            break;
+                        }
+                        return Err(invalid());
+                    }
+                    out.extend_from_slice(&(lines.len() as u32).to_be_bytes());
+                    for line in &lines {
+                        out.extend_from_slice(&(line.len() as u32).to_be_bytes());
+                        for p in line {
+                            push_canonical_position(p, is_geography, out)?;
+                        }
+                    }
+                }
+            }
+            "MULTIPOLYGON" => {
+                out.push(6);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    if !self.consume_char(b'(') {
+                        return Err(invalid());
+                    }
+                    let mut polys = Vec::new();
+                    loop {
+                        polys.push(self.read_polygon_rings()?);
+                        if self.consume_char(b',') {
+                            continue;
+                        }
+                        if self.consume_char(b')') {
+                            break;
+                        }
+                        return Err(invalid());
+                    }
+                    out.extend_from_slice(&(polys.len() as u32).to_be_bytes());
+                    for rings in &polys {
+                        out.extend_from_slice(&(rings.len() as u32).to_be_bytes());
+                        for ring in rings {
+                            out.extend_from_slice(&(ring.len() as u32).to_be_bytes());
+                            for p in ring {
+                                push_canonical_position(p, is_geography, out)?;
+                            }
+                        }
+                    }
+                }
+            }
+            "GEOMETRYCOLLECTION" => {
+                out.push(7);
+                if is_empty {
+                    out.extend_from_slice(&0u32.to_be_bytes());
+                } else {
+                    if !self.consume_char(b'(') {
+                        return Err(invalid());
+                    }
+                    let mut items: Vec<Vec<u8>> = Vec::new();
+                    loop {
+                        let mut sub = Vec::new();
+                        self.parse_geometry(is_geography, depth + 1, &mut sub)?;
+                        items.push(sub);
+                        if self.consume_char(b',') {
+                            continue;
+                        }
+                        if self.consume_char(b')') {
+                            break;
+                        }
+                        return Err(invalid());
+                    }
+                    out.extend_from_slice(&(items.len() as u32).to_be_bytes());
+                    for sub in items {
+                        out.extend_from_slice(&sub);
+                    }
+                }
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    }
+}
+
+fn canonicalize_spatial(text: &str, is_geography: bool) -> AppResult<Vec<u8>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err(invalid());
+    }
+    let default_srid: u32 = if is_geography { 4326 } else { 0 };
+    let mut out = Vec::with_capacity(64);
+
+    if trimmed.starts_with('{') {
+        canonicalize_json(trimmed, JsonKind::Object)?;
+        let val: serde_json::Value = serde_json::from_str(trimmed).map_err(|_| invalid())?;
+        let obj = val.as_object().ok_or_else(invalid)?;
+        let srid = if let Some(crs_name) = obj
+            .get("crs")
+            .and_then(|c| c.get("properties"))
+            .and_then(|p| p.get("name"))
+            .and_then(serde_json::Value::as_str)
+        {
+            let tail = crs_name.rsplit(':').next().ok_or_else(invalid)?.trim();
+            let parsed: u32 = tail.parse().map_err(|_| invalid())?;
+            if parsed > 999_999 {
+                return Err(invalid());
+            }
+            parsed
+        } else {
+            default_srid
+        };
+        if is_geography && srid != 4326 {
+            return Err(invalid());
+        }
+        out.extend_from_slice(&srid.to_be_bytes());
+        encode_geojson_geometry(obj, is_geography, 0, &mut out)?;
+        return Ok(out);
+    }
+
+    let (srid, body) = if let Some((prefix, rest)) = trimmed.split_once(';') {
+        let p = prefix.trim();
+        let digits = p
+            .strip_prefix("SRID=")
+            .or_else(|| p.strip_prefix("srid="))
+            .ok_or_else(invalid)?
+            .trim();
+        if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        let parsed: u32 = digits.parse().map_err(|_| invalid())?;
+        (parsed, rest.trim())
+    } else {
+        (default_srid, trimmed)
+    };
+    if is_geography && srid != 4326 {
+        return Err(invalid());
+    }
+    out.extend_from_slice(&srid.to_be_bytes());
+    let mut parser = WktParser::new(body);
+    parser.parse_geometry(is_geography, 0, &mut out)?;
+    parser.skip_ws();
+    if parser.pos != parser.bytes.len() {
+        return Err(invalid());
+    }
+    Ok(out)
+}
+
 fn validate_cell(column: &MutationColumn, value: &CellValue, original: bool) -> AppResult<()> {
     match value {
         CellValue::Default if !original && (column.has_default || column.nullable) => Ok(()),
@@ -912,6 +1496,8 @@ fn validate_cell(column: &MutationColumn, value: &CellValue, original: bool) -> 
                 ScalarType::Variant => canonicalize_json(text, JsonKind::Any).map(|_| ()),
                 ScalarType::Array => canonicalize_json(text, JsonKind::Array).map(|_| ()),
                 ScalarType::Object => canonicalize_json(text, JsonKind::Object).map(|_| ()),
+                ScalarType::Geography => canonicalize_spatial(text, true).map(|_| ()),
+                ScalarType::Geometry => canonicalize_spatial(text, false).map(|_| ()),
                 ScalarType::Unsupported(_) => Err(unsupported()),
                 _ => Err(invalid()),
             }
@@ -1030,6 +1616,16 @@ fn fingerprint<'a>(
                     }
                     ScalarType::Object => {
                         let canon = canonicalize_json(text, JsonKind::Object)?;
+                        digest.update((canon.len() as u64).to_be_bytes());
+                        digest.update(&canon);
+                    }
+                    ScalarType::Geography => {
+                        let canon = canonicalize_spatial(text, true)?;
+                        digest.update((canon.len() as u64).to_be_bytes());
+                        digest.update(&canon);
+                    }
+                    ScalarType::Geometry => {
+                        let canon = canonicalize_spatial(text, false)?;
                         digest.update((canon.len() as u64).to_be_bytes());
                         digest.update(&canon);
                     }
@@ -1205,6 +1801,8 @@ fn null_cast_type(data_type: ScalarType) -> String {
         ScalarType::Variant => "VARIANT".into(),
         ScalarType::Array => "ARRAY".into(),
         ScalarType::Object => "OBJECT".into(),
+        ScalarType::Geography => "GEOGRAPHY".into(),
+        ScalarType::Geometry => "GEOMETRY".into(),
         ScalarType::Unsupported(_) => unreachable!("validated target"),
     }
 }
@@ -1224,6 +1822,8 @@ fn binding_kind(data_type: ScalarType) -> BindingKind {
         ScalarType::Variant => BindingKind::Variant,
         ScalarType::Array => BindingKind::Array,
         ScalarType::Object => BindingKind::Object,
+        ScalarType::Geography => BindingKind::Geography,
+        ScalarType::Geometry => BindingKind::Geometry,
         ScalarType::Unsupported(_) => unreachable!("validated target"),
     }
 }
@@ -1326,6 +1926,12 @@ fn bind(sql: &mut String, bindings: &mut Vec<Binding>, column: &MutationColumn, 
                 ScalarType::Object => {
                     sql.push_str("TO_OBJECT(PARSE_JSON(CAST(? AS VARCHAR)))");
                 }
+                ScalarType::Geography => {
+                    sql.push_str("TO_GEOGRAPHY(CAST(? AS VARCHAR))");
+                }
+                ScalarType::Geometry => {
+                    sql.push_str("TO_GEOMETRY(CAST(? AS VARCHAR))");
+                }
                 ScalarType::Unsupported(_) => unreachable!("validated target"),
             }
             bindings.push(Binding {
@@ -1345,7 +1951,11 @@ fn emit(target: &MutationTarget, mutation: &Mutation, capacity: usize) -> Compil
                 *v != CellValue::Default
                     && matches!(
                         target.columns[*i].data_type,
-                        ScalarType::Variant | ScalarType::Array | ScalarType::Object
+                        ScalarType::Variant
+                            | ScalarType::Array
+                            | ScalarType::Object
+                            | ScalarType::Geography
+                            | ScalarType::Geometry
                     )
             });
             sql.push_str("INSERT INTO ");
@@ -1414,20 +2024,32 @@ fn emit(target: &MutationTarget, mutation: &Mutation, capacity: usize) -> Compil
                 sql.push_str(" AND ");
             }
             let binary_text = matches!(column.data_type, ScalarType::Text { .. });
+            let spatial_wkb = matches!(
+                column.data_type,
+                ScalarType::Geography | ScalarType::Geometry
+            );
             if binary_text {
                 sql.push_str("TO_BINARY(");
+            } else if spatial_wkb {
+                sql.push_str("ST_ASEWKB(");
             }
             sql.push_str(&column.quoted);
             if binary_text {
                 sql.push_str(", 'UTF-8')");
+            } else if spatial_wkb {
+                sql.push(')');
             }
             sql.push_str(" IS NOT DISTINCT FROM ");
             if binary_text {
                 sql.push_str("TO_BINARY(");
+            } else if spatial_wkb {
+                sql.push_str("ST_ASEWKB(");
             }
             bind(&mut sql, &mut bindings, column, value);
             if binary_text {
                 sql.push_str(", 'UTF-8')");
+            } else if spatial_wkb {
+                sql.push(')');
             }
         }
     }

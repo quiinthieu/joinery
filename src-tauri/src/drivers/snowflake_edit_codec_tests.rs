@@ -390,7 +390,7 @@ fn unsupported_relation_and_type_shapes_do_not_become_writable() {
     r.table_type = "TEMPORARY TABLE".into();
     r.traits.temporary = Some(true);
     assert!(InspectedMutationTarget::from_inspection(&r, &[text()]).is_ok());
-    for kind in ["GEOGRAPHY", "GEOMETRY", "VECTOR", "FUTURE_TYPE"] {
+    for kind in ["VECTOR", "FUTURE_TYPE"] {
         let mut c = text();
         c.data_type = kind.into();
         c.full_type = kind.into();
@@ -400,6 +400,26 @@ fn unsupported_relation_and_type_shapes_do_not_become_writable() {
                 .unwrap()
                 .code,
             ErrorCode::Unsupported
+        );
+    }
+    for kind in ["GEOGRAPHY", "GEOMETRY"] {
+        let mut ok_spatial = text();
+        ok_spatial.data_type = kind.into();
+        ok_spatial.full_type = kind.into();
+        ok_spatial.character_maximum_length = None;
+        ok_spatial.character_octet_length = None;
+        assert!(InspectedMutationTarget::from_inspection(&relation(), &[ok_spatial]).is_ok());
+
+        let mut bad_spatial = text();
+        bad_spatial.data_type = kind.into();
+        bad_spatial.full_type = kind.into();
+        bad_spatial.result_kind = ColumnKind::Json;
+        assert_eq!(
+            InspectedMutationTarget::from_inspection(&relation(), &[bad_spatial])
+                .err()
+                .unwrap()
+                .code,
+            ErrorCode::InvalidInput
         );
     }
     for kind in [

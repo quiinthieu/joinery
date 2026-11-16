@@ -77,6 +77,8 @@ fn family(value: &str) -> Option<u8> {
         "VARIANT" => Some(10),
         "ARRAY" => Some(11),
         "OBJECT" => Some(12),
+        "GEOGRAPHY" => Some(13),
+        "GEOMETRY" => Some(14),
         _ => None,
     }
 }
@@ -301,6 +303,36 @@ fn codec(column: &ColumnInspection) -> AppResult<(ScalarType, Option<TextLimit>)
                 11 => ScalarType::Array,
                 12 => ScalarType::Object,
                 _ => unreachable!(),
+            };
+            Ok((scalar, None))
+        }
+        13..=14 => {
+            if family(&column.full_type) != Some(kind)
+                || column.result_kind != ColumnKind::Text
+                || column.numeric_precision.is_some()
+                || column.numeric_precision_radix.is_some()
+                || column.numeric_scale.is_some()
+            {
+                return Err(invalid());
+            }
+            match (
+                column.character_maximum_length.as_deref(),
+                column.character_octet_length.as_deref(),
+            ) {
+                (None, None) => {}
+                (Some(chars), Some(octets)) => {
+                    let c = dimension(Some(chars))?;
+                    let o = dimension(Some(octets))?;
+                    if c == 0 || o < c {
+                        return Err(invalid());
+                    }
+                }
+                _ => return Err(invalid()),
+            }
+            let scalar = if kind == 13 {
+                ScalarType::Geography
+            } else {
+                ScalarType::Geometry
             };
             Ok((scalar, None))
         }

@@ -2674,11 +2674,16 @@ it("inspects VARIANT :path trees, BINARY hex dumps, and GEOGRAPHY spatial previe
   expect(hexViewer.textContent).toContain("|Joinery|");
   fireEvent.click(screen.getByRole("button", { name: "Back to preview" }));
 
-  // 3. Read-only GEOGRAPHY spatial 2D SVG preview
+  // 3. Writable GEOGRAPHY spatial 2D SVG preview and staged WKT edit
   fireEvent.click(screen.getByRole("button", { name: "Inspect row 1 REGION_GEO" }));
   const spatialViewer = await screen.findByTestId("spatial-viewer");
   expect(within(spatialViewer).getByText("Polygon")).toBeTruthy();
   expect(screen.getByTestId("spatial-svg-preview")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Raw" }));
+  fireEvent.change(screen.getByLabelText("Cell value"), {
+    target: { value: "SRID=4326;POINT(-122.4194 37.7749)" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Apply to staged cell" }));
+  await screen.findByRole("button", { name: "Review 1 change…" });
   expect(screen.getByRole("table", { name: "Editable Snowflake preview" })).toBeTruthy();
 });

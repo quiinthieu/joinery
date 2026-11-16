@@ -3028,6 +3028,26 @@ function SnowflakeCellInspectorModal({
         return;
       }
     }
+    if (!isNull && viewerKind === "spatial") {
+      const parsed = parseSpatialPreview(value);
+      if (!parsed.ok) {
+        setError(parsed.error);
+        return;
+      }
+      if (
+        databaseType.trim().toUpperCase().startsWith("GEOGRAPHY") &&
+        parsed.bbox &&
+        (parsed.bbox[0] < -180 ||
+          parsed.bbox[2] > 180 ||
+          parsed.bbox[1] < -90 ||
+          parsed.bbox[3] > 90)
+      ) {
+        setError(
+          "GEOGRAPHY coordinates must fall within longitude [-180, 180] and latitude [-90, 90]",
+        );
+        return;
+      }
+    }
     onApply(isNull ? { kind: "null" } : { kind: "text", value });
   };
 

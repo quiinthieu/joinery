@@ -55,7 +55,9 @@ export type SnowflakeEditTypeFamily =
   | "binary"
   | "variant"
   | "object"
-  | "array";
+  | "array"
+  | "geography"
+  | "geometry";
 
 export function snowflakeEditTypeFamily(dataType: string): SnowflakeEditTypeFamily | null {
   const base = dataType.trim().toUpperCase().split(/[<( ]/, 1)[0];
@@ -105,6 +107,10 @@ export function snowflakeEditTypeFamily(dataType: string): SnowflakeEditTypeFami
       return "object";
     case "ARRAY":
       return "array";
+    case "GEOGRAPHY":
+      return "geography";
+    case "GEOMETRY":
+      return "geometry";
     default:
       return null;
   }
@@ -148,6 +154,9 @@ export function defaultInsertCellForColumn(column: ColumnInspection): SnowflakeG
       return { kind: "text", value: "[]" };
     case "object":
       return { kind: "text", value: "{}" };
+    case "geography":
+    case "geometry":
+      return { kind: "text", value: "POINT(0 0)" };
     default:
       return { kind: "text", value: "" };
   }
@@ -433,7 +442,7 @@ function mapCsvRowsToInsertRows(
         cells[targetIndex] = { kind: "null" };
       } else if (
         rawValue === "" &&
-        column.resultKind !== "text" &&
+        snowflakeEditTypeFamily(column.dataType) !== "text" &&
         !(
           snowflakeEditTypeFamily(column.dataType) === "binary" &&
           column.defaultExpression === null &&
