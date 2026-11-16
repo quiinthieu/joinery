@@ -84,17 +84,23 @@ concurrent DDL can change effects. unknown outcomes retire without replay, and
 metadata stays paused until explicit coherent refresh. Schema-8 local SDK
 workflows now also cover lossless `RelationBrowser` grid editing up to `1,000`
 columns, `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
-browsing, frame-bounded multi-batch CSV imports up to `100,000` rows,
-`ObjectExplorer` / `ObjectInspector`, bounded Snowflake `SchemaDiagram` ER views
-(PK and composite outbound FK layout with `ObjectInspector` navigation),
-Snowflake `SchemaDiff` live/snapshot comparison and dialect-accurate migration
-DDL generation (`CREATE`/`ALTER`/`DROP` across tables with `CLUSTER BY` and
-`IDENTITY`, views, sequences, and `$$`-delimited overloaded routines, plus
-explicit dynamic/external/hybrid/event table disclosures and `Open in SQL editor`
-handoff), rich cell value inspection across `ValueDialog` and Snowflake
-`RelationBrowser` (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON
-formatter + staged cell apply, raw hex `BINARY` Hex/ASCII dump, and
-`GEOGRAPHY`/`GEOMETRY` GeoJSON/EWKT/WKT 2D SVG plots), 8 reviewed DDL actions (`CREATE TABLE`,
+browsing, DataGrip 2026.3 column pinning/freezing + `Transpose`/`Record` views +
+row `Clone` + detached `"result"` tabs, frame-bounded multi-batch CSV imports up
+to `100,000` rows, `ObjectExplorer` / `ObjectInspector`, user-defined Virtual
+Foreign Keys across ER diagrams, SQL `JOIN` completion, and row navigation,
+bounded Snowflake `SchemaDiagram` ER views (PK and composite physical/virtual FK
+layout with `ObjectInspector` navigation), Snowflake `SchemaDiff` live/snapshot
+comparison and dialect-accurate migration DDL generation (`CREATE`/`ALTER`/`DROP`
+across tables with `CLUSTER BY` and `IDENTITY`, views, sequences, and
+`$$`-delimited overloaded routines, plus explicit dynamic/external/hybrid/event
+table disclosures and `Open in SQL editor` handoff), cross-source Workspace SQL
+(`workspace_sql.rs` joining retained result snapshots in sandboxed read-only
+in-memory SQLite), bounded parameterized full-text data search (`data_search.rs`),
+privacy-safe SQL Local History (`local_history.rs` with diff and restore), rich
+cell value inspection across `ValueDialog` and Snowflake `RelationBrowser`
+(`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON formatter + staged cell
+apply, raw hex `BINARY` Hex/ASCII dump, and `GEOGRAPHY`/`GEOMETRY`
+GeoJSON/EWKT/WKT 2D SVG plots), 8 reviewed DDL actions (`CREATE TABLE`,
 `ADD COLUMN`, `ALTER COLUMN` nullability, `RENAME COLUMN`, `DROP COLUMN`,
 `DROP TABLE`, `CREATE VIEW`, `DROP VIEW`), guarded `ROLE` / `WAREHOUSE` /
 `DATABASE` / `SCHEMA` switching, live `inspection_schema` column diagnostics, and

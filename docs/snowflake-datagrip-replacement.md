@@ -35,35 +35,39 @@ Schema-8 source (`682b1ed..HEAD`) now implements the complete local Snowflake
 DataGrip-replacement workflow surface across the bundled Apache-2.0
 `snowflake-sdk` `3.4.1` and pinned Node `24.22.2` helper:
 
-- **Lossless editable grid, paging/sorting/filtering, and multi-batch CSV import**
-  (`682b1ed`, `a794426`): Inline cell editing, whole-original row deletion,
-  paginated new-row insertion, `<ReviewDialog>` cancel recovery
-  (`cancel_snowflake_grid_plan`), server-side `PreviewSlice` pagination
+- **Lossless editable grid, DataGrip 2026.3 column/view controls, and multi-batch CSV import**
+  (`682b1ed`, `a794426`, `32b2d15`): Inline cell editing, whole-original row
+  deletion, paginated new-row insertion & row `Clone`, `<ReviewDialog>` cancel
+  recovery (`cancel_snowflake_grid_plan`), server-side `PreviewSlice` pagination
   (`OFFSET`), single-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, typed
-  column filters, and multi-batch RFC-4180 CSV staging up to `100,000` rows in
-  frame- and row-bounded batches (`<= 500` rows, `<= 2,000` scalar binds,
-  `<= 768 KiB` unit SQL, and `< 1 MiB` helper frame per batch) across
-  base/temporary tables up to `1,000` columns and all lossless Snowflake
-  scalar/temporal/binary/semi-structured types (`TEXT`/`VARCHAR`, `BOOLEAN` with
-  wire `"TRUE"`/`"FALSE"` normalization, `NUMBER(1..=38, 0..=38)`, IEEE-754
-  `FLOAT`/`DOUBLE`, `BINARY`, `DATE`, `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`,
-  `VARIANT`/`ARRAY`/`OBJECT`).
+  column filters, `Transpose` & `Record` grid views, persisted column pinning /
+  freezing (`Show all` / `Hide optional` / `Fit to window`), detached `"result"`
+  tabs, and multi-batch RFC-4180 CSV staging up to `100,000` rows in frame- and
+  row-bounded batches (`<= 500` rows, `<= 2,000` scalar binds, `<= 768 KiB` unit
+  SQL, and `< 1 MiB` helper frame per batch) across base/temporary tables up to
+  `1,000` columns and all lossless Snowflake scalar/temporal/binary/semi-structured
+  types (`TEXT`/`VARCHAR`, `BOOLEAN` with wire `"TRUE"`/`"FALSE"` normalization,
+  `NUMBER(1..=38, 0..=38)`, IEEE-754 `FLOAT`/`DOUBLE`, `BINARY`, `DATE`,
+  `TIME(0..9)`, `TIMESTAMP_NTZ/LTZ/TZ(0..9)`, `VARIANT`/`ARRAY`/`OBJECT`).
 - **Guarded session context switching and observed `EXPLAIN USING JSON` plans**
   (`a05306a`): Same-connection inventory and guarded `USE ROLE`,
   `USE WAREHOUSE`, `USE DATABASE`, and `USE SCHEMA` switching with readback
   verification and automatic metadata/completion reconciliation, plus live
   `EXPLAIN USING JSON` operator-tree parsing (`QueryEvent::PlanContext`) and
   plan snapshot capture/comparison in `SqlEditor`.
-- **Object Explorer, schema diagrams, schema diff/migration DDL, and SQL authoring**
-  (`ff131ef` + current increment): `ObjectExplorer` / `ObjectInspector`
+- **Object Explorer, virtual foreign keys, schema diagrams, schema diff/migration DDL, and SQL authoring**
+  (`ff131ef`, `4eba148` + current increment): `ObjectExplorer` / `ObjectInspector`
   (`database_objects` and `object_details`) across tables, views, materialized
   views, sequences, and overloaded user functions/procedures with FK constraint
-  mappings, view dependencies, and `GET_DDL`; bounded `SchemaDiagram` ER graphs
-  (PK and composite outbound FK layout with click-through to
-  `ObjectInspectorView`); `SchemaDiffView` live/snapshot schema comparison and
-  dialect-accurate Snowflake `generate_schema_ddl` / `generate_migration_ddl`
-  (`CREATE`/`ALTER`/`DROP` across tables with `CLUSTER BY` and `IDENTITY`, views,
-  sequences, and `$$`-delimited overloaded routines, plus explicit
+  mappings, view dependencies, and `GET_DDL`; user-defined **Virtual Foreign
+  Keys** (`persistence/library.rs`, max `256`) merged across ER diagrams (dashed
+  `virtual` edges), live SQL `JOIN` completion, and outbound/inbound row
+  navigation; bounded `SchemaDiagram` ER graphs (PK + composite physical/virtual
+  FK layout with click-through to `ObjectInspectorView`); `SchemaDiffView`
+  live/snapshot schema comparison and dialect-accurate Snowflake
+  `generate_schema_ddl` / `generate_migration_ddl` (`CREATE`/`ALTER`/`DROP`
+  across tables with `CLUSTER BY` and `IDENTITY`, views, sequences, and
+  `$$`-delimited overloaded routines, plus explicit
   `DYNAMIC`/`EXTERNAL`/`HYBRID`/`EVENT` table disclosures and `Open in SQL editor`
   handoff); rich cell value inspection across `ValueDialog` and Snowflake
   `RelationBrowser` (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON
@@ -75,10 +79,16 @@ DataGrip-replacement workflow surface across the bundled Apache-2.0
   SQL dialect authoring with semi-structured `:path` completion, `$$` /
   single-quote literal context suppression, and live `inspection_schema`
   unknown-column diagnostics.
-- **Durable outcomes, retained console, and million-row results**: Schema-8
-  durable original capture/settlement, SQL-free batch archive, protected manual
-  transaction rollback, configurable query limits up to 24 hours, encrypted
-  metadata backup/restore, and disk-backed 1,000,000-row paging/export.
+- **Cross-source Workspace SQL, bounded full-text data search, SQL Local History, durable outcomes, retained console, and million-row results**
+  (`8ec0477`, `d8bbba8`): Read-only sandboxed in-memory SQLite `WorkspaceSqlView`
+  joining retained `ResultStore` snapshots across engines; bounded parameterized
+  `search_database_data` across Snowflake SDK, PostgreSQL, and MySQL/MariaDB
+  tables (`<= 50` tables, `<= 64` non-binary columns/table, `<= 200` hits / `2 MiB`,
+  zero SQL interpolation); privacy-gated SQL Local History (`local_history.rs`)
+  with Myers line diff and restore; schema-8 durable original capture/settlement,
+  SQL-free batch archive, protected manual transaction rollback, configurable
+  query limits up to 24 hours, encrypted metadata backup/restore, and
+  disk-backed 1,000,000-row paging/export.
 
 Live Snowflake account execution remains strictly unexecuted pending explicit
 owner review and approval of the bounded

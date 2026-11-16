@@ -1,5 +1,103 @@
 # Implementation and release status
 
+## DataGrip 2026.3 grid layouts, virtual foreign keys, Workspace SQL/data search, and SQL Local History (16 November 2026)
+
+Following PR #73 (`1cb44de`, shipped and installed on macOS ARM64 as GitHub
+pre-release `v0.1.0-preview.18`), branch `feat/datagrip-2026-3-workflows`
+implements the remaining local DataGrip 2026.3 (`263.7307.216`) daily workflow
+surfaces across PostgreSQL, MySQL/MariaDB, and Snowflake SDK sessions:
+
+- **Column Pinning, Transpose & Record Views, Row Clone, Cell/Row Revert, and Detached Result Tabs (`32b2d15`)**:
+  Extended `SavedTableLayout` (`pinned_columns`, disjoint from `hidden_columns`,
+  persisted per `connectionId + schema + table` in `persistence/workspace.rs`),
+  `table-layout.ts` (`pinnedSet`, Glide `freezeColumns` `pinnedCount`,
+  `toggleColumnPin`, `showAllColumns`, `hideOptionalColumns`,
+  `fitColumnsToWindow`), and `TableColumnsDialog.tsx`. Added `TransposeGridView`
+  and `RecordCardView` (`GridAltViews.tsx`), `DirtyStore` `cloneInsertRow` /
+  `revertCell` / `revertRows`, Snowflake `RelationBrowser` `Clone` + `Transpose`
+  modes, and detached `"result"` tabs (`detachResultToTab` / `openOriginatingSql` /
+  `setResultLayout` in `studio.ts`, `Workbench.tsx`, and `App.tsx`) retaining
+  in-memory `ResultStore` snapshots until the last referencing tab closes.
+- **User-Defined Virtual Foreign Keys Across Diagrams, JOIN Completion, and Data Navigation (`4eba148`)**:
+  Added `virtual_relationship: bool` across `ForeignKey`, `InboundForeignKey`,
+  and `DiagramForeignKey`, plus bounded `'virtual-foreign-keys'` SQLite
+  persistence (`MAX_VIRTUAL_FOREIGN_KEYS = 256`, composite column pairing,
+  cascade purge on `delete_profile`, and backup/recovery validation in
+  `persistence/library.rs` and `persistence/recovery.rs`). Merged virtual FKs
+  into `Studio::schema_for_session`, `Studio::editor_schema` (enabling live SQL
+  `JOIN` completion & hover across PostgreSQL, MySQL/MariaDB, and Snowflake
+  without extra `completion_catalog` database round-trips),
+  `Studio::referencing_foreign_keys`, and `Studio::schema_diagram` (`execution.rs`),
+  with dashed `virtual` ER edges in `DiagramView.tsx`, `VirtualForeignKeyDialog.tsx`,
+  `LibraryModal.tsx` (`Relationships` tab), `StructureView`, and Snowflake
+  `RelationBrowser` outbound/inbound navigation.
+- **Cross-Source Workspace SQL & Bounded Full-Text Data Search (`8ec0477`, `ac7953d`)**:
+  Added `workspace_sql.rs`, a sandboxed read-only in-memory SQLite engine
+  (`PRAGMA temp_store=MEMORY`, `PRAGMA query_only=ON`, strict `conn.authorizer`
+  allowing only `SELECT`/`Read`/`Recursive`/safe scalar functions, 15s
+  `progress_handler` timeout, single-statement check, `<= 16` alias mounts,
+  `<= 100,000` rows / `32 MiB` total, blocking retained-console results) that
+  joins and aggregates retained `ResultStore` snapshots across engines and
+  publishes results as first-class `ResultInfo` snapshots (`WorkspaceSqlView.tsx`
+  with code-split `DatabaseGrid`). Added `data_search.rs` and `Driver::search_data`
+  across `drivers/postgres.rs`, `drivers/mysql.rs`, and
+  `drivers/snowflake_external.rs` (`DataSearchView.tsx`), performing bounded
+  parameterized substring scans (`<= 50` tables, `<= 64` non-binary columns per
+  table, `10` sample hits per table, `<= 200` total hits / `2 MiB`, `!`-escaped
+  `LIKE`/`ILIKE`/`CONTAINS`/`STARTSWITH` patterns with zero SQL interpolation)
+  with click-through to filtered table/relation views.
+- **Privacy-Safe SQL Local History with Diff & Restore (`d8bbba8`)**:
+  Added `persistence/local_history.rs` (`'local-history'`, `<= 200` global
+  snapshots, `<= 30` per `tab_key`, `<= 128 KiB` per entry, `<= 2 MiB` total),
+  strictly gated on connection privacy (`store_query_text` and `store_drafts`),
+  deduplicating consecutive identical SQL per `tab_key`, automatically purging
+  when `save_profile` disables `store_query_text`, on `delete_profile`, and on
+  `clear_history`, and validated in `recovery::validate`. Added Myers line-diff
+  comparison (`local-diff.ts`) and `LocalHistoryModal.tsx` (`Restore into editor`
+  and `Open as new tab` without automatic execution).
+
+Local verification recorded on `feat/datagrip-2026-3-workflows`:
+
+- Frontend, formatting, contracts & build: `pnpm format:check` clean,
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,076/1,076` tests passed
+  across `77` test files** (`0` failed), and `pnpm build` (`vite build`) clean
+  with `DatabaseGrid` code-split (`0` chunk warnings).
+- Rust static analysis & unit/integration suites: `pnpm check:rust`
+  (`cargo fmt --check`, `cargo check`, and strict
+  `cargo clippy --all-targets --all-features -- -D warnings` with `0` warnings),
+  `745` non-socket `--lib` unit tests passed (`0` regressions across all new
+  `workspace`, `library`, `execution`, `workspace_sql`, `data_search`, and
+  `local_history` unit tests), `36/36` `execution::snowflake_connection_tests`,
+  `43/43` `tests/snowflake_process.rs`, `32/32` `tests/snowflake_external.rs`,
+  `11/11` `tests/snowflake_profile.rs`, `8/8` `tests/history_lifecycle.rs`,
+  `2/2` `tests/groups.rs`, `2/2` `tests/credential_store.rs`, `2/2`
+  `tests/large_results.rs`, and `1/1` `tests/recovery.rs` passed.
+- Node & Python verification suites: `165/165` non-loopback `snowflake-helper`
+  unit tests, `136/136` `pnpm test:snowflake:qualification`, `59/59`
+  `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
+  `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
+  `pnpm test:native:recovery:runner`, `11/11`
+  `pnpm test:native:encrypted-recovery:runner`, `verify-snowflake-package.mjs`
+  (`entryCount: 15111`, `symlinkCount: 5`), and guarded
+  `verify-snowflake-runtime.mjs` (`sdkVersion: "3.4.1"`,
+  `authenticationRequests: 0`, `sqlRequests: 0`) passed.
+- Sandbox-blocked checks (not executed inside the offline socket-restricted
+  agent sandbox; require host CI / non-sandboxed execution before shipping):
+  `127.0.0.1` loopback TCP listener tests (Playwright E2E `test-harness` browser
+  suite, `47` Rust loopback mock-socket tests, and loopback HTTP/TLS
+  `snowflake-helper` tests), `1` setuid `chmod 0o4755` test
+  (`snowflake_runtime::tests::unsafe_modes_and_non_executable_node_are_rejected`),
+  Docker `/var/run/docker.sock` disposable PG/MySQL/MariaDB/Redis container
+  integration fixtures (`#[ignore]`), and hidden native macOS WebView smoke
+  (`pnpm test:native` / `pnpm test:native:encrypted-recovery`).
+
+External replacement gates remain explicitly open: zero live Snowflake account
+queries have been executed pending owner approval of
+[`docs/snowflake-sandbox-qualification-plan.md`](snowflake-sandbox-qualification-plan.md);
+Apple Developer ID signing/notarization, Windows/Linux packaging, updater
+qualification, and external non-fixture database vendor qualification remain
+open.
+
 ## Snowflake schema diagrams, schema diff/migration DDL, and rich cell inspectors (15 November 2026)
 
 Following PR #72 (`33250cf`, `main` `Validate` run `43684009179`, published and
