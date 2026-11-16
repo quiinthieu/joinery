@@ -18,6 +18,51 @@ function quoteDouble(ident: string): string {
   return `"${ident.replaceAll('"', '""')}"`;
 }
 
+function quoteBacktick(ident: string): string {
+  return `\`${ident.replaceAll("`", "``")}\``;
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[!%_]/g, (ch) => `!${ch}`);
+}
+
+function buildSqlWhereForColumns(
+  engine: "postgres" | "mysql",
+  columns: readonly string[],
+  query: string,
+  matchMode: DataSearchMatchMode,
+  caseSensitive: boolean,
+): string | null {
+  if (columns.length === 0) return null;
+  const escapeLiteral = (raw: string) =>
+    engine === "mysql"
+      ? raw.replaceAll("\\", "\\\\").replaceAll("'", "''")
+      : raw.replaceAll("'", "''");
+  const lit = escapeLiteral(query);
+  const likeBody = escapeLiteral(escapeLikePattern(query));
+  const likePattern = matchMode === "startsWith" ? `${likeBody}%` : `%${likeBody}%`;
+
+  const predicates = columns.map((col) => {
+    const castExpr =
+      engine === "mysql"
+        ? `CAST(${quoteBacktick(col)} AS CHAR)`
+        : `CAST(${quoteDouble(col)} AS TEXT)`;
+    if (matchMode === "exact") {
+      return caseSensitive ? `${castExpr} = '${lit}'` : `LOWER(${castExpr}) = LOWER('${lit}')`;
+    }
+    if (engine === "postgres") {
+      return caseSensitive
+        ? `${castExpr} LIKE '${likePattern}' ESCAPE '!'`
+        : `${castExpr} ILIKE '${likePattern}' ESCAPE '!'`;
+    }
+    return caseSensitive
+      ? `${castExpr} LIKE '${likePattern}' ESCAPE '!'`
+      : `LOWER(${castExpr}) LIKE LOWER('${likePattern}') ESCAPE '!'`;
+  });
+
+  return predicates.length === 1 ? predicates[0]! : `(${predicates.join(" OR ")})`;
+}
+
 export function DataSearchView({ tab }: { tab: StudioTab }) {
   const state = useStudio();
   const connectedProfiles = useMemo(
@@ -95,8 +140,9 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
 
   function openMatch(tableMatch: DataSearchTableMatch) {
     if (!effectiveConnectionId || !report) return;
-    const firstMatchedCol =
-      tableMatch.rows[0]?.matchedColumns[0] ?? tableMatch.searchableColumns[0] ?? null;
+    const distinctMatchedCols = [...new Set(tableMatch.rows.flatMap((r) => r.matchedColumns))];
+    const effectiveCols =
+      distinctMatchedCols.length > 0 ? distinctMatchedCols : tableMatch.searchableColumns;
 
     if (session?.engine === "postgres" || session?.engine === "mysql") {
       const op: FilterOp =
@@ -105,47 +151,81 @@ export function DataSearchView({ tab }: { tab: StudioTab }) {
           : report.matchMode === "startsWith"
             ? "startsWith"
             : "contains";
+      const singleCol = effectiveCols.length === 1 ? effectiveCols[0]! : null;
+      const singleColInfo = singleCol
+        ? tableMatch.columns.find((c) => c.name === singleCol)
+        : undefined;
+      const canUseTypedSingleFilter =
+        singleCol !== null &&
+        (report.matchMode !== "exact" ||
+          (report.caseSensitive &&
+            singleColInfo !== undefined &&
+            singleColInfo.kind !== "json" &&
+            singleColInfo.kind !== "binary" &&
+            singleColInfo.kind !== "unknown"));
+
       const filters =
-        firstMatchedCol && tableMatch.rows[0]?.matchedColumns.length === 1
-          ? [{ column: firstMatchedCol, op, value: report.query }]
+        canUseTypedSingleFilter && singleCol
+          ? [{ column: singleCol, op, value: report.query }]
           : [];
+      const whereClause = canUseTypedSingleFilter
+        ? null
+        : buildSqlWhereForColumns(
+            session.engine,
+            effectiveCols,
+            report.query,
+            report.matchMode,
+            report.caseSensitive,
+          );
       void state
         .openTable(effectiveConnectionId, tableMatch.table, {
           sort: [],
           filters,
-          whereClause: null,
+          whereClause,
           orderClause: null,
         })
         .catch((err) => state.notify(messageOf(err)));
       return;
     }
 
-    const escapedLiteral = report.query.replaceAll("'", "''");
-    const matchedColInfo = firstMatchedCol
-      ? tableMatch.columns.find((c) => c.name === firstMatchedCol)
-      : undefined;
-    const upperType = (matchedColInfo?.databaseType ?? "").trim().toUpperCase();
-    const colExpr = firstMatchedCol
-      ? upperType.startsWith("OBJECT") || upperType.startsWith("ARRAY")
-        ? `TO_JSON(${quoteDouble(firstMatchedCol)})`
-        : upperType.startsWith("GEOGRAPHY") || upperType.startsWith("GEOMETRY")
-          ? `ST_ASEWKT(${quoteDouble(firstMatchedCol)})`
-          : `TO_VARCHAR(${quoteDouble(firstMatchedCol)})`
-      : null;
-    const whereExpr = colExpr
-      ? report.matchMode === "exact"
-        ? report.caseSensitive
+    const escapedLiteral = report.query.replaceAll("\\", "\\\\").replaceAll("'", "''");
+    const colPredicates = effectiveCols.map((colName) => {
+      const matchedColInfo = tableMatch.columns.find((c) => c.name === colName);
+      const upperType = (matchedColInfo?.databaseType ?? "").trim().toUpperCase();
+      const colExpr =
+        upperType.startsWith("OBJECT") || upperType.startsWith("ARRAY")
+          ? `TO_JSON(${quoteDouble(colName)})`
+          : upperType.startsWith("GEOGRAPHY") || upperType.startsWith("GEOMETRY")
+            ? `ST_ASEWKT(${quoteDouble(colName)})`
+            : `TO_VARCHAR(${quoteDouble(colName)})`;
+      if (report.matchMode === "exact") {
+        return report.caseSensitive
           ? `${colExpr} = '${escapedLiteral}'`
-          : `LOWER(${colExpr}) = LOWER('${escapedLiteral}')`
-        : report.matchMode === "startsWith"
-          ? report.caseSensitive
-            ? `STARTSWITH(${colExpr}, '${escapedLiteral}')`
-            : `STARTSWITH(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`
-          : report.caseSensitive
-            ? `CONTAINS(${colExpr}, '${escapedLiteral}')`
-            : `CONTAINS(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`
-      : "1 = 1";
-    const dbPrefix = profile?.database ? `${quoteDouble(profile.database)}.` : "";
+          : `LOWER(${colExpr}) = LOWER('${escapedLiteral}')`;
+      }
+      if (report.matchMode === "startsWith") {
+        return report.caseSensitive
+          ? `STARTSWITH(${colExpr}, '${escapedLiteral}')`
+          : `STARTSWITH(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`;
+      }
+      return report.caseSensitive
+        ? `CONTAINS(${colExpr}, '${escapedLiteral}')`
+        : `CONTAINS(LOWER(${colExpr}), LOWER('${escapedLiteral}'))`;
+    });
+    const whereExpr =
+      colPredicates.length === 0
+        ? "1 = 1"
+        : colPredicates.length === 1
+          ? colPredicates[0]!
+          : `(${colPredicates.join("\n  OR ")})`;
+    const activeDatabase = (
+      report.database ||
+      (session ? state.sessionStates[session.id]?.database : undefined) ||
+      (session ? state.snowflakeContextAuthorities[session.id]?.state.database : undefined) ||
+      profile?.database ||
+      ""
+    ).trim();
+    const dbPrefix = activeDatabase ? `${quoteDouble(activeDatabase)}.` : "";
     const sql = `SELECT *\nFROM ${dbPrefix}${quoteDouble(tableMatch.table.schema)}.${quoteDouble(tableMatch.table.name)}\nWHERE ${whereExpr}\nLIMIT 100;`;
     state.openQuery(effectiveConnectionId, sql);
   }

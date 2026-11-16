@@ -4509,6 +4509,9 @@ impl Driver for SnowflakeExternal {
             let mut discovered = Vec::new();
             let mut skipped_tables = 0usize;
             for s in &schemas {
+                if self.is_closed() {
+                    return Err(closed_error());
+                }
                 if !request.schemas.is_empty() && !request.schemas.iter().any(|wanted| wanted == s)
                 {
                     continue;
@@ -4550,6 +4553,9 @@ impl Driver for SnowflakeExternal {
             let mut matches = Vec::new();
 
             for table in &candidates {
+                if self.is_closed() {
+                    return Err(closed_error());
+                }
                 if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
                     || report_bytes >= MAX_SEARCH_REPORT_BYTES
                 {
@@ -4656,6 +4662,7 @@ impl Driver for SnowflakeExternal {
                 query: request.query.clone(),
                 match_mode: request.match_mode,
                 case_sensitive: request.case_sensitive,
+                database: Some(database),
                 scanned_tables,
                 skipped_tables,
                 total_row_hits,

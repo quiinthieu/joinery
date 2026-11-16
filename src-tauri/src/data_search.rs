@@ -263,7 +263,15 @@ pub fn build_snowflake_search_sql(
     let projection = schema
         .columns
         .iter()
-        .map(|col| quote_double(&col.name))
+        .map(|col| {
+            let q = quote_double(&col.name);
+            let upper = col.database_type.trim().to_ascii_uppercase();
+            if upper.starts_with("GEOGRAPHY") || upper.starts_with("GEOMETRY") {
+                format!("ST_ASEWKT({q}) AS {q}")
+            } else {
+                q
+            }
+        })
         .collect::<Vec<_>>()
         .join(", ");
 
@@ -348,7 +356,15 @@ pub fn build_table_match(
                         return None;
                     }
                     let text = cell.as_deref()?;
-                    cell_matches_query(text, query, mode, case_sensitive).then(|| col.name.clone())
+                    let matched = cell_matches_query(text, query, mode, case_sensitive)
+                        || (col.kind == ColumnKind::Json
+                            && serde_json::from_str::<serde_json::Value>(text)
+                                .ok()
+                                .map(|v| v.to_string())
+                                .is_some_and(|compact| {
+                                    cell_matches_query(&compact, query, mode, case_sensitive)
+                                }));
+                    matched.then(|| col.name.clone())
                 })
                 .collect();
             DataSearchRowHit {
@@ -502,12 +518,58 @@ mod tests {
         )
         .unwrap();
         assert!(sf_sql.starts_with(
-            "SELECT \"id\", \"email\", \"avatar\", \"payload\", \"coords\" FROM \"ANALYTICS\".\"public\".\"customers\""
+            "SELECT \"id\", \"email\", \"avatar\", \"payload\", ST_ASEWKT(\"coords\") AS \"coords\" FROM \"ANALYTICS\".\"public\".\"customers\""
         ));
         assert!(sf_sql.contains("STARTSWITH(LOWER(TO_VARCHAR(\"email\")), LOWER(?))"));
         assert!(sf_sql.contains("STARTSWITH(LOWER(TO_JSON(\"payload\")), LOWER(?))"));
         assert!(sf_sql.contains("STARTSWITH(LOWER(ST_ASEWKT(\"coords\")), LOWER(?))"));
         assert_eq!(sf_binds.len(), 4);
+
+        let spatial_match = build_table_match(
+            &sf_schema,
+            vec![
+                "id".into(),
+                "email".into(),
+                "payload".into(),
+                "coords".into(),
+            ],
+            vec![vec![
+                Some("1".into()),
+                Some("ada@example.com".into()),
+                None,
+                Some("{\n  \"tier\": \"VIP\"\n}".into()),
+                Some("SRID=4326;POINT(-122.4194 37.7749)".into()),
+            ]],
+            "POINT(-122.4194",
+            DataSearchMatchMode::Contains,
+            false,
+            10,
+        )
+        .unwrap();
+        assert_eq!(spatial_match.rows[0].matched_columns, vec!["coords"]);
+
+        let json_match = build_table_match(
+            &sf_schema,
+            vec![
+                "id".into(),
+                "email".into(),
+                "payload".into(),
+                "coords".into(),
+            ],
+            vec![vec![
+                Some("1".into()),
+                Some("ada@example.com".into()),
+                None,
+                Some("{\n  \"tier\": \"VIP\"\n}".into()),
+                None,
+            ]],
+            "{\"tier\":\"VIP\"",
+            DataSearchMatchMode::Contains,
+            true,
+            10,
+        )
+        .unwrap();
+        assert_eq!(json_match.rows[0].matched_columns, vec!["payload"]);
     }
 
     #[test]

@@ -1120,6 +1120,12 @@ impl Driver for Postgres {
         let mut matches = Vec::new();
 
         for table in &candidates {
+            if self.is_closed() {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionFailed,
+                    "The database session closed",
+                ));
+            }
             if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
                 || report_bytes >= MAX_SEARCH_REPORT_BYTES
             {
@@ -1173,12 +1179,19 @@ impl Driver for Postgres {
             loop {
                 match stream.try_next().await {
                     Ok(Some(row)) => {
-                        if raw_rows.len() <= MAX_SEARCH_ROWS_PER_TABLE {
-                            raw_rows.push(
-                                (0..row.len())
-                                    .map(|i| row.get::<_, Option<String>>(i))
-                                    .collect::<TextRow>(),
-                            );
+                        match (0..row.len())
+                            .map(|i| row.try_get::<_, Option<String>>(i))
+                            .collect::<Result<TextRow, _>>()
+                        {
+                            Ok(text_row) => {
+                                if raw_rows.len() <= MAX_SEARCH_ROWS_PER_TABLE {
+                                    raw_rows.push(text_row);
+                                }
+                            }
+                            Err(e) => {
+                                row_err = Some(pg_error(e));
+                                break;
+                            }
                         }
                     }
                     Ok(None) => break,
@@ -1231,6 +1244,7 @@ impl Driver for Postgres {
             query: request.query.clone(),
             match_mode: request.match_mode,
             case_sensitive: request.case_sensitive,
+            database: None,
             scanned_tables,
             skipped_tables,
             total_row_hits,

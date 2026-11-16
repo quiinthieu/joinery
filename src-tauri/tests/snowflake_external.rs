@@ -112,13 +112,13 @@ const sdk = { createConnection(options) {
         values=Array.from({length:settings.previewRows??2},(_,i)=>[String(i),settings.previewBytes?'x'.repeat(40000):i===0?null:'note']);
         if(settings.previewDrift) writeFileSync(settingsFile,JSON.stringify({...settings,warehouse:'CHANGED',previewDrift:false}));
       } else if(columns) {
-        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES']:['ID','NOTES'];
+        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES','COORDS']:['ID','NOTES'];
         values=settings.columnRows?[['1','unexpected']]:[];
       } else if(dataSearch) {
-        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES']:['ID','NOTES'];
+        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES','COORDS']:['ID','NOTES'];
         const q = String(options.binds?.[0] ?? '');
-        values = q.toLowerCase().includes('ada')
-          ? [settings.searchColumns ? ['101','Ada order','{"email":"ada@example.com"}','deadbeef'] : ['101','Ada order']]
+        values = q.toLowerCase().includes('ada') || q.toLowerCase().includes('point(-122')
+          ? [settings.searchColumns ? ['101','Ada order','{"email":"ada@example.com"}','deadbeef','SRID=4326;POINT(-122.4194 37.7749)'] : ['101','Ada order']]
           : [];
       }
       const statement = {
@@ -127,7 +127,7 @@ const sdk = { createConnection(options) {
           getName:()=>name,
           getType:()=> {
             if (settings.searchColumns && (columns || dataSearch)) {
-              return ['FIXED','TEXT','OBJECT','BINARY'][index] ?? 'TEXT';
+              return ['FIXED','TEXT','OBJECT','BINARY','GEOGRAPHY'][index] ?? 'TEXT';
             }
             return ((columns||preview)&&index===0)||(synthetic&&index<2)||(million&&index===0)?'FIXED':'TEXT';
           },
@@ -1814,6 +1814,7 @@ async fn sdk_search_data_scans_filtered_schemas_uses_to_json_for_objects_and_ski
         })
         .await
         .unwrap();
+    assert_eq!(report.database.as_deref(), Some("DB"));
     assert_eq!(report.scanned_tables, 1);
     assert_eq!(report.skipped_tables, 0);
     assert_eq!(report.total_row_hits, 1);
@@ -1827,18 +1828,48 @@ async fn sdk_search_data_scans_filtered_schemas_uses_to_json_for_objects_and_ski
             name: "ORDERS".into(),
         }
     );
-    assert_eq!(m.searchable_columns, vec!["ID", "NOTES", "PAYLOAD"]);
+    assert_eq!(
+        m.searchable_columns,
+        vec!["ID", "NOTES", "PAYLOAD", "COORDS"]
+    );
     assert_eq!(m.rows[0].matched_columns, vec!["NOTES", "PAYLOAD"]);
     assert_eq!(m.rows[0].row[3].as_deref(), Some("deadbeef"));
+    assert_eq!(
+        m.rows[0].row[4].as_deref(),
+        Some("SRID=4326;POINT(-122.4194 37.7749)")
+    );
 
     let issued = h.queries();
     assert!(!issued.iter().any(|q| q.contains("TABLE_SCHEMA = 'OTHER'")));
     let search_sql = issued
         .iter()
-        .find(|q| q.starts_with("SELECT \"ID\", \"NOTES\", \"PAYLOAD\", \"RAW_BYTES\""))
+        .find(|q| {
+            q.starts_with(
+                "SELECT \"ID\", \"NOTES\", \"PAYLOAD\", \"RAW_BYTES\", ST_ASEWKT(\"COORDS\") AS \"COORDS\"",
+            )
+        })
         .expect("expected parameterized Snowflake search SQL");
     assert!(search_sql.contains("CONTAINS(LOWER(TO_JSON(\"PAYLOAD\")), LOWER(?))"));
+    assert!(search_sql.contains("CONTAINS(LOWER(ST_ASEWKT(\"COORDS\")), LOWER(?))"));
     assert!(!search_sql.contains("TO_VARCHAR(\"PAYLOAD\")"));
     assert!(!search_sql.contains("\"RAW_BYTES\")"));
+
+    let wkt_report = h
+        .driver
+        .search_data(&DataSearchRequest {
+            session_id: "sf-session".into(),
+            query: "POINT(-122".into(),
+            schemas: vec!["PUBLIC".into()],
+            tables: vec![],
+            match_mode: DataSearchMatchMode::Contains,
+            case_sensitive: false,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wkt_report.matches[0].rows[0].matched_columns,
+        vec!["COORDS"]
+    );
     h.close().await;
 }

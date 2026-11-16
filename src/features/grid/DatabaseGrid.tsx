@@ -25,7 +25,12 @@ import "@glideapps/glide-data-grid/dist/index.css";
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
-import { useStudio, querySessionForTab, type StudioTab } from "../../state/studio";
+import {
+  isSnowflakeConsoleSession,
+  querySessionForTab,
+  useStudio,
+  type StudioTab,
+} from "../../state/studio";
 import {
   copyFormatLabel,
   formatGridCells,
@@ -183,10 +188,23 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     const profile = state.bootstrap?.profiles.find((p) => p.id === tab.connectionId);
     return profile?.safeMode === "readOnly";
   });
+  const consoleMode = useStudio((state) => {
+    if (!tab.connectionId) return false;
+    const activeSession =
+      tab.kind === "query"
+        ? querySessionForTab(tab, state.sessions)
+        : state.sessions[tab.connectionId];
+    return (
+      isSnowflakeConsoleSession(state, activeSession?.id) ||
+      isSnowflakeConsoleSession(state, tab.dataSessionId)
+    );
+  });
   const isGridEditable =
-    tab.kind === "table"
+    !readOnlyProfile &&
+    !consoleMode &&
+    (tab.kind === "table"
       ? !!tab.schema?.editable
-      : tab.kind === "query" && result?.editability?.status === "editable" && !readOnlyProfile;
+      : tab.kind === "query" && result?.editability?.status === "editable");
   const insertScopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
   const model = useRef({ tab, result });

@@ -264,6 +264,7 @@ impl Mysql {
             self.catalog().await?.into_iter().map(|t| t.table).collect()
         };
         let (candidates, mut truncated) = filter_candidate_tables(all_tables, &request, max_tables);
+        let closed = self.closed.clone();
 
         self.metadata(move |conn| {
             Box::pin(async move {
@@ -274,6 +275,9 @@ impl Mysql {
                 let mut matches = Vec::new();
 
                 for table in &candidates {
+                    if closed.is_cancelled() {
+                        return Err(super::closed());
+                    }
                     if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
                         || report_bytes >= MAX_SEARCH_REPORT_BYTES
                     {
@@ -288,7 +292,7 @@ impl Mysql {
                                 ErrorCode::Database
                                     | ErrorCode::PermissionDenied
                                     | ErrorCode::Unsupported
-                            ) =>
+                            ) && !closed.is_cancelled() =>
                         {
                             skipped_tables += 1;
                             continue;
@@ -320,7 +324,8 @@ impl Mysql {
                                     ErrorCode::Database
                                         | ErrorCode::PermissionDenied
                                         | ErrorCode::Unsupported
-                                ) {
+                                ) && !closed.is_cancelled()
+                                {
                                     skipped_tables += 1;
                                     continue;
                                 }
@@ -406,6 +411,7 @@ impl Mysql {
                     query: request.query.clone(),
                     match_mode: request.match_mode,
                     case_sensitive: request.case_sensitive,
+                    database: None,
                     scanned_tables,
                     skipped_tables,
                     total_row_hits,

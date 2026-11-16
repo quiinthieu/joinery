@@ -213,7 +213,7 @@ describe("WorkspaceSqlView and DataSearchView", () => {
               label: "PG Core: pg_users",
             },
           ],
-          sql: "SELECT *\nFROM pg_users\nLIMIT 100;",
+          sql: 'SELECT *\nFROM "pg_users"\nLIMIT 100;',
         },
       });
     });
@@ -425,5 +425,201 @@ describe("WorkspaceSqlView and DataSearchView", () => {
     const openedQueryTab = useStudio.getState().tabs.find((t) => t.kind === "query")!;
     expect(openedQueryTab.sql).toContain('FROM "ANALYTICS"."PUBLIC"."EVENTS"');
     expect(openedQueryTab.sql).toContain('STARTSWITH(TO_JSON("PAYLOAD"), \'{"tier":"VIP\')');
+  });
+
+  it("resolves Snowflake database from live session state when profile.database is empty and preserves multi-column PG/MySQL filters", async () => {
+    const sfBlankDb: ConnectionProfile = {
+      ...pgProfile,
+      id: "44444444-4444-4444-8444-444444444444",
+      name: "SF Blank Profile DB",
+      engine: "snowflake",
+      database: "",
+      snowflake: {
+        role: "ANALYST",
+        warehouse: "WH",
+        schema: "PUBLIC",
+        authentication: "externalBrowser",
+        reviewedDml: false,
+        reviewedDdl: false,
+        reviewedConsole: false,
+      },
+    };
+    useStudio.setState((s) => ({
+      bootstrap: s.bootstrap ? { ...s.bootstrap, profiles: [pgProfile, sfBlankDb] } : null,
+      selectedConnectionId: sfBlankDb.id,
+      sessions: {
+        [pgProfile.id]: pgSession,
+        [sfBlankDb.id]: {
+          ...pgSession,
+          id: "sess-sf-live",
+          connectionId: sfBlankDb.id,
+          engine: "snowflake",
+          capabilities: {
+            ...pgSession.capabilities,
+            relationBrowsing: true,
+          },
+        },
+      },
+      sessionStates: {
+        "sess-sf-live": {
+          sessionId: "sess-sf-live",
+          transactionMode: "autoCommit",
+          transactionState: "idle",
+          contextKind: "schema",
+          activeContext: "PUBLIC",
+          database: "LIVE_SNOWFLAKE_DB",
+          role: "ANALYST",
+          warehouse: "WH",
+          searchPath: ["LIVE_SNOWFLAKE_DB.PUBLIC"],
+        },
+      },
+    }));
+
+    useStudio.getState().openUtility("dataSearch");
+    const sfTab = useStudio.getState().tabs.find((t) => t.kind === "dataSearch")!;
+
+    const sfReport: DataSearchReport = {
+      query: "O'Reilly\\HQ",
+      matchMode: "contains",
+      caseSensitive: false,
+      scannedTables: 1,
+      skippedTables: 0,
+      totalRowHits: 1,
+      truncated: false,
+      elapsedMs: 5,
+      matches: [
+        {
+          table: { schema: "PUBLIC", name: "LOCATIONS" },
+          columns: [col("NAME"), { ...col("COORDS"), databaseType: "GEOGRAPHY", kind: "unknown" }],
+          searchableColumns: ["NAME", "COORDS"],
+          rows: [
+            {
+              matchedColumns: ["NAME", "COORDS"],
+              row: ["O'Reilly\\HQ", "SRID=4326;POINT(-122.4 37.7)"],
+            },
+          ],
+          hasMoreInTable: false,
+        },
+      ],
+    };
+    vi.mocked(client.call).mockResolvedValueOnce(sfReport);
+
+    const { unmount } = render(<DataSearchView tab={sfTab} />);
+    fireEvent.change(screen.getByLabelText("Search database values"), {
+      target: { value: "O'Reilly\\HQ" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Search tables/i }));
+    await screen.findByText("SRID=4326;POINT(-122.4 37.7)");
+
+    fireEvent.click(screen.getByRole("button", { name: /Open SQL query/i }));
+    const sfQueryTab = useStudio.getState().tabs.find((t) => t.kind === "query")!;
+    expect(sfQueryTab.sql).toContain('FROM "LIVE_SNOWFLAKE_DB"."PUBLIC"."LOCATIONS"');
+    expect(sfQueryTab.sql).toContain(
+      "CONTAINS(LOWER(TO_VARCHAR(\"NAME\")), LOWER('O''Reilly\\\\HQ'))",
+    );
+    expect(sfQueryTab.sql).toContain(
+      "OR CONTAINS(LOWER(ST_ASEWKT(\"COORDS\")), LOWER('O''Reilly\\\\HQ'))",
+    );
+    unmount();
+
+    // Multi-column PostgreSQL match must generate an OR whereClause rather than dropping filters
+    useStudio.getState().openUtility("dataSearch");
+    const pgTabId = useStudio
+      .getState()
+      .tabs.filter((t) => t.kind === "dataSearch")
+      .at(-1)!.id;
+    useStudio.getState().updateTab(pgTabId, { connectionId: pgProfile.id });
+    const pgTab = useStudio.getState().tabs.find((t) => t.id === pgTabId)!;
+    const pgMultiReport: DataSearchReport = {
+      query: "100%_vip!",
+      matchMode: "contains",
+      caseSensitive: false,
+      scannedTables: 1,
+      skippedTables: 0,
+      totalRowHits: 1,
+      truncated: false,
+      elapsedMs: 3,
+      matches: [
+        {
+          table: { schema: "public", name: "customers" },
+          columns: [col("email"), col("notes")],
+          searchableColumns: ["email", "notes"],
+          rows: [{ matchedColumns: ["email", "notes"], row: ["100%_vip!", "100%_vip!"] }],
+          hasMoreInTable: false,
+        },
+      ],
+    };
+    vi.mocked(client.call).mockResolvedValueOnce(pgMultiReport);
+    const openTableSpy = vi.spyOn(useStudio.getState(), "openTable").mockResolvedValue(undefined);
+
+    render(<DataSearchView tab={pgTab} />);
+    fireEvent.change(screen.getByLabelText("Search database values"), {
+      target: { value: "100%_vip!" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Search tables/i }));
+    await screen.findAllByText("100%_vip!");
+
+    fireEvent.click(screen.getByRole("button", { name: /Open table/i }));
+    expect(openTableSpy).toHaveBeenCalledWith(
+      pgProfile.id,
+      { schema: "public", name: "customers" },
+      {
+        sort: [],
+        filters: [],
+        whereClause:
+          "(CAST(\"email\" AS TEXT) ILIKE '%100!%!_vip!!%' ESCAPE '!' OR CAST(\"notes\" AS TEXT) ILIKE '%100!%!_vip!!%' ESCAPE '!')",
+        orderClause: null,
+      },
+    );
+  });
+
+  it("quotes SQLite reserved-keyword aliases in WorkspaceSqlView and reacts to console session changes", () => {
+    useStudio.getState().openQuery(pgProfile.id, "SELECT * FROM orders");
+    const q1 = useStudio.getState().tabs[0]!;
+    useStudio.getState().updateTab(q1.id, {
+      title: "order",
+      results: [
+        {
+          id: "res-order",
+          runId: "run-ord",
+          statementIndex: 0,
+          columns: [col("id")],
+          retainedRows: 1,
+          status: "complete",
+          table: null,
+          editability: undefined,
+        },
+      ],
+    });
+    useStudio.getState().openQuery(pgProfile.id, "SELECT * FROM groups");
+    const q2 = useStudio.getState().tabs[1]!;
+    useStudio.getState().updateTab(q2.id, {
+      title: "group",
+      results: [
+        {
+          id: "res-group",
+          runId: "run-grp",
+          statementIndex: 0,
+          columns: [col("id")],
+          retainedRows: 1,
+          status: "complete",
+          table: null,
+          editability: undefined,
+        },
+      ],
+    });
+    useStudio.getState().openUtility("workspaceSql");
+    const wsTab = useStudio.getState().tabs.find((t) => t.kind === "workspaceSql")!;
+
+    const { rerender } = render(<WorkspaceSqlView tab={wsTab} />);
+    const textarea = screen.getByLabelText("Workspace SQL query") as HTMLTextAreaElement;
+    expect(textarea.value).toContain('FROM "order" a\nJOIN "group" b ON a."id" = b."id"');
+
+    // Marking the session as a reviewed Snowflake console session without mutating `tabs` immediately hides its datasets
+    useStudio.setState({ consoleSessions: { "sess-pg": true } });
+    rerender(<WorkspaceSqlView tab={wsTab} />);
+    expect((screen.getByLabelText("Workspace SQL query") as HTMLTextAreaElement).value).toBe(
+      "SELECT 1 AS ready;",
+    );
   });
 });

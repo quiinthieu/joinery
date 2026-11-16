@@ -245,4 +245,139 @@ describe("DataGrip 2026.3 grid views, column pinning, and detached result tabs",
       "SELECT id, customer_email FROM public.orders;",
     );
   });
+
+  it("blocks table-tab editing in TransposeGridView and RecordCardView on readOnly profiles and console sessions", () => {
+    const connId = "11111111-1111-4111-8111-111111111111";
+    useStudio.setState({
+      bootstrap: {
+        profiles: [
+          {
+            id: connId,
+            name: "ReadOnly PG",
+            groupId: "local",
+            engine: "postgres",
+            host: "127.0.0.1",
+            port: 5432,
+            database: "app",
+            username: "postgres",
+            environment: "local",
+            safeMode: "readOnly",
+            tlsMode: "disable",
+            caCertPath: null,
+            ssh: null,
+            rememberPassword: false,
+            storeQueryText: true,
+            storeDrafts: true,
+            snowflake: null,
+          },
+        ],
+        groups: [],
+        passphraseConfigured: false,
+        supportedEngines: ["postgres"],
+        resultBudgetBytes: 64 * 1024 * 1024,
+        rowLimit: 50_000,
+        workspace: null,
+        savedQueries: [],
+        bookmarks: [],
+        sqlFormatSettings: { keywordCase: "upper", indentWidth: 2, linesBetweenQueries: 1 },
+        sqlSnippets: [],
+        virtualForeignKeys: [],
+      },
+      sessions: {
+        [connId]: {
+          id: "sess-ro",
+          connectionId: connId,
+          engine: "postgres",
+          serverVersion: "18.0",
+          latencyMs: 1,
+          encrypted: false,
+          capabilities: {
+            sql: true,
+            transactions: true,
+            cancellation: true,
+            tableBrowsing: true,
+            tableEditing: true,
+            tableFiltering: true,
+            processes: true,
+          },
+        },
+      },
+      consoleSessions: {},
+      tabs: [],
+      activeTabId: null,
+    });
+
+    const baseTabId = useStudio.getState().openQuery(connId, "SELECT 1;");
+    useStudio.getState().updateTab(baseTabId, {
+      kind: "table",
+      title: "orders",
+      dataSessionId: "sess-ro",
+      status: "completed",
+      table: { schema: "public", name: "orders" },
+      schema: {
+        table: { schema: "public", name: "orders" },
+        columns: COLUMNS,
+        primaryKey: ["id"],
+        foreignKeys: [],
+        inboundForeignKeys: [],
+        editable: true,
+      },
+      pages: [{ start: 0, after: null, result: SAMPLE_RESULT }],
+      loadedRows: 2,
+      hasMore: false,
+      nextKey: null,
+      loadingPage: false,
+      view: "data",
+      query: { sort: [], filters: [], whereClause: null, orderClause: null },
+      revision: 1,
+    });
+    const tableTab = useStudio.getState().tabs.find((t) => t.id === baseTabId)!;
+
+    const selectedTargets: boolean[] = [];
+    const { unmount } = render(
+      <TransposeGridView
+        tab={tableTab}
+        visibleColumns={COLUMNS}
+        onSelect={(t) => {
+          if (t) selectedTargets.push(t.column.editable);
+        }}
+        onOpenValue={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("alice@example.test"));
+    expect(selectedTargets).toEqual([false]);
+    unmount();
+
+    const { rerender } = render(
+      <RecordCardView
+        tab={tableTab}
+        visibleColumns={COLUMNS}
+        onSelect={() => {}}
+        onOpenValue={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Inspect customer_email")).toBeTruthy();
+    expect(screen.queryByLabelText("Edit customer_email")).toBeNull();
+
+    // Even when safeMode is confirm, consoleSessions blocks editing on table tabs too
+    useStudio.setState((s) => ({
+      bootstrap: s.bootstrap
+        ? {
+            ...s.bootstrap,
+            profiles: [{ ...s.bootstrap.profiles[0]!, safeMode: "confirm" }],
+          }
+        : null,
+      consoleSessions: { "sess-ro": true },
+    }));
+    rerender(
+      <RecordCardView
+        tab={tableTab}
+        visibleColumns={COLUMNS}
+        onSelect={() => {}}
+        onOpenValue={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Inspect customer_email")).toBeTruthy();
+    expect(screen.queryByLabelText("Edit customer_email")).toBeNull();
+  });
 });

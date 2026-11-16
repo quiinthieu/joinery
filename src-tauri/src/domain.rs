@@ -2892,6 +2892,9 @@ pub struct DataSearchReport {
     pub query: String,
     pub match_mode: DataSearchMatchMode,
     pub case_sensitive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub database: Option<String>,
     pub scanned_tables: usize,
     pub skipped_tables: usize,
     pub total_row_hits: usize,

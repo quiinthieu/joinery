@@ -17,12 +17,13 @@ import type {
 } from "../../ipc/generated";
 import { client, messageOf } from "../../ipc/client";
 import {
-  isConsoleOwnedResult,
   isSnowflakeConsoleSession,
   querySessionForTab,
   useStudio,
   type StudioTab,
 } from "../../state/studio";
+
+type StudioSnapshot = ReturnType<typeof useStudio.getState>;
 import type { CellTarget, DatabaseGridHandle } from "../grid/DatabaseGrid";
 import { CopyAsMenu } from "../grid/CopyAsMenu";
 import { RecordCardView, TransposeGridView } from "../grid/GridAltViews";
@@ -52,9 +53,34 @@ function sanitizeAlias(raw: string, index: number): string {
   return base.toLowerCase().startsWith("sqlite_") ? `ds_${base}` : base;
 }
 
+function quoteSqliteIdent(ident: string): string {
+  return `"${ident.replaceAll('"', '""')}"`;
+}
+
+export type MountableDatasetContext = Pick<
+  StudioSnapshot,
+  | "consoleSessions"
+  | "sessions"
+  | "sessionPool"
+  | "tabs"
+  | "snowflakeConsoleResultOwners"
+  | "snowflakeConsoleReceipts"
+>;
+
+function isResultConsoleOwned(ctx: MountableDatasetContext, result: ResultInfo): boolean {
+  return (
+    ctx.snowflakeConsoleResultOwners[result.id] === result.runId ||
+    Object.values(ctx.snowflakeConsoleReceipts).some(
+      (receipt) =>
+        receipt.runId === result.runId || receipt.view?.run.metadata.runId === result.runId,
+    )
+  );
+}
+
 export function discoverMountableDatasets(
   tabs: readonly StudioTab[],
   profileNames: ReadonlyMap<string, string>,
+  context?: MountableDatasetContext,
 ): MountableDataset[] {
   const out: MountableDataset[] = [];
   const usedAliases = new Set<string>();
@@ -70,7 +96,7 @@ export function discoverMountableDatasets(
     return candidate;
   };
 
-  const studioState = useStudio.getState();
+  const studioState = context ?? useStudio.getState();
   for (const t of tabs) {
     const tabSession = t.connectionId
       ? t.kind === "query"
@@ -82,7 +108,7 @@ export function discoverMountableDatasets(
     }
     const connName = t.connectionId ? (profileNames.get(t.connectionId) ?? "Connection") : "Local";
     if (t.kind === "table" && t.pages.length > 0 && t.schema && t.schema.columns.length > 0) {
-      const validPages = t.pages.filter((p) => !isConsoleOwnedResult(p.result));
+      const validPages = t.pages.filter((p) => !isResultConsoleOwned(studioState, p.result));
       if (validPages.length > 0) {
         const rows = validPages.reduce((sum, p) => sum + p.result.retainedRows, 0);
         out.push({
@@ -97,7 +123,7 @@ export function discoverMountableDatasets(
       }
     } else if (t.kind === "query" || t.kind === "result") {
       t.results.forEach((res, idx) => {
-        if (isConsoleOwnedResult(res) || res.columns.length === 0) return;
+        if (isResultConsoleOwned(studioState, res) || res.columns.length === 0) return;
         const suffix = t.results.length > 1 ? ` #${idx + 1}` : "";
         out.push({
           key: `res:${t.id}:${res.id}`,
@@ -125,8 +151,24 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
   }, [state.bootstrap?.profiles]);
 
   const available = useMemo(
-    () => discoverMountableDatasets(state.tabs, profileNames),
-    [profileNames, state.tabs],
+    () =>
+      discoverMountableDatasets(state.tabs, profileNames, {
+        consoleSessions: state.consoleSessions,
+        sessions: state.sessions,
+        sessionPool: state.sessionPool,
+        tabs: state.tabs,
+        snowflakeConsoleResultOwners: state.snowflakeConsoleResultOwners,
+        snowflakeConsoleReceipts: state.snowflakeConsoleReceipts,
+      }),
+    [
+      profileNames,
+      state.consoleSessions,
+      state.sessionPool,
+      state.sessions,
+      state.snowflakeConsoleReceipts,
+      state.snowflakeConsoleResultOwners,
+      state.tabs,
+    ],
   );
 
   const [selectedKeys, setSelectedKeys] = useState<Record<string, boolean>>({});
@@ -162,7 +204,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
   const defaultSql = useMemo(() => {
     if (activeMounts.length === 0) return "SELECT 1 AS ready;";
     if (activeMounts.length === 1) {
-      return `SELECT *\nFROM ${activeMounts[0].alias}\nLIMIT 100;`;
+      return `SELECT *\nFROM ${quoteSqliteIdent(activeMounts[0].alias)}\nLIMIT 100;`;
     }
     const left = activeMounts[0];
     const right = activeMounts[1];
@@ -171,7 +213,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
       right.dataset.columns.find((c) => c.name.toLowerCase() === leftCol.toLowerCase())?.name ??
       right.dataset.columns[0]?.name ??
       "id";
-    return `SELECT a.*, b.*\nFROM ${left.alias} a\nJOIN ${right.alias} b ON a."${leftCol.replaceAll('"', '""')}" = b."${rightMatch.replaceAll('"', '""')}"\nLIMIT 100;`;
+    return `SELECT a.*, b.*\nFROM ${quoteSqliteIdent(left.alias)} a\nJOIN ${quoteSqliteIdent(right.alias)} b ON a.${quoteSqliteIdent(leftCol)} = b.${quoteSqliteIdent(rightMatch)}\nLIMIT 100;`;
   }, [activeMounts]);
 
   const sqlText = hasEditedSql || Boolean(tab.sql) ? tab.sql : defaultSql;

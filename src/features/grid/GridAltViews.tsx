@@ -10,7 +10,12 @@ import {
 import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
-import { useStudio, querySessionForTab, type StudioTab } from "../../state/studio";
+import {
+  isSnowflakeConsoleSession,
+  querySessionForTab,
+  useStudio,
+  type StudioTab,
+} from "../../state/studio";
 import type { CellTarget } from "./DatabaseGrid";
 
 export type GridDisplayMode = "grid" | "transpose" | "record";
@@ -155,12 +160,25 @@ export function TransposeGridView({
     const profile = state.bootstrap?.profiles.find((p) => p.id === tab.connectionId);
     return profile?.safeMode === "readOnly";
   });
+  const consoleMode = useStudio((state) => {
+    if (!tab.connectionId) return false;
+    const activeSession =
+      tab.kind === "query"
+        ? querySessionForTab(tab, state.sessions)
+        : state.sessions[tab.connectionId];
+    return (
+      isSnowflakeConsoleSession(state, activeSession?.id) ||
+      isSnowflakeConsoleSession(state, tab.dataSessionId)
+    );
+  });
   const isGridEditable =
     connected &&
     !["running", "queued", "outcomeUnknown"].includes(tab.status) &&
+    !readOnlyProfile &&
+    !consoleMode &&
     (tab.kind === "table"
       ? Boolean(tab.schema?.editable)
-      : tab.kind === "query" && result?.editability?.status === "editable" && !readOnlyProfile);
+      : tab.kind === "query" && result?.editability?.status === "editable");
 
   const scopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
@@ -388,12 +406,25 @@ export function RecordCardView({
     const profile = state.bootstrap?.profiles.find((p) => p.id === tab.connectionId);
     return profile?.safeMode === "readOnly";
   });
+  const consoleMode = useStudio((state) => {
+    if (!tab.connectionId) return false;
+    const activeSession =
+      tab.kind === "query"
+        ? querySessionForTab(tab, state.sessions)
+        : state.sessions[tab.connectionId];
+    return (
+      isSnowflakeConsoleSession(state, activeSession?.id) ||
+      isSnowflakeConsoleSession(state, tab.dataSessionId)
+    );
+  });
   const isGridEditable =
     connected &&
     !["running", "queued", "outcomeUnknown"].includes(tab.status) &&
+    !readOnlyProfile &&
+    !consoleMode &&
     (tab.kind === "table"
       ? Boolean(tab.schema?.editable)
-      : tab.kind === "query" && result?.editability?.status === "editable" && !readOnlyProfile);
+      : tab.kind === "query" && result?.editability?.status === "editable");
 
   const scopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
