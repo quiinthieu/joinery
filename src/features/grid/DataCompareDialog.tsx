@@ -262,7 +262,9 @@ export function DataCompareDialog({
   onClose(): void;
 }) {
   const liveProfiles = profiles.filter(
-    (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(sessions[p.id]),
+    (p) =>
+      (p.engine === "postgres" || p.engine === "mysql" || p.engine === "sqlite") &&
+      Boolean(sessions[p.id]),
   );
   const snapshots = collectSnapshots(tabs, profiles);
 

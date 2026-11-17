@@ -43,6 +43,10 @@ pub struct SnowflakeRuntime {
 }
 
 impl SnowflakeRuntime {
+    pub fn protected_roots(&self) -> [&Path; 2] {
+        [&self.root, &self.state_parent]
+    }
+
     /// Native startup only. Creates an application-owned private namespace;
     /// existing unsafe directories are rejected rather than repaired in place.
     pub fn prepare_state_parent(path: &Path) -> io::Result<()> {

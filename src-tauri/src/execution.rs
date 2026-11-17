@@ -437,6 +437,17 @@ impl Studio {
         }))
     }
 
+    fn protected_sqlite_roots(&self) -> Vec<std::path::PathBuf> {
+        let mut roots = vec![self.persistence.root().to_path_buf()];
+        #[cfg(unix)]
+        if let Some(runtime) = &self.snowflake_runtime {
+            for r in runtime.protected_roots() {
+                roots.push(r.to_path_buf());
+            }
+        }
+        roots
+    }
+
     pub fn bootstrap(&self) -> AppResult<Bootstrap> {
         Ok(Bootstrap {
             profiles: self.persistence.profiles()?,
@@ -721,6 +732,7 @@ impl Studio {
         }
         if profile.engine == EngineKind::Sqlite {
             Sqlite::validate_profile(&profile)?;
+            Sqlite::validate_target_path(&profile.database, &self.protected_sqlite_roots())?;
         }
         if profile.engine == EngineKind::Snowflake {
             Snowflake::validate_profile(&profile)?;
@@ -1112,7 +1124,9 @@ impl Studio {
                     .await?;
                     (driver, info)
                 }
-                EngineKind::Sqlite => Sqlite::open(&profile, &session_id).await?,
+                EngineKind::Sqlite => {
+                    Sqlite::open(&profile, &session_id, self.protected_sqlite_roots()).await?
+                }
                 EngineKind::Mysql => {
                     let (driver, info) = Mysql::open_with_guard_policy(
                         &profile,
@@ -3394,7 +3408,7 @@ impl Studio {
     ) -> StatementProvenance {
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) || !session.info.capabilities.table_editing
         {
             return StatementProvenance::None;
@@ -3729,13 +3743,13 @@ impl Studio {
         let session = self.session(session_id)?;
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) || !session.info.capabilities.ddl_editing
             || !session.info.capabilities.schema_diff
         {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
-                "Schema migration execution is available for PostgreSQL and MySQL/MariaDB",
+                "Schema migration execution is available for PostgreSQL, MySQL/MariaDB, and SQLite",
             ));
         }
         if session.profile.engine != expected_snapshot.engine {
@@ -3822,6 +3836,12 @@ impl Studio {
             }
             EngineKind::Postgres => {
                 let warning = "Migration DDL on PostgreSQL acquires ACCESS EXCLUSIVE locks on altered or dropped objects and may block concurrent queries until completion.".to_string();
+                if !plan.warnings.contains(&warning) {
+                    plan.warnings.push(warning);
+                }
+            }
+            EngineKind::Sqlite => {
+                let warning = "Migration DDL on SQLite acquires an exclusive write lock on the database file while schema changes execute.".to_string();
                 if !plan.warnings.contains(&warning) {
                     plan.warnings.push(warning);
                 }
@@ -5072,11 +5092,11 @@ impl Studio {
         }
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
-                "CSV import is only available for writable PostgreSQL and MySQL/MariaDB tables",
+                "CSV import is only available for writable PostgreSQL, MySQL/MariaDB, and SQLite tables",
             ));
         }
         let schema = self.schema_for_session(&session, table).await?;
@@ -5120,7 +5140,7 @@ impl Studio {
         let config_digest = import_config_digest(table, &preview_options, &preview.mappings)?;
         let mut targets = self.import_targets.lock();
         targets.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(300));
-        if target.identity.is_some() {
+        if target.identity.is_some() || engine == EngineKind::Sqlite {
             if session.closed.load(Ordering::Acquire) {
                 return Err(AppError::new(
                     ErrorCode::ConnectionClosed,
@@ -5189,7 +5209,7 @@ impl Studio {
         let (session, mut schema) = self.verify_import_target(session_id, table).await?;
         let (identity, import_preview_key) = if matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) {
             let config_digest = import_config_digest(table, &options, &mappings)?;
             let targets = self.import_targets.lock();
@@ -5236,12 +5256,10 @@ impl Studio {
         let generated = prepared
             .mutations
             .iter()
-            .map(|m| {
-                if engine == EngineKind::Mysql {
-                    crate::drivers::mysql::mutation_sql(&schema, m)
-                } else {
-                    mutation_sql(&schema, m)
-                }
+            .map(|m| match engine {
+                EngineKind::Mysql => crate::drivers::mysql::mutation_sql(&schema, m),
+                EngineKind::Sqlite => crate::drivers::sqlite::mutation_sql(&schema, m),
+                _ => mutation_sql(&schema, m),
             })
             .collect::<AppResult<Vec<_>>>()?;
         let sql = generated
@@ -5380,11 +5398,11 @@ impl Studio {
                 let session = self.session(&session_id)?;
                 if !matches!(
                     session.profile.engine,
-                    EngineKind::Postgres | EngineKind::Mysql
+                    EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
                 ) {
                     return Err(AppError::new(
                         ErrorCode::Unsupported,
-                        "Live table comparison is available for PostgreSQL and MySQL/MariaDB. Compare retained query or preview snapshots for other engines.",
+                        "Live table comparison is available for PostgreSQL, MySQL/MariaDB, and SQLite. Compare retained query or preview snapshots for other engines.",
                     ));
                 }
                 let schema = {

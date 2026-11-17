@@ -3,7 +3,7 @@ import { format } from "sql-formatter";
 import type { EngineKind, SqlFormatSettings, SqlFormatStyle } from "../ipc/generated";
 
 export type SqlFormatterDialect = "postgresql" | "mysql" | "sqlite" | "snowflake";
-export type SqlFormatScope = "global" | "postgres" | "mysql" | "snowflake";
+export type SqlFormatScope = "global" | "postgres" | "mysql" | "sqlite" | "snowflake";
 
 export const DEFAULT_SQL_FORMAT_SETTINGS: SqlFormatSettings = {
   keywordCase: "upper",
@@ -55,10 +55,7 @@ export function formatSqlText(
   language: SqlFormatterDialect,
   settings: SqlFormatSettings = DEFAULT_SQL_FORMAT_SETTINGS,
 ): string {
-  const style = sqlFormatStyle(
-    settings,
-    language === "postgresql" ? "postgres" : language === "sqlite" ? "global" : language,
-  );
+  const style = sqlFormatStyle(settings, language === "postgresql" ? "postgres" : language);
   return format(sql, {
     language,
     keywordCase: style.keywordCase,

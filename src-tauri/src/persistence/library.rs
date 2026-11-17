@@ -209,9 +209,14 @@ fn validate_sql_format_style(indent_width: u8, lines_between_queries: u8) -> App
 fn validate_sql_format_settings(settings: &SqlFormatSettings) -> AppResult<()> {
     validate_sql_format_style(settings.indent_width, settings.lines_between_queries)?;
     if let Some(dialects) = settings.dialects {
-        for style in [dialects.postgres, dialects.mysql, dialects.snowflake]
-            .into_iter()
-            .flatten()
+        for style in [
+            dialects.postgres,
+            dialects.mysql,
+            dialects.sqlite,
+            dialects.snowflake,
+        ]
+        .into_iter()
+        .flatten()
         {
             validate_sql_format_style(style.indent_width, style.lines_between_queries)?;
         }

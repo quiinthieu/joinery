@@ -480,7 +480,9 @@ export function ObjectInspectorView({
             tab.connectionId &&
             activeProfile &&
             (session?.capabilities.ddlEditing ??
-              (activeProfile.engine === "postgres" || activeProfile.engine === "mysql")) && (
+              (activeProfile.engine === "postgres" ||
+                activeProfile.engine === "mysql" ||
+                activeProfile.engine === "sqlite")) && (
               <button
                 type="button"
                 className="button ghost small danger-text"
@@ -898,8 +900,10 @@ export function StorageStatsSection({
     Boolean(connectionId && table) &&
     (profile?.engine === "postgres" ||
       profile?.engine === "mysql" ||
+      profile?.engine === "sqlite" ||
       session?.engine === "postgres" ||
-      session?.engine === "mysql");
+      session?.engine === "mysql" ||
+      session?.engine === "sqlite");
   const isReadOnly = profile?.safeMode === "readOnly";
   const hasMetrics =
     storage.totalBytes !== null ||

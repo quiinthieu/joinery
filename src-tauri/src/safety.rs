@@ -1069,7 +1069,10 @@ pub fn analyze_single_table_select(
     sql: &str,
     default_schema: Option<&str>,
 ) -> Result<SingleTableSelectCandidate, String> {
-    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+    if !matches!(
+        engine,
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
+    ) {
         return Err("Engine does not support query result editing".into());
     }
 
@@ -1178,7 +1181,11 @@ pub fn analyze_single_table_select(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned)
-                .or_else(|| (engine == EngineKind::Postgres).then(|| "public".to_owned()))
+                .or_else(|| match engine {
+                    EngineKind::Postgres => Some("public".to_owned()),
+                    EngineKind::Sqlite => Some("main".to_owned()),
+                    _ => None,
+                })
                 .ok_or_else(|| {
                     "Unqualified table requires an active schema or database".to_string()
                 })?;
@@ -1342,12 +1349,14 @@ pub fn verify_result_provenance(
     let mut seen_names = std::collections::HashSet::with_capacity(expanded_live_cols.len());
     let mut enriched_columns = Vec::with_capacity(expanded_live_cols.len());
 
+    let case_insensitive_cols = matches!(candidate.engine, EngineKind::Mysql | EngineKind::Sqlite);
+
     for (index, (live_col, reported_col)) in expanded_live_cols
         .iter()
         .zip(result_columns.iter())
         .enumerate()
     {
-        let same_name = if candidate.engine == EngineKind::Mysql {
+        let same_name = if case_insensitive_cols {
             reported_col.name.eq_ignore_ascii_case(&live_col.name)
         } else {
             reported_col.name == live_col.name
@@ -1361,7 +1370,7 @@ pub fn verify_result_provenance(
             };
         }
 
-        let dedup_key = if candidate.engine == EngineKind::Mysql {
+        let dedup_key = if case_insensitive_cols {
             live_col.name.to_ascii_lowercase()
         } else {
             live_col.name.clone()
@@ -1380,7 +1389,7 @@ pub fn verify_result_provenance(
     for pk in &live_schema.primary_key {
         let has_pk = enriched_columns.iter().any(|col| {
             col.primary_key
-                && if candidate.engine == EngineKind::Mysql {
+                && if case_insensitive_cols {
                     col.name.eq_ignore_ascii_case(pk)
                 } else {
                     &col.name == pk
@@ -1401,7 +1410,7 @@ pub fn verify_result_provenance(
 
     let omits_required_insert_column = live_schema.columns.iter().any(|table_col| {
         let is_projected = enriched_columns.iter().any(|proj_col| {
-            if candidate.engine == EngineKind::Mysql {
+            if case_insensitive_cols {
                 proj_col.name.eq_ignore_ascii_case(&table_col.name)
             } else {
                 proj_col.name == table_col.name

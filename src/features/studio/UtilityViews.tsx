@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Wrench,
   ArrowUpRight,
 } from "lucide-react";
 import type {
@@ -33,6 +34,7 @@ import {
   isConstraintBackedIndex,
 } from "./IndexConstraintDialog";
 import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectDialog";
+import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
 import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
@@ -723,6 +725,7 @@ export function StructureView({
   const [tableObjectRequest, setTableObjectRequest] = useState<TableObjectDialogRequest | null>(
     null,
   );
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
 
   const openObject =
@@ -742,10 +745,14 @@ export function StructureView({
   const isViewLike = details?.object.kind === "view" || details?.object.kind === "materializedView";
   const ddlEditingSupported =
     session?.capabilities.ddlEditing ??
-    (profile?.engine === "postgres" || profile?.engine === "mysql");
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const canManageSchema = Boolean(
     details && isTableLike && profile && session && ddlEditingSupported,
   );
+  const canAlterTableConstraints = canManageSchema && profile?.engine !== "sqlite";
+  const canMaintainTable =
+    canManageSchema &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const canDropObject = Boolean(
     details && (isTableLike || isViewLike) && profile && session && ddlEditingSupported,
   );
@@ -780,6 +787,18 @@ export function StructureView({
               >
                 <Plus size={12} />
                 Add column…
+              </button>
+            )}
+            {canMaintainTable && !details?.storage && (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={isReadOnly}
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() => setMaintenanceOpen(true)}
+              >
+                <Wrench size={12} />
+                Maintenance…
               </button>
             )}
             {canDropObject && details && (
@@ -1015,9 +1034,9 @@ export function StructureView({
           </div>
         </div>
       )}
-      {details && (details.constraints.length > 0 || canManageSchema) && (
+      {details && (details.constraints.length > 0 || canAlterTableConstraints) && (
         <section className="structure-section" aria-label="Constraints section">
-          {canManageSchema && (
+          {canAlterTableConstraints && (
             <div
               className="structure-section-header"
               style={{
@@ -1052,13 +1071,13 @@ export function StructureView({
                   <th>Columns</th>
                   <th>References</th>
                   <th>Definition</th>
-                  {canManageSchema && <th>Actions</th>}
+                  {canAlterTableConstraints && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {details.constraints.map((constraint) => {
                   const canDropConstraint =
-                    canManageSchema &&
+                    canAlterTableConstraints &&
                     !(profile?.engine === "mysql" && constraint.kind === "exclusion");
                   return (
                     <tr key={`${constraint.kind}:${constraint.name}`}>
@@ -1113,7 +1132,7 @@ export function StructureView({
                       <td>
                         <code>{constraint.definition}</code>
                       </td>
-                      {canManageSchema && (
+                      {canAlterTableConstraints && (
                         <td>
                           {canDropConstraint ? (
                             <button
@@ -1392,6 +1411,16 @@ export function StructureView({
               onRefresh?.();
             }
           }}
+        />
+      )}
+      {maintenanceOpen && connectionId && (
+        <TableMaintenanceDialog
+          connectionId={connectionId}
+          table={tableRef}
+          columns={schema.columns.map((c) => c.name)}
+          storage={details?.storage ?? null}
+          onClose={() => setMaintenanceOpen(false)}
+          onCompleted={() => onRefresh?.()}
         />
       )}
       {virtualFkDialogOpen && connectionId && (

@@ -63,6 +63,10 @@ impl Persistence {
         })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
         self.json_rows("SELECT json FROM profiles_v8 ORDER BY id")
     }

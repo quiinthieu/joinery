@@ -37,7 +37,7 @@ pub(crate) fn explain_sql(
                 if analyze {
                     "Actual plans are available for PostgreSQL and capability-checked MySQL/MariaDB sessions."
                 } else {
-                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, and Snowflake."
+                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, SQLite, and Snowflake."
                 },
             ));
         }

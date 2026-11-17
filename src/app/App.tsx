@@ -414,10 +414,12 @@ export function App() {
     !!session &&
     current.dataSessionId === session.id &&
     profile?.safeMode !== "readOnly" &&
-    (profile?.engine === "postgres" || profile?.engine === "mysql");
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const hasComparableSources =
     (state.bootstrap?.profiles.some(
-      (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(state.sessions[p.id]),
+      (p) =>
+        (p.engine === "postgres" || p.engine === "mysql" || p.engine === "sqlite") &&
+        Boolean(state.sessions[p.id]),
     ) ??
       false) ||
     state.tabs.some(

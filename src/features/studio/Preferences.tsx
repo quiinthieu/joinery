@@ -61,7 +61,9 @@ export function Preferences({ onClose }: { onClose(): void }) {
     [editingSnippetId, setEditingSnippetId] = useState<string | null>(null),
     [snippetTrigger, setSnippetTrigger] = useState(""),
     [snippetTitle, setSnippetTitle] = useState(""),
-    [snippetEngine, setSnippetEngine] = useState<"" | "postgres" | "mysql" | "snowflake">(""),
+    [snippetEngine, setSnippetEngine] = useState<
+      "" | "postgres" | "mysql" | "sqlite" | "snowflake"
+    >(""),
     [snippetPlace, setSnippetPlace] = useState<SqlSnippetPlace>("any"),
     [snippetBody, setSnippetBody] = useState(""),
     [snippetBusy, setSnippetBusy] = useState(false),
@@ -174,7 +176,10 @@ export function Preferences({ onClose }: { onClose(): void }) {
     setSnippetTrigger(snippet.trigger);
     setSnippetTitle(snippet.title);
     setSnippetEngine(
-      snippet.engine === "postgres" || snippet.engine === "mysql" || snippet.engine === "snowflake"
+      snippet.engine === "postgres" ||
+        snippet.engine === "mysql" ||
+        snippet.engine === "sqlite" ||
+        snippet.engine === "snowflake"
         ? snippet.engine
         : "",
     );
@@ -400,6 +405,7 @@ export function Preferences({ onClose }: { onClose(): void }) {
               <option value="global">Global defaults</option>
               <option value="postgres">PostgreSQL</option>
               <option value="mysql">MySQL / MariaDB</option>
+              <option value="sqlite">SQLite</option>
               <option value="snowflake">Snowflake</option>
             </select>
           </label>
@@ -546,12 +552,15 @@ export function Preferences({ onClose }: { onClose(): void }) {
                   aria-label="Snippet engine"
                   value={snippetEngine}
                   onChange={(e) =>
-                    setSnippetEngine(e.target.value as "" | "postgres" | "mysql" | "snowflake")
+                    setSnippetEngine(
+                      e.target.value as "" | "postgres" | "mysql" | "sqlite" | "snowflake",
+                    )
                   }
                 >
                   <option value="">All SQL engines</option>
                   <option value="postgres">PostgreSQL</option>
                   <option value="mysql">MySQL / MariaDB</option>
+                  <option value="sqlite">SQLite</option>
                   <option value="snowflake">Snowflake</option>
                 </select>
               </label>

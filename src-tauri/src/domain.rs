@@ -1645,6 +1645,9 @@ pub struct SqlFormatDialects {
     pub mysql: Option<SqlFormatStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub sqlite: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub snowflake: Option<SqlFormatStyle>,
 }
 

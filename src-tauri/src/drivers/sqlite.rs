@@ -18,10 +18,13 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use rusqlite::{
     Connection, InterruptHandle, OpenFlags,
+    config::DbConfig,
+    hooks::{AuthAction, AuthContext, Authorization},
+    limits::Limit,
     types::{Value as SqliteValue, ValueRef},
 };
 use std::collections::{BTreeMap, HashSet};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -432,19 +435,227 @@ pub struct Sqlite {
     read_only: bool,
 }
 
+fn resolve_sqlite_candidate_path(raw: &Path, depth: usize) -> AppResult<PathBuf> {
+    if depth > 16 {
+        return Err(AppError::new(
+            ErrorCode::PolicyBlocked,
+            "SQLite path symlink chain is too deep",
+        ));
+    }
+    let abs = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| AppError::internal("Could not resolve current working directory"))?
+            .join(raw)
+    };
+
+    let mut acc = PathBuf::new();
+    let components: Vec<Component<'_>> = abs.components().collect();
+    for (idx, comp) in components.iter().enumerate() {
+        match comp {
+            Component::Prefix(p) => acc.push(p.as_os_str()),
+            Component::RootDir => acc.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                acc.pop();
+                if acc.as_os_str().is_empty() {
+                    acc.push(Path::new("/"));
+                } else if let Ok(canon) = std::fs::canonicalize(&acc) {
+                    acc = canon;
+                }
+            }
+            Component::Normal(seg) => {
+                acc.push(seg);
+                if let Ok(canon) = std::fs::canonicalize(&acc) {
+                    acc = canon;
+                } else if let Ok(meta) = std::fs::symlink_metadata(&acc)
+                    && meta.file_type().is_symlink()
+                    && let Ok(link_target) = std::fs::read_link(&acc)
+                {
+                    let mut base = acc.clone();
+                    base.pop();
+                    let mut expanded = if link_target.is_absolute() {
+                        link_target
+                    } else {
+                        base.join(link_target)
+                    };
+                    for rem in &components[idx + 1..] {
+                        expanded.push(rem.as_os_str());
+                    }
+                    return resolve_sqlite_candidate_path(&expanded, depth + 1);
+                }
+            }
+        }
+    }
+    Ok(acc)
+}
+
+fn is_forbidden_joinery_sqlite_path(resolved: &Path, forbidden_roots: &[PathBuf]) -> bool {
+    if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
+        let lower = name.to_ascii_lowercase();
+        if lower == "joinery.sqlite"
+            || lower.starts_with("joinery.sqlite-")
+            || lower.starts_with("joinery.sqlite.")
+        {
+            return true;
+        }
+    }
+    for root in forbidden_roots {
+        let canon_root = resolve_sqlite_candidate_path(root, 0).unwrap_or_else(|_| root.clone());
+        if resolved.starts_with(&canon_root) {
+            return true;
+        }
+    }
+    let path_lower = resolved.to_string_lossy().to_ascii_lowercase();
+    if path_lower.contains("/com.joinery.desktop/")
+        || path_lower.ends_with("/com.joinery.desktop")
+        || path_lower.contains("/application support/joinery/")
+        || path_lower.ends_with("/application support/joinery")
+        || path_lower.contains("/snowflake-state/")
+        || path_lower.ends_with("/snowflake-state")
+    {
+        return true;
+    }
+    false
+}
+
+fn is_forbidden_sqlite_function(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "load_extension" | "fts3_tokenizer" | "readfile" | "writefile" | "edit"
+    )
+}
+
+fn sqlite_readonly_authorizer(ctx: AuthContext<'_>) -> Authorization {
+    match ctx.action {
+        AuthAction::Select | AuthAction::Read { .. } | AuthAction::Recursive => {
+            Authorization::Allow
+        }
+        AuthAction::Function { function_name } => {
+            if is_forbidden_sqlite_function(function_name) {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value,
+        } => {
+            let lower = pragma_name.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "writable_schema"
+                    | "trusted_schema"
+                    | "temp_store_directory"
+                    | "data_store_directory"
+                    | "wal_checkpoint"
+                    | "optimize"
+                    | "incremental_vacuum"
+                    | "shrink_memory"
+            ) {
+                return Authorization::Deny;
+            }
+            if pragma_value.is_some()
+                && matches!(
+                    lower.as_str(),
+                    "query_only"
+                        | "journal_mode"
+                        | "locking_mode"
+                        | "synchronous"
+                        | "auto_vacuum"
+                        | "user_version"
+                        | "application_id"
+                        | "schema_version"
+                        | "page_size"
+                        | "max_page_count"
+                        | "foreign_keys"
+                )
+            {
+                return Authorization::Deny;
+            }
+            Authorization::Allow
+        }
+        _ => Authorization::Deny,
+    }
+}
+
+fn make_sqlite_writable_authorizer(
+    forbidden_roots: Vec<PathBuf>,
+) -> impl FnMut(AuthContext<'_>) -> Authorization + Send + 'static {
+    move |ctx: AuthContext<'_>| sqlite_writable_authorizer(ctx, &forbidden_roots)
+}
+
+fn sqlite_writable_authorizer(ctx: AuthContext<'_>, forbidden_roots: &[PathBuf]) -> Authorization {
+    match ctx.action {
+        AuthAction::Attach { filename } => {
+            let trimmed = filename.trim();
+            if trimmed.is_empty() || trimmed == ":memory:" {
+                return Authorization::Allow;
+            }
+            if Sqlite::validate_target_path(trimmed, forbidden_roots).is_err() {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }
+        AuthAction::Function { function_name } => {
+            if is_forbidden_sqlite_function(function_name) {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value,
+        } => {
+            let lower = pragma_name.to_ascii_lowercase();
+            if matches!(lower.as_str(), "writable_schema")
+                || (pragma_value.is_some()
+                    && matches!(
+                        lower.as_str(),
+                        "trusted_schema" | "temp_store_directory" | "data_store_directory"
+                    ))
+            {
+                Authorization::Deny
+            } else {
+                Authorization::Allow
+            }
+        }
+        _ => Authorization::Allow,
+    }
+}
+
 impl Sqlite {
-    pub fn validate_profile(profile: &ConnectionProfile) -> AppResult<()> {
-        let db = profile.database.trim();
+    pub fn validate_target_path(raw: &str, forbidden_roots: &[PathBuf]) -> AppResult<()> {
+        let db = raw.trim();
         if db.is_empty() || db.len() > 4096 || db.contains('\0') {
             return Err(AppError::invalid(
                 "Provide a SQLite database file path or :memory:",
             ));
         }
-        if db.starts_with("file:") {
+        if db == ":memory:" {
+            return Ok(());
+        }
+        if db.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("file:")) {
             return Err(AppError::invalid(
                 "Provide a plain filesystem path or :memory: instead of a SQLite file: URI",
             ));
         }
+        let resolved = resolve_sqlite_candidate_path(Path::new(db), 0)?;
+        if is_forbidden_joinery_sqlite_path(&resolved, forbidden_roots) {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Opening Joinery internal application metadata or state files as a user SQLite database is blocked",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_profile(profile: &ConnectionProfile) -> AppResult<()> {
+        Self::validate_target_path(&profile.database, &[])?;
         if profile.ssh.is_some() {
             return Err(AppError::invalid(
                 "SSH tunneling does not apply to local SQLite database files",
@@ -461,15 +672,18 @@ impl Sqlite {
     pub async fn open(
         profile: &ConnectionProfile,
         session_id: &str,
+        forbidden_roots: Vec<PathBuf>,
     ) -> AppResult<(Arc<dyn Driver>, SessionInfo)> {
         Self::validate_profile(profile)?;
         let db_target = profile.database.trim().to_owned();
+        Self::validate_target_path(&db_target, &forbidden_roots)?;
         let read_only = crate::safety::effective_mode(profile) == SafeMode::ReadOnly;
         let sid = session_id.to_owned();
         let connection_id = profile.id.clone();
 
         tokio::task::spawn_blocking(move || {
             let started = Instant::now();
+            Self::validate_target_path(&db_target, &forbidden_roots)?;
             let conn = if db_target == ":memory:" {
                 Connection::open_in_memory().map_err(map_sqlite_err)?
             } else {
@@ -490,25 +704,45 @@ impl Sqlite {
                         | OpenFlags::SQLITE_OPEN_CREATE
                         | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 };
-                Connection::open_with_flags(path, flags).map_err(|err| {
+                let opened = Connection::open_with_flags(path, flags).map_err(|err| {
                     AppError::new(
                         ErrorCode::ConnectionFailed,
                         format!("Could not open SQLite database: {err}"),
                     )
-                })?
+                })?;
+                if let Ok(canon_after_open) = std::fs::canonicalize(path)
+                    && is_forbidden_joinery_sqlite_path(&canon_after_open, &forbidden_roots)
+                {
+                    return Err(AppError::new(
+                        ErrorCode::PolicyBlocked,
+                        "Opening Joinery internal application metadata or state files as a user SQLite database is blocked",
+                    ));
+                }
+                opened
             };
 
-            conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
-                .map_err(map_sqlite_err)?;
-            if read_only {
-                conn.execute_batch("PRAGMA query_only = ON;")
-                    .map_err(map_sqlite_err)?;
-            }
+            let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
+            conn.execute_batch(
+                "PRAGMA busy_timeout = 5000; PRAGMA trusted_schema = OFF; PRAGMA foreign_keys = ON;",
+            )
+            .map_err(map_sqlite_err)?;
 
             let raw_ver: String = conn
                 .query_row("SELECT sqlite_version()", [], |r| r.get(0))
                 .map_err(map_sqlite_err)?;
             let server_version = format!("SQLite {raw_ver}");
+
+            if read_only {
+                let _ = conn.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0);
+                conn.execute_batch("PRAGMA query_only = ON;")
+                    .map_err(map_sqlite_err)?;
+                conn.authorizer(Some(sqlite_readonly_authorizer))
+                    .map_err(map_sqlite_err)?;
+            } else {
+                conn.authorizer(Some(make_sqlite_writable_authorizer(forbidden_roots)))
+                    .map_err(map_sqlite_err)?;
+            }
+
             let latency_ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
             let interrupt = Arc::new(conn.get_interrupt_handle());
 
@@ -551,7 +785,7 @@ impl Sqlite {
                     object_explorer: true,
                     schema_diagram: true,
                     schema_diff: true,
-                    ddl_editing: false,
+                    ddl_editing: !read_only,
                     snowflake_reviewed_ddl: false,
                     snowflake_grid_editing: false,
                     lock_inspection: false,
@@ -936,6 +1170,13 @@ fn map_sqlite_err(err: rusqlite::Error) -> AppError {
                         .unwrap_or("SQLite database is opened in read-only mode"),
                 );
             }
+            if ffi_err.code == rusqlite::ErrorCode::AuthorizationForStatementDenied {
+                return AppError::new(
+                    ErrorCode::PolicyBlocked,
+                    msg.as_deref()
+                        .unwrap_or("SQLite operation blocked by security policy"),
+                );
+            }
             AppError::new(
                 ErrorCode::Database,
                 msg.as_deref().unwrap_or(&err.to_string()),
@@ -943,6 +1184,292 @@ fn map_sqlite_err(err: rusqlite::Error) -> AppError {
         }
         _ => AppError::new(ErrorCode::Database, err.to_string()),
     }
+}
+
+fn parse_sqlite_index_ddl(
+    idx_ddl: Option<&str>,
+    pragma_cols: &[Option<String>],
+    quote_plain_cols: bool,
+) -> (Vec<String>, Option<String>) {
+    let mut ddl_exprs: Vec<String> = Vec::new();
+    let mut predicate: Option<String> = None;
+
+    if let Some(ddl) = idx_ddl {
+        let bytes = ddl.as_bytes();
+        let mut i = 0usize;
+        let mut depth = 0usize;
+        let mut open_paren: Option<usize> = None;
+        let mut close_paren: Option<usize> = None;
+        let mut item_start = 0usize;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\'' | b'"' | b'`' => {
+                    let q = bytes[i];
+                    i += 1;
+                    while i < bytes.len() {
+                        if bytes[i] == q {
+                            if bytes.get(i + 1) == Some(&q) {
+                                i += 2;
+                            } else {
+                                i += 1;
+                                break;
+                            }
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    continue;
+                }
+                b'[' => {
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != b']' {
+                        i += 1;
+                    }
+                }
+                b'(' => {
+                    if depth == 0 && open_paren.is_none() {
+                        open_paren = Some(i);
+                        item_start = i + 1;
+                    }
+                    depth += 1;
+                }
+                b',' if depth == 1 && close_paren.is_none() => {
+                    let seg = ddl[item_start..i].trim();
+                    if !seg.is_empty() {
+                        ddl_exprs.push(seg.to_owned());
+                    }
+                    item_start = i + 1;
+                }
+                b')' => {
+                    if depth == 1 && close_paren.is_none() {
+                        let seg = ddl[item_start..i].trim();
+                        if !seg.is_empty() {
+                            ddl_exprs.push(seg.to_owned());
+                        }
+                        close_paren = Some(i);
+                    }
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        if let Some(end_idx) = close_paren {
+            let tail = ddl[end_idx + 1..].trim().trim_end_matches(';').trim();
+            if tail
+                .get(..5)
+                .is_some_and(|w| w.eq_ignore_ascii_case("WHERE"))
+                && tail
+                    .as_bytes()
+                    .get(5)
+                    .is_some_and(|b| b.is_ascii_whitespace() || *b == b'(')
+            {
+                let pred = tail[5..].trim();
+                if !pred.is_empty() {
+                    predicate = Some(pred.to_owned());
+                }
+            }
+        }
+    }
+
+    let has_expr_cols = pragma_cols.iter().any(Option::is_none);
+    let expressions = if has_expr_cols && !ddl_exprs.is_empty() {
+        ddl_exprs
+    } else if !pragma_cols.is_empty() {
+        pragma_cols
+            .iter()
+            .enumerate()
+            .map(|(i, col_opt)| match col_opt {
+                Some(c) if quote_plain_cols => quote_sqlite_ident(c),
+                Some(c) => c.clone(),
+                None => ddl_exprs
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| "<expr>".to_owned()),
+            })
+            .collect()
+    } else {
+        ddl_exprs
+    };
+
+    (expressions, predicate)
+}
+
+fn extract_sqlite_generated_expr(table_ddl: Option<&str>, col_name: &str) -> Option<String> {
+    let ddl = table_ddl?;
+    let bytes = ddl.as_bytes();
+    let mut open_paren = None;
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'(' {
+            open_paren = Some(idx);
+            break;
+        }
+    }
+    let start = open_paren? + 1;
+    // Split top-level column/constraint items inside CREATE TABLE (...)
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut item_start = start;
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' | b'`' => {
+                let q = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == q {
+                        if bytes.get(i + 1) == Some(&q) {
+                            i += 2;
+                        } else {
+                            i += 1;
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    items.push(ddl[item_start..i].trim());
+                    break;
+                }
+                depth -= 1;
+            }
+            b',' if depth == 0 => {
+                items.push(ddl[item_start..i].trim());
+                item_start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    for item in items {
+        let trimmed = item.trim();
+        // Match leading column identifier (quoted or unquoted)
+        let (ident, rest) = if let Some(quote_ch) = trimmed
+            .chars()
+            .next()
+            .filter(|c| matches!(c, '"' | '`' | '\''))
+        {
+            let q_bytes = trimmed.as_bytes();
+            let mut pos = 1usize;
+            let mut unescaped = String::new();
+            while pos < q_bytes.len() {
+                let ch = trimmed[pos..].chars().next().unwrap();
+                pos += ch.len_utf8();
+                if ch == quote_ch {
+                    if trimmed[pos..].starts_with(quote_ch) {
+                        unescaped.push(quote_ch);
+                        pos += quote_ch.len_utf8();
+                    } else {
+                        break;
+                    }
+                } else {
+                    unescaped.push(ch);
+                }
+            }
+            (unescaped, &trimmed[pos..])
+        } else {
+            let end = trimmed
+                .find(|c: char| c.is_ascii_whitespace() || c == '(')
+                .unwrap_or(trimmed.len());
+            (trimmed[..end].to_owned(), &trimmed[end..])
+        };
+
+        if !ident.eq_ignore_ascii_case(col_name) {
+            continue;
+        }
+        // Look for `AS (...)` in `rest`
+        let upper = rest.to_ascii_uppercase();
+        let mut search_from = 0usize;
+        while let Some(rel) = upper[search_from..].find("AS") {
+            let pos = search_from + rel;
+            let before_ok = pos == 0
+                || rest.as_bytes()[pos - 1].is_ascii_whitespace()
+                || rest.as_bytes()[pos - 1] == b')';
+            let after_slice = rest[pos + 2..].trim_start();
+            if before_ok && after_slice.starts_with('(') {
+                let ab = after_slice.as_bytes();
+                let mut d = 0usize;
+                let mut k = 0usize;
+                while k < ab.len() {
+                    match ab[k] {
+                        b'\'' | b'"' | b'`' => {
+                            let q = ab[k];
+                            k += 1;
+                            while k < ab.len() {
+                                if ab[k] == q {
+                                    if ab.get(k + 1) == Some(&q) {
+                                        k += 2;
+                                    } else {
+                                        k += 1;
+                                        break;
+                                    }
+                                } else {
+                                    k += 1;
+                                }
+                            }
+                            continue;
+                        }
+                        b'(' => d += 1,
+                        b')' => {
+                            d -= 1;
+                            if d == 0 {
+                                return Some(after_slice[1..k].trim().to_owned());
+                            }
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
+            }
+            search_from = pos + 2;
+        }
+    }
+    None
+}
+
+fn load_sqlite_triggers_sync(conn: &Connection, table_name: &str) -> Vec<TriggerInfo> {
+    let mut triggers = Vec::new();
+    if let Ok(mut trg_stmt) = conn.prepare(
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+    ) && let Ok(trg_rows) = trg_stmt.query_map([table_name], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+    }) {
+        for (trg_name, trg_sql) in trg_rows.flatten() {
+            let def = trg_sql.unwrap_or_default();
+            let upper = def.to_ascii_uppercase();
+            let timing = if upper.contains("BEFORE ") {
+                "BEFORE"
+            } else if upper.contains("INSTEAD OF ") {
+                "INSTEAD OF"
+            } else {
+                "AFTER"
+            };
+            let mut events = Vec::new();
+            for ev in ["INSERT", "UPDATE", "DELETE"] {
+                if upper.contains(ev) {
+                    events.push(ev.to_owned());
+                }
+            }
+            triggers.push(TriggerInfo {
+                name: trg_name,
+                table_name: table_name.to_owned(),
+                timing: timing.into(),
+                events,
+                orientation: "ROW".into(),
+                enabled: true,
+                definition: Some(def),
+            });
+        }
+    }
+    triggers
 }
 
 #[async_trait]
@@ -1007,10 +1534,54 @@ impl Driver for Sqlite {
     async fn resolve_query_edit_table(
         &self,
         table: &TableRef,
-        _unqualified: bool,
+        unqualified: bool,
     ) -> AppResult<TableRef> {
-        let schema = self.schema(table).await?;
-        Ok(schema.table)
+        let req_table = table.clone();
+        let ro = self.read_only;
+        self.with_conn(|conn| {
+            if unqualified {
+                let shadowed_by_temp: Option<i64> = conn
+                    .query_row(
+                        "SELECT 1 FROM sqlite_temp_schema WHERE type IN ('table', 'view') AND LOWER(name) = LOWER(?1) LIMIT 1",
+                        [&req_table.name],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                if shadowed_by_temp.is_some() {
+                    return Err(AppError::invalid(
+                        "Query selects a temporary SQLite relation",
+                    ));
+                }
+            } else if !req_table.schema.trim().eq_ignore_ascii_case("main") {
+                return Err(AppError::new(
+                    ErrorCode::NotFound,
+                    format!("SQLite schema {:?} was not found", req_table.schema),
+                ));
+            }
+
+            let canonical_name: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM sqlite_schema WHERE type = 'table' AND LOWER(name) = LOWER(?1) LIMIT 1",
+                    [&req_table.name],
+                    |r| r.get(0),
+                )
+                .ok();
+            let Some(canonical_name) = canonical_name else {
+                return Err(AppError::new(
+                    ErrorCode::NotFound,
+                    format!("SQLite base table {:?} was not found", req_table.name),
+                ));
+            };
+            let schema = Self::load_schema_sync(
+                conn,
+                &TableRef {
+                    schema: "main".into(),
+                    name: canonical_name,
+                },
+                ro,
+            )?;
+            Ok(schema.table)
+        })
     }
 
     async fn completion_catalog(
@@ -1303,13 +1874,13 @@ impl Driver for Sqlite {
                             "PRAGMA main.index_info({})",
                             quote_sqlite_ident(&idx_name)
                         );
-                        let mut exprs = Vec::new();
+                        let mut raw_cols = Vec::new();
                         if let Ok(mut c_stmt) = conn.prepare(&cols_sql)
                             && let Ok(c_rows) =
                                 c_stmt.query_map([], |cr| cr.get::<_, Option<String>>(2))
                         {
                             for col_opt in c_rows.flatten() {
-                                exprs.push(col_opt.unwrap_or_else(|| "<expr>".into()));
+                                raw_cols.push(col_opt);
                             }
                         }
                         let idx_ddl: Option<String> = conn
@@ -1320,13 +1891,34 @@ impl Driver for Sqlite {
                             )
                             .ok()
                             .flatten();
+                        let (parsed_exprs, predicate) =
+                            parse_sqlite_index_ddl(idx_ddl.as_deref(), &raw_cols, false);
+                        if origin == "u" && unique {
+                            let u_cols: Vec<String> =
+                                raw_cols.iter().filter_map(|c| c.clone()).collect();
+                            if !u_cols.is_empty() {
+                                let quoted_u_cols = u_cols
+                                    .iter()
+                                    .map(|c| quote_sqlite_ident(c))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                constraints.push(ConstraintInfo {
+                                    name: idx_name.clone(),
+                                    kind: ConstraintKind::Unique,
+                                    columns: u_cols,
+                                    target: None,
+                                    target_columns: Vec::new(),
+                                    definition: format!("UNIQUE ({quoted_u_cols})"),
+                                });
+                            }
+                        }
                         indexes.push(IndexInfo {
                             name: idx_name,
                             method: "btree".into(),
                             unique,
                             primary: origin == "pk",
-                            expressions: exprs,
-                            predicate: None,
+                            expressions: parsed_exprs,
+                            predicate,
                             definition: Some(idx_ddl.unwrap_or_else(|| "AUTOINDEX".into())),
                             size_bytes: None,
                             scans: None,
@@ -1337,38 +1929,7 @@ impl Driver for Sqlite {
                     }
                 }
 
-                if let Ok(mut trg_stmt) = conn.prepare(
-                    "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
-                ) && let Ok(trg_rows) = trg_stmt.query_map([&obj.name], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-                }) {
-                    for (trg_name, trg_sql) in trg_rows.flatten() {
-                        let def = trg_sql.unwrap_or_default();
-                        let upper = def.to_ascii_uppercase();
-                        let timing = if upper.contains("BEFORE ") {
-                            "BEFORE"
-                        } else if upper.contains("INSTEAD OF ") {
-                            "INSTEAD OF"
-                        } else {
-                            "AFTER"
-                        };
-                        let mut events = Vec::new();
-                        for ev in ["INSERT", "UPDATE", "DELETE"] {
-                            if upper.contains(ev) {
-                                events.push(ev.to_owned());
-                            }
-                        }
-                        triggers.push(TriggerInfo {
-                            name: trg_name,
-                            table_name: obj.name.clone(),
-                            timing: timing.into(),
-                            events,
-                            orientation: "ROW".into(),
-                            enabled: true,
-                            definition: Some(def),
-                        });
-                    }
-                }
+                triggers = load_sqlite_triggers_sync(conn, &obj.name);
             }
 
             Ok(ObjectDetails {
@@ -1457,32 +2018,152 @@ impl Driver for Sqlite {
         let mut snap_tables = Vec::with_capacity(cat.len());
         for t in cat {
             let ts = self.schema(&t.table).await?;
-            let view_def: Option<String> = if t.kind == "view" {
+            let is_view = t.kind == "view";
+            let (relation_sql, xinfo_cols, snap_unique_constraints, snap_indexes, snap_triggers) =
                 self.with_conn(|conn| {
-                    Ok(conn
+                    let obj_type = if is_view { "view" } else { "table" };
+                    let rel_sql: Option<String> = conn
                         .query_row(
-                            "SELECT sql FROM sqlite_schema WHERE type = 'view' AND name = ?1",
-                            [&t.table.name],
+                            "SELECT sql FROM sqlite_schema WHERE type = ?1 AND name = ?2",
+                            rusqlite::params![obj_type, &t.table.name],
                             |r| r.get(0),
                         )
                         .ok()
-                        .flatten())
-                })?
-            } else {
-                None
-            };
+                        .flatten();
+
+                    let info_sql = format!(
+                        "PRAGMA main.table_xinfo({})",
+                        quote_sqlite_ident(&t.table.name)
+                    );
+                    let mut col_meta = Vec::new();
+                    if let Ok(mut c_stmt) = conn.prepare(&info_sql)
+                        && let Ok(rows) = c_stmt.query_map([], |row| {
+                            Ok((
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, i64>(3)? != 0,
+                                row.get::<_, Option<String>>(4)?,
+                                row.get::<_, i64>(5)?,
+                                row.get::<_, i64>(6)?,
+                            ))
+                        })
+                    {
+                        for item in rows.flatten() {
+                            if item.5 != 1 {
+                                col_meta.push(item);
+                            }
+                        }
+                    }
+
+                    let mut unique_cons = Vec::new();
+                    let mut indexes = Vec::new();
+                    if !is_view {
+                        let idx_list_sql = format!(
+                            "PRAGMA main.index_list({})",
+                            quote_sqlite_ident(&t.table.name)
+                        );
+                        if let Ok(mut idx_stmt) = conn.prepare(&idx_list_sql)
+                            && let Ok(idx_rows) = idx_stmt.query_map([], |r| {
+                                Ok((
+                                    r.get::<_, String>(1)?,
+                                    r.get::<_, i64>(2)? != 0,
+                                    r.get::<_, String>(3)?,
+                                ))
+                            })
+                        {
+                            for (idx_name, unique, origin) in idx_rows.flatten() {
+                                let cols_sql = format!(
+                                    "PRAGMA main.index_info({})",
+                                    quote_sqlite_ident(&idx_name)
+                                );
+                                let mut raw_cols = Vec::new();
+                                if let Ok(mut ic_stmt) = conn.prepare(&cols_sql)
+                                    && let Ok(ic_rows) =
+                                        ic_stmt.query_map([], |cr| cr.get::<_, Option<String>>(2))
+                                {
+                                    for col_opt in ic_rows.flatten() {
+                                        raw_cols.push(col_opt);
+                                    }
+                                }
+                                let idx_ddl: Option<String> = conn
+                                    .query_row(
+                                        "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = ?1",
+                                        [&idx_name],
+                                        |r| r.get(0),
+                                    )
+                                    .ok()
+                                    .flatten();
+                                let (exprs, predicate) =
+                                    parse_sqlite_index_ddl(idx_ddl.as_deref(), &raw_cols, true);
+                                if origin == "u" && unique {
+                                    let u_cols: Vec<String> =
+                                        raw_cols.iter().filter_map(|c| c.clone()).collect();
+                                    if !u_cols.is_empty() {
+                                        let quoted_u_cols = u_cols
+                                            .iter()
+                                            .map(|c| quote_sqlite_ident(c))
+                                            .collect::<Vec<_>>()
+                                            .join(", ");
+                                        unique_cons.push(ConstraintInfo {
+                                            name: idx_name.clone(),
+                                            kind: ConstraintKind::Unique,
+                                            columns: u_cols,
+                                            target: None,
+                                            target_columns: Vec::new(),
+                                            definition: format!("UNIQUE ({quoted_u_cols})"),
+                                        });
+                                    }
+                                }
+                                if origin == "c" {
+                                    indexes.push(SnapshotIndex {
+                                        name: idx_name,
+                                        method: "btree".into(),
+                                        unique,
+                                        primary: false,
+                                        expressions: exprs,
+                                        predicate,
+                                        definition: idx_ddl,
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    let triggers = load_sqlite_triggers_sync(conn, &t.table.name);
+                    Ok((rel_sql, col_meta, unique_cons, indexes, triggers))
+                })?;
+
             let mut snap_constraints = Vec::new();
             if !ts.primary_key.is_empty() {
+                let quoted_pk = ts
+                    .primary_key
+                    .iter()
+                    .map(|c| quote_sqlite_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 snap_constraints.push(ConstraintInfo {
                     name: format!("{}_pk", t.table.name),
                     kind: ConstraintKind::PrimaryKey,
                     columns: ts.primary_key.clone(),
                     target: None,
                     target_columns: Vec::new(),
-                    definition: format!("PRIMARY KEY ({})", ts.primary_key.join(", ")),
+                    definition: format!("PRIMARY KEY ({quoted_pk})"),
                 });
             }
+            snap_constraints.extend(snap_unique_constraints);
             for fk in &ts.foreign_keys {
+                let quoted_src = fk
+                    .columns
+                    .iter()
+                    .map(|c| quote_sqlite_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let quoted_dst = fk
+                    .target_columns
+                    .iter()
+                    .map(|c| quote_sqlite_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 snap_constraints.push(ConstraintInfo {
                     name: fk.name.clone(),
                     kind: ConstraintKind::ForeignKey,
@@ -1490,25 +2171,50 @@ impl Driver for Sqlite {
                     target: Some(fk.target.clone()),
                     target_columns: fk.target_columns.clone(),
                     definition: format!(
-                        "FOREIGN KEY ({}) REFERENCES {}({})",
-                        fk.columns.join(", "),
-                        fk.target.name,
-                        fk.target_columns.join(", ")
+                        "FOREIGN KEY ({quoted_src}) REFERENCES {} ({quoted_dst})",
+                        quote_sqlite_ident(&fk.target.name)
                     ),
                 });
             }
-            snap_tables.push(SnapshotTable {
-                name: t.table.name,
-                kind: if t.kind == "view" {
-                    DatabaseObjectKind::View
-                } else {
-                    DatabaseObjectKind::Table
-                },
-                comment: None,
-                partition_key: None,
-                view_definition: view_def,
-                columns: ts
-                    .columns
+
+            let snap_columns: Vec<SnapshotColumn> = if !xinfo_cols.is_empty() {
+                xinfo_cols
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (name, db_type, not_null, dflt, pk_ord, hidden))| {
+                        let data_type = if db_type.trim().is_empty() {
+                            "ANY".to_owned()
+                        } else {
+                            db_type
+                        };
+                        let (generated, default_expression) = match hidden {
+                            2 => (
+                                Some("VIRTUAL".to_owned()),
+                                dflt.or_else(|| {
+                                    extract_sqlite_generated_expr(relation_sql.as_deref(), &name)
+                                }),
+                            ),
+                            3 => (
+                                Some("STORED".to_owned()),
+                                dflt.or_else(|| {
+                                    extract_sqlite_generated_expr(relation_sql.as_deref(), &name)
+                                }),
+                            ),
+                            _ => (None, dflt),
+                        };
+                        SnapshotColumn {
+                            name,
+                            data_type,
+                            nullable: !not_null && pk_ord == 0,
+                            default_expression,
+                            identity: None,
+                            generated,
+                            ordinal_position: (idx + 1) as u32,
+                        }
+                    })
+                    .collect()
+            } else {
+                ts.columns
                     .into_iter()
                     .enumerate()
                     .map(|(idx, c)| SnapshotColumn {
@@ -1520,10 +2226,23 @@ impl Driver for Sqlite {
                         generated: None,
                         ordinal_position: (idx + 1) as u32,
                     })
-                    .collect(),
+                    .collect()
+            };
+
+            snap_tables.push(SnapshotTable {
+                name: t.table.name,
+                kind: if is_view {
+                    DatabaseObjectKind::View
+                } else {
+                    DatabaseObjectKind::Table
+                },
+                comment: None,
+                partition_key: None,
+                view_definition: if is_view { relation_sql } else { None },
+                columns: snap_columns,
                 constraints: snap_constraints,
-                indexes: Vec::new(),
-                triggers: Vec::new(),
+                indexes: snap_indexes,
+                triggers: snap_triggers,
             });
         }
         Ok(SchemaSnapshot {

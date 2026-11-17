@@ -108,6 +108,8 @@ export function IndexConstraintDialog({
   onClose(): void;
 }) {
   const isPostgres = profile.engine === "postgres";
+  const isSqlite = profile.engine === "sqlite";
+  const supportsPartialPredicate = isPostgres || isSqlite;
   const availableColumns = schema?.columns ?? [];
   const defaultColumnName = availableColumns[0]?.name ?? "id";
   const hasExistingPrimaryKey = Boolean(
@@ -126,7 +128,7 @@ export function IndexConstraintDialog({
   const [rawExpressions, setRawExpressions] = useState(false);
   const [indexColumns, setIndexColumns] = useState<string[]>(() => [defaultColumnName]);
   const [indexExpressions, setIndexExpressions] = useState<string[]>(() => [
-    isPostgres ? `lower("${defaultColumnName}")` : `\`${defaultColumnName}\`(32)`,
+    isPostgres || isSqlite ? `lower("${defaultColumnName}")` : `\`${defaultColumnName}\`(32)`,
   ]);
   const [indexPredicate, setIndexPredicate] = useState("");
 
@@ -250,7 +252,8 @@ export function IndexConstraintDialog({
           concurrently: isPostgres ? indexConcurrently : false,
           expressions: rawExpressions ? indexExpressions : indexColumns,
           rawExpressions,
-          predicate: isPostgres && indexPredicate.trim() ? indexPredicate.trim() : null,
+          predicate:
+            supportsPartialPredicate && indexPredicate.trim() ? indexPredicate.trim() : null,
         };
       case "dropIndex":
         return {
@@ -308,6 +311,7 @@ export function IndexConstraintDialog({
     onDelete,
     onUpdate,
     rawExpressions,
+    supportsPartialPredicate,
     targetColumns,
     targetSchema,
     targetTable,
@@ -425,7 +429,12 @@ export function IndexConstraintDialog({
                   if (!nextUniqueOk) setIndexUnique(false);
                 }}
               >
-                {(isPostgres ? PG_INDEX_METHODS : MYSQL_INDEX_METHODS).map((m) => (
+                {(isPostgres
+                  ? PG_INDEX_METHODS
+                  : isSqlite
+                    ? (["btree"] as const)
+                    : MYSQL_INDEX_METHODS
+                ).map((m) => (
                   <option key={m} value={m}>
                     {m.toUpperCase()}
                   </option>
@@ -607,7 +616,7 @@ export function IndexConstraintDialog({
               </div>
             )}
 
-            {isPostgres && (
+            {supportsPartialPredicate && (
               <label className="span-2">
                 Partial index predicate (optional WHERE clause)
                 <input

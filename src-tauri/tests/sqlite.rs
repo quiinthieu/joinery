@@ -7,7 +7,8 @@ async fn open_sqlite_studio(
     db_path: &str,
     mode: SafeMode,
 ) -> (Arc<Studio>, ConnectionProfile, SessionInfo) {
-    let studio = Studio::with_secrets(root, Arc::new(MemorySecrets::default())).unwrap();
+    let app_data_root = root.join("joinery-app-data");
+    let studio = Studio::with_secrets(&app_data_root, Arc::new(MemorySecrets::default())).unwrap();
     let profile = studio
         .save_profile(
             ConnectionProfile {
@@ -627,4 +628,619 @@ async fn sqlite_file_and_memory_end_to_end_explorer_grid_edits_transactions_sear
         .unwrap();
     assert_eq!(ro_browse.result.retained_rows, 3);
     ro_studio.disconnect(&ro_sess.id);
+}
+
+#[tokio::test]
+async fn sqlite_security_blocks_internal_metadata_symlinks_attach_and_readonly_limits() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_data_root = dir.path().join("app-metadata");
+    let user_dir = dir.path().join("user-workspace");
+    std::fs::create_dir_all(&user_dir).unwrap();
+
+    let studio = Studio::with_secrets(&app_data_root, Arc::new(MemorySecrets::default())).unwrap();
+
+    let make_profile = |db: &str, mode: SafeMode| ConnectionProfile {
+        id: new_id(),
+        name: "SQLite Sec Check".into(),
+        group_id: "local".into(),
+        engine: EngineKind::Sqlite,
+        host: String::new(),
+        port: 0,
+        database: db.into(),
+        username: String::new(),
+        environment: Environment::Local,
+        safe_mode: mode,
+        tls_mode: TlsMode::Disable,
+        ca_cert_path: None,
+        ssh: None,
+        remember_password: false,
+        store_query_text: true,
+        store_drafts: false,
+        snowflake: None,
+    };
+
+    // 1. Direct internal metadata files, backup subpaths, non-existent files inside Persistence::root,
+    //    files named `joinery.sqlite*`, and Snowflake state directories must all be blocked!
+    let symlink_to_app_db = user_dir.join("sneaky_link.db");
+    let symlink_to_app_dir = user_dir.join("sneaky_dir");
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(app_data_root.join("joinery.sqlite"), &symlink_to_app_db)
+            .unwrap();
+        std::os::unix::fs::symlink(&app_data_root, &symlink_to_app_dir).unwrap();
+    }
+
+    let blocked_paths = vec![
+        app_data_root.join("joinery.sqlite"),
+        app_data_root.join("backups").join("snapshot.sqlite"),
+        app_data_root.join("nonexistent_new.sqlite"),
+        user_dir.join("joinery.sqlite"),
+        user_dir.join("joinery.sqlite-wal"),
+        dir.path().join("snowflake-state").join("helper.sqlite"),
+        #[cfg(unix)]
+        symlink_to_app_db.clone(),
+        #[cfg(unix)]
+        symlink_to_app_dir.join("brand_new.sqlite"),
+    ];
+
+    for forbidden in &blocked_paths {
+        let p_str = forbidden.to_str().unwrap();
+        let save_err = studio
+            .save_profile(make_profile(p_str, SafeMode::Confirm), None)
+            .unwrap_err();
+        assert_eq!(
+            save_err.code,
+            ErrorCode::PolicyBlocked,
+            "Expected save_profile PolicyBlocked for {p_str}, got {save_err:?}"
+        );
+        let driver_err = joinery_core::drivers::sqlite::Sqlite::open(
+            &make_profile(p_str, SafeMode::ReadOnly),
+            "sec-test-sid",
+            vec![app_data_root.clone()],
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("Expected Sqlite::open to reject {p_str}"));
+        assert_eq!(driver_err.code, ErrorCode::PolicyBlocked);
+    }
+
+    // 2. Writable user SQLite session: benign ATTACH works, but ATTACH of joinery.sqlite / symlink
+    //    and PRAGMA writable_schema = ON are blocked at the SQLite authorizer level!
+    let user_db = user_dir.join("primary.sqlite");
+    let aux_db = user_dir.join("secondary.sqlite");
+    {
+        let c = rusqlite::Connection::open(&aux_db).unwrap();
+        c.execute_batch("CREATE TABLE aux_items (id INTEGER PRIMARY KEY, val TEXT); INSERT INTO aux_items VALUES (1, 'ok');")
+            .unwrap();
+    }
+    let rw_prof = studio
+        .save_profile(
+            make_profile(user_db.to_str().unwrap(), SafeMode::Confirm),
+            None,
+        )
+        .unwrap();
+    let rw_sess = studio
+        .connect(&rw_prof.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    assert!(rw_sess.capabilities.ddl_editing);
+
+    // Benign user database attach succeeds
+    let attach_ok = exec_sql(
+        &studio,
+        &rw_sess.id,
+        &format!(
+            "ATTACH DATABASE '{}' AS aux;",
+            aux_db.to_str().unwrap().replace('\'', "''")
+        ),
+    )
+    .await;
+    assert!(attach_ok.iter().any(|e| matches!(
+        e,
+        QueryEvent::Finished {
+            status: RunStatus::Completed,
+            ..
+        }
+    )));
+
+    // Attempting to ATTACH internal joinery.sqlite on a writable session is denied!
+    let attach_internal = exec_sql(
+        &studio,
+        &rw_sess.id,
+        &format!(
+            "ATTACH DATABASE '{}' AS stolen;",
+            app_data_root
+                .join("joinery.sqlite")
+                .to_str()
+                .unwrap()
+                .replace('\'', "''")
+        ),
+    )
+    .await;
+    assert!(attach_internal.iter().any(|e| matches!(
+        e,
+        QueryEvent::Error { error, .. } if error.code == ErrorCode::PolicyBlocked
+    )));
+
+    #[cfg(unix)]
+    {
+        let attach_symlink = exec_sql(
+            &studio,
+            &rw_sess.id,
+            &format!(
+                "ATTACH DATABASE '{}' AS stolen_link;",
+                symlink_to_app_db.to_str().unwrap().replace('\'', "''")
+            ),
+        )
+        .await;
+        assert!(attach_symlink.iter().any(|e| matches!(
+            e,
+            QueryEvent::Error { error, .. } if error.code == ErrorCode::PolicyBlocked
+        )));
+    }
+
+    let writable_schema_attempt =
+        exec_sql(&studio, &rw_sess.id, "PRAGMA writable_schema = ON;").await;
+    assert!(writable_schema_attempt.iter().any(|e| matches!(
+        e,
+        QueryEvent::Error { error, .. } if error.code == ErrorCode::PolicyBlocked
+    )));
+    studio.disconnect(&rw_sess.id);
+
+    // 3. ReadOnly SQLite session: SQLITE_LIMIT_ATTACHED == 0 + authorizer blocks ALL ATTACH
+    //    (even :memory: and benign files) and blocks PRAGMA query_only = OFF!
+    let (ro_driver, ro_info) = joinery_core::drivers::sqlite::Sqlite::open(
+        &make_profile(user_db.to_str().unwrap(), SafeMode::ReadOnly),
+        "ro-limit-sid",
+        vec![app_data_root.clone()],
+    )
+    .await
+    .unwrap();
+    assert!(!ro_info.capabilities.ddl_editing);
+    assert!(!ro_info.capabilities.table_editing);
+
+    struct NoopSink;
+    impl joinery_core::drivers::QuerySink for NoopSink {
+        fn limit(&mut self, _: &str) {}
+        fn describe(&mut self, _: Vec<ColumnInfo>) -> AppResult<()> {
+            Ok(())
+        }
+        fn rows(&mut self, _: Vec<TextRow>) -> AppResult<bool> {
+            Ok(true)
+        }
+        fn complete(&mut self, _: u64) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    let attach_mem_err = ro_driver
+        .execute(
+            "ATTACH DATABASE ':memory:' AS mem_aux",
+            StatementKind::Unknown,
+            &mut NoopSink,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(attach_mem_err.code, ErrorCode::PolicyBlocked);
+
+    let pragma_escape_err = ro_driver
+        .execute(
+            "PRAGMA query_only = OFF",
+            StatementKind::Unknown,
+            &mut NoopSink,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(pragma_escape_err.code, ErrorCode::PolicyBlocked);
+    ro_driver.close();
+}
+
+struct FixedCsvDialog(std::path::PathBuf);
+
+#[async_trait::async_trait]
+impl joinery_core::file_capability::FileDialogProvider for FixedCsvDialog {
+    async fn pick_save_file(
+        &self,
+        _: &str,
+        _: ExportFormat,
+    ) -> AppResult<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
+    async fn pick_open_csv(&self) -> AppResult<Option<std::path::PathBuf>> {
+        Ok(Some(self.0.clone()))
+    }
+    async fn pick_open_sql(&self) -> AppResult<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
+    async fn pick_save_sql(&self, _: &str) -> AppResult<Option<std::path::PathBuf>> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn sqlite_ddl_editing_schema_migration_query_result_editing_csv_import_and_live_compare() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_data_root = dir.path().join("app-metadata");
+    let db_left = dir.path().join("left_dev.sqlite");
+    let db_right = dir.path().join("right_target.sqlite");
+    let csv_file = dir.path().join("import_products.csv");
+    std::fs::write(
+        &csv_file,
+        "id,sku,price_cents\n101,SKU-ALPHA,1250\n102,SKU-BETA,3400\n",
+    )
+    .unwrap();
+
+    let studio = Studio::with_secrets_and_dialog(
+        &app_data_root,
+        Arc::new(MemorySecrets::default()),
+        Arc::new(FixedCsvDialog(csv_file.clone())),
+    )
+    .unwrap();
+
+    let mk_profile = |name: &str, path: &Path| ConnectionProfile {
+        id: new_id(),
+        name: name.into(),
+        group_id: "local".into(),
+        engine: EngineKind::Sqlite,
+        host: String::new(),
+        port: 0,
+        database: path.to_str().unwrap().into(),
+        username: String::new(),
+        environment: Environment::Local,
+        safe_mode: SafeMode::Confirm,
+        tls_mode: TlsMode::Disable,
+        ca_cert_path: None,
+        ssh: None,
+        remember_password: false,
+        store_query_text: true,
+        store_drafts: false,
+        snowflake: None,
+    };
+
+    let p_left = studio
+        .save_profile(mk_profile("SQLite Left", &db_left), None)
+        .unwrap();
+    let p_right = studio
+        .save_profile(mk_profile("SQLite Right", &db_right), None)
+        .unwrap();
+    let s_left = studio
+        .connect(&p_left.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    let s_right = studio
+        .connect(&p_right.id, ConnectionSecrets::default())
+        .await
+        .unwrap();
+    assert!(s_left.capabilities.ddl_editing);
+    assert!(s_right.capabilities.ddl_editing);
+
+    let run_plan = |plan: PreparedPlan| {
+        let studio = studio.clone();
+        async move {
+            let approval = if plan.requires_approval {
+                Some(
+                    studio
+                        .authorize(&plan.id, None, plan.confirmation_text.as_deref())
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let (tx, rx) = mpsc::unbounded_channel();
+            studio
+                .execute(
+                    &plan.id,
+                    approval.as_deref(),
+                    Arc::new(move |e| tx.send(e).is_ok()),
+                )
+                .unwrap();
+            let evs = finish_events(rx).await;
+            assert!(
+                evs.iter().any(|e| matches!(
+                    e,
+                    QueryEvent::Finished {
+                        status: RunStatus::Completed,
+                        ..
+                    }
+                )),
+                "Expected plan execution to complete: {evs:?}"
+            );
+            evs
+        }
+    };
+
+    // 1. Structured TableObjectAction + IndexConstraintAction + TableMaintenanceAction on real SQLite!
+    let products_ref = TableRef {
+        schema: "main".into(),
+        name: "products".into(),
+    };
+    let create_plan = studio
+        .prepare_table_object_ddl(
+            &s_left.id,
+            joinery_core::ddl::TableObjectAction::CreateTable {
+                table: products_ref.clone(),
+                columns: vec![
+                    joinery_core::ddl::TableColumnDraft {
+                        name: "id".into(),
+                        data_type: "INTEGER".into(),
+                        nullable: false,
+                        default_expression: None,
+                        auto_increment: true,
+                        primary_key: true,
+                    },
+                    joinery_core::ddl::TableColumnDraft {
+                        name: "code".into(),
+                        data_type: "TEXT".into(),
+                        nullable: false,
+                        default_expression: None,
+                        auto_increment: false,
+                        primary_key: false,
+                    },
+                ],
+                comment: Some("Ignored with warning on SQLite".into()),
+            },
+        )
+        .unwrap();
+    run_plan(create_plan).await;
+
+    // Add column `price_cents`, rename `code` -> `sku`, add partial index, run ANALYZE + REINDEX + VACUUM
+    let add_col_plan = studio
+        .prepare_table_object_ddl(
+            &s_left.id,
+            joinery_core::ddl::TableObjectAction::AddColumn {
+                table: products_ref.clone(),
+                column: joinery_core::ddl::TableColumnDraft {
+                    name: "price_cents".into(),
+                    data_type: "INTEGER".into(),
+                    nullable: false,
+                    default_expression: Some("0".into()),
+                    auto_increment: false,
+                    primary_key: false,
+                },
+            },
+        )
+        .unwrap();
+    run_plan(add_col_plan).await;
+
+    let rename_col_plan = studio
+        .prepare_table_object_ddl(
+            &s_left.id,
+            joinery_core::ddl::TableObjectAction::AlterColumn {
+                table: products_ref.clone(),
+                column_name: "code".into(),
+                new_name: Some("sku".into()),
+                data_type: "TEXT".into(),
+                nullable: false,
+                default_expression: None,
+                using_expression: None,
+            },
+        )
+        .unwrap();
+    run_plan(rename_col_plan).await;
+
+    let create_idx_plan = studio
+        .prepare_index_constraint_ddl(
+            &s_left.id,
+            joinery_core::ddl::IndexConstraintAction::CreateIndex {
+                table: products_ref.clone(),
+                name: "idx_products_expensive".into(),
+                unique: false,
+                method: "btree".into(),
+                concurrently: false,
+                expressions: vec!["sku".into()],
+                raw_expressions: false,
+                predicate: Some("price_cents > 1000".into()),
+            },
+        )
+        .unwrap();
+    assert!(
+        create_idx_plan.statements[0]
+            .sql
+            .contains("CREATE INDEX \"main\".\"idx_products_expensive\" ON \"products\" (\"sku\") WHERE price_cents > 1000;")
+    );
+    run_plan(create_idx_plan).await;
+
+    for maint in [
+        joinery_core::ddl::TableMaintenanceAction::Analyze {
+            table: products_ref.clone(),
+            verbose: false,
+            columns: vec![],
+        },
+        joinery_core::ddl::TableMaintenanceAction::ReindexTable {
+            table: products_ref.clone(),
+        },
+        joinery_core::ddl::TableMaintenanceAction::Vacuum {
+            table: products_ref.clone(),
+            analyze: false,
+            verbose: false,
+            full: false,
+        },
+    ] {
+        let m_plan = studio.prepare_table_maintenance(&s_left.id, maint).unwrap();
+        run_plan(m_plan).await;
+    }
+
+    // 2. Reviewed CSV Import into `products` on SQLite!
+    let picked = studio.pick_import_source().await.unwrap().unwrap();
+    let csv_opts = CsvImportOptions::default();
+    let csv_preview = studio
+        .preview_csv_import(
+            &s_left.id,
+            &picked.token,
+            &products_ref,
+            csv_opts.clone(),
+            vec![],
+        )
+        .await
+        .unwrap();
+    assert!(csv_preview.can_prepare);
+    assert_eq!(csv_preview.total_rows, 2);
+    let preview_token = csv_preview
+        .preview_token
+        .clone()
+        .expect("SQLite CSV import must issue previewToken");
+    let batch_preview = studio
+        .prepare_csv_import_batch(
+            &s_left.id,
+            &picked.token,
+            &products_ref,
+            csv_opts,
+            csv_preview.mappings.clone(),
+            0,
+            &preview_token,
+        )
+        .await
+        .unwrap();
+    assert_eq!(batch_preview.row_count, 2);
+    run_plan(batch_preview.plan).await;
+
+    // 3. Single-table SELECT query result editing + TEMP table shadow read-only safety guard!
+    let sel_events = exec_sql(
+        &studio,
+        &s_left.id,
+        "SELECT id, sku, price_cents FROM products ORDER BY id;",
+    )
+    .await;
+    let sel_res = sel_events
+        .iter()
+        .find_map(|e| match e {
+            QueryEvent::Result { result } => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            sel_res.editability,
+            Some(ResultEditability::Editable { .. })
+        ),
+        "Expected SQLite single-table SELECT to be editable, got {:?}",
+        sel_res.editability
+    );
+    let q_edit = studio
+        .prepare_table_changes(
+            &s_left.id,
+            TableChanges {
+                result_id: Some(sel_res.id.clone()),
+                updates: vec![ResultChanges {
+                    result_id: sel_res.id.clone(),
+                    changes: vec![CellChange {
+                        row: 0,
+                        column: sel_res.columns[2].id.clone(),
+                        value: Some("1500".into()),
+                    }],
+                }],
+                deletes: vec![],
+                inserts: vec![],
+            },
+        )
+        .unwrap();
+    run_plan(q_edit.plan).await;
+
+    // Shadow `products` with a TEMP table: unqualified SELECT * FROM products MUST become read-only!
+    exec_sql(
+        &studio,
+        &s_left.id,
+        "CREATE TEMP TABLE products (id INTEGER PRIMARY KEY, sku TEXT, price_cents INTEGER);",
+    )
+    .await;
+    let shadow_events = exec_sql(&studio, &s_left.id, "SELECT * FROM products;").await;
+    let shadow_res = shadow_events
+        .iter()
+        .find_map(|e| match e {
+            QueryEvent::Result { result } => Some(result.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        matches!(
+            shadow_res.editability,
+            Some(ResultEditability::ReadOnly { .. })
+        ),
+        "Shadowed temp table SELECT must be ReadOnly, got {:?}",
+        shadow_res.editability
+    );
+    exec_sql(&studio, &s_left.id, "DROP TABLE temp.products;").await;
+
+    // 4. Schema Diff + Migration DDL execution converging `s_right` to match `s_left` (including FK + View)!
+    exec_sql(
+        &studio,
+        &s_left.id,
+        "CREATE TABLE product_reviews (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), rating INTEGER NOT NULL DEFAULT 5);",
+    )
+    .await;
+    exec_sql(
+        &studio,
+        &s_left.id,
+        "CREATE VIEW expensive_products_v AS SELECT id, sku, price_cents FROM products WHERE price_cents >= 1500;",
+    )
+    .await;
+
+    let snap_left = studio.schema_snapshot(&s_left.id, "main").await.unwrap();
+    let snap_right_before = studio.schema_snapshot(&s_right.id, "main").await.unwrap();
+    let mig_plan =
+        joinery_core::ddl::generate_migration_ddl(&snap_right_before, &snap_left, Some("main"))
+            .unwrap();
+    assert!(!mig_plan.statements.is_empty());
+
+    let prepared_mig = studio
+        .prepare_migration_ddl(&s_right.id, snap_right_before, mig_plan.statements)
+        .await
+        .unwrap();
+    run_plan(prepared_mig).await;
+
+    let snap_right_after = studio.schema_snapshot(&s_right.id, "main").await.unwrap();
+    let post_diff =
+        joinery_core::schema_diff::compare_schema_snapshots(snap_right_after, snap_left);
+    assert!(
+        post_diff.entries.is_empty(),
+        "Expected 0 schema differences after applying SQLite migration DDL, got: {:?}",
+        post_diff.entries
+    );
+
+    // 5. Seed one row in `s_right.products` and run LiveTable vs LiveTable `compare_data`!
+    exec_sql(
+        &studio,
+        &s_right.id,
+        "INSERT INTO products (id, sku, price_cents) VALUES (101, 'SKU-ALPHA', 1250);",
+    )
+    .await;
+    let cmp_report = studio
+        .compare_data(CompareRequest {
+            left: CompareSide::LiveTable {
+                session_id: s_left.id.clone(),
+                table: products_ref.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("Left products".into()),
+            },
+            right: CompareSide::LiveTable {
+                session_id: s_right.id.clone(),
+                table: products_ref.clone(),
+                query: BrowseQuery::default(),
+                approval: None,
+                label: Some("Right products".into()),
+            },
+            key_columns: vec!["id".into()],
+            ignore_column_case: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(cmp_report.different_count, 1); // id=101: 1500 vs 1250
+    assert_eq!(cmp_report.only_left_count, 1); // id=102 only on left
+
+    // Drop index via structured IndexConstraintAction::DropIndex
+    let drop_idx_plan = studio
+        .prepare_index_constraint_ddl(
+            &s_left.id,
+            joinery_core::ddl::IndexConstraintAction::DropIndex {
+                table: products_ref.clone(),
+                name: "idx_products_expensive".into(),
+                concurrently: false,
+            },
+        )
+        .unwrap();
+    run_plan(drop_idx_plan).await;
+
+    studio.disconnect(&s_left.id);
+    studio.disconnect(&s_right.id);
 }

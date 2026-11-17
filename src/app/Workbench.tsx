@@ -305,7 +305,9 @@ export function Workbench({
   const tableImportable =
     tableEditable &&
     profile?.safeMode !== "readOnly" &&
-    (profile?.engine === "postgres" || profile?.engine === "mysql") &&
+    (profile?.engine === "postgres" ||
+      profile?.engine === "mysql" ||
+      profile?.engine === "sqlite") &&
     tab.schema!.columns.some((col) => col.insertable);
   const mutatingDisabled = running || tab.loadingPage || tab.status === "outcomeUnknown";
   const selectedDraftIds: string[] = [];
@@ -1825,7 +1827,9 @@ export function Workbench({
           columns={tab.schema?.columns ?? []}
           disabledReason={queryLock}
           searchNote={
-            profile?.engine === "postgres" ? "case-insensitive text" : "follows column collation"
+            profile?.engine === "postgres" || profile?.engine === "sqlite"
+              ? "case-insensitive text"
+              : "follows column collation"
           }
           onChange={applyQuery}
         />

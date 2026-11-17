@@ -108,7 +108,9 @@ export function tableLookup(
       if (!candidates.length && engine === "mysql" && caseSensitiveTableNames === undefined)
         candidates = folded.get(JSON.stringify(names.map((p) => p.toLowerCase()))) ?? [];
       if (parts.length === 1 && candidates.length > 1) {
-        const schema = defaultSchema ?? (engine === "postgres" ? "public" : undefined);
+        const schema =
+          defaultSchema ??
+          (engine === "postgres" ? "public" : engine === "sqlite" ? "main" : undefined);
         if (schema) {
           const preferred = candidates.filter((t) => t.schema === schema);
           if (preferred.length === 1) return preferred[0];

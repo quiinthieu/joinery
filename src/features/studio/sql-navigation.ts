@@ -1496,7 +1496,13 @@ function resolveNonTabularObject(
   if (!schemaIdent) {
     const pathOrder =
       context.searchPath ??
-      (context.defaultSchema ? [context.defaultSchema] : engine === "postgres" ? ["public"] : []);
+      (context.defaultSchema
+        ? [context.defaultSchema]
+        : engine === "postgres"
+          ? ["public"]
+          : engine === "sqlite"
+            ? ["main"]
+            : []);
     candidates =
       pathOrder
         .map((schema) => candidates.filter((c) => c.object.schema === schema))
