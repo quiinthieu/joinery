@@ -71,6 +71,7 @@ import {
   isSnowflakeConsoleSession,
   assertOrdinarySession,
   isConsoleOwnedResult,
+  isResultReferencedByOtherTabs,
 } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
@@ -408,7 +409,13 @@ export function Workbench({
       ? selectedRows[0]
       : activeCell
         ? activeCell.insert
-          ? activeCell.row
+          ? (() => {
+              const draftIdx = draftInserts.findIndex(
+                (draft) => draft.id === activeCell.insert!.insertId,
+              );
+              const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
+              return draftIdx >= 0 ? baseRows + draftIdx : null;
+            })()
           : tab.kind === "table"
             ? (() => {
                 const page = tab.pages.find((p) => p.result.id === activeCell.resultId);
@@ -572,15 +579,22 @@ export function Workbench({
         void state
           .disconnectQuerySession(tab.querySession.id)
           .catch((error) => state.notify(messageOf(error)));
+      const excluding = new Set([tab.id]);
+      const currentTabs = useStudio.getState().tabs;
       for (const result of tab.results) {
-        resultCache.release(result.id);
         dirtyStore.clearTab(result.id, [result.id]);
-        if (!isConsoleOwnedResult(result))
-          void client.call("release_result", { resultId: result.id }).catch(() => {});
+        if (!isResultReferencedByOtherTabs(currentTabs, excluding, result.id)) {
+          resultCache.release(result.id);
+          if (!isConsoleOwnedResult(result))
+            void client.call("release_result", { resultId: result.id }).catch(() => {});
+        }
       }
       state.updateTab(tab.id, {
         connectionId: connectionId || null,
         results: [],
+        pinnedResultIds: undefined,
+        pinnedResultLabels: undefined,
+        resultLayouts: undefined,
         activeResultId: null,
         status: "idle",
         error: null,

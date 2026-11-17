@@ -391,17 +391,23 @@ export function App() {
         ]
       : [];
   const activeQueryResult =
-    current?.kind === "query"
+    current?.kind === "query" || current?.kind === "result" || current?.kind === "workspaceSql"
       ? (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0])
       : undefined;
   const hasCopyableGrid =
-    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    ((current?.kind === "query" || current?.kind === "result") &&
+      !!activeQueryResult &&
+      activeQueryResult.columns.length > 0) ||
     (current?.kind === "table" &&
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0) ||
     current?.kind === "benchmark";
   const hasExportableData =
-    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    ((current?.kind === "query" ||
+      current?.kind === "result" ||
+      current?.kind === "workspaceSql") &&
+      !!activeQueryResult &&
+      activeQueryResult.columns.length > 0) ||
     (current?.kind === "table" &&
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0);
@@ -424,7 +430,8 @@ export function App() {
       false) ||
     state.tabs.some(
       (t) =>
-        (t.kind === "query" && t.results.some((r) => r.columns.length > 0)) ||
+        ((t.kind === "query" || t.kind === "result" || t.kind === "workspaceSql") &&
+          t.results.some((r) => r.columns.length > 0)) ||
         (t.kind === "table" && t.pages.length > 0),
     );
   const copyCommands = [
@@ -1966,7 +1973,10 @@ export function App() {
                 subtitleLabel={
                   targetTab.kind === "result"
                     ? targetTab.title
-                    : `${targetTab.title} · Query ${activeResult.statementIndex + 1}`
+                    : `${targetTab.title} · ${
+                        targetTab.pinnedResultLabels?.[activeResult.id] ??
+                        `Query ${activeResult.statementIndex + 1}`
+                      }`
                 }
                 columns={activeResult.columns}
                 layout={targetTab.resultLayouts?.[activeResult.id] ?? null}
@@ -1991,7 +2001,9 @@ export function App() {
                 ? state.sessions[targetProfile.id]
                 : undefined;
           const targetResult =
-            targetTab.kind === "query" || targetTab.kind === "result"
+            targetTab.kind === "query" ||
+            targetTab.kind === "result" ||
+            targetTab.kind === "workspaceSql"
               ? (targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
                 targetTab.results[0])
               : undefined;

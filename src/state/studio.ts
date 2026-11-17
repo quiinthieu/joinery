@@ -837,7 +837,7 @@ function samePhysicalColumnShape(
   });
 }
 
-function isResultReferencedByOtherTabs(
+export function isResultReferencedByOtherTabs(
   tabs: readonly StudioTab[],
   excludingTabIds: ReadonlySet<string>,
   resultId: string,
@@ -1544,15 +1544,27 @@ export const useStudio = create<StudioState>((set, get) => ({
     const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: receipt };
     rememberConsoleReceipts(receipts); // Fails before any remote admission.
     set({ snowflakeConsoleReceipts: receipts });
+    const pinnedSet = new Set(active.pinnedResultIds ?? []);
+    const keptResults = active.results.filter((r) => pinnedSet.has(r.id));
+    const excluding = new Set([tabId]);
     for (const result of active.results) {
-      resultCache.release(result.id);
+      if (pinnedSet.has(result.id)) continue;
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
+    const nextLayouts = active.resultLayouts
+      ? Object.fromEntries(
+          Object.entries(active.resultLayouts).filter(([rid]) => pinnedSet.has(rid)),
+        )
+      : undefined;
     get().updateTab(tabId, {
-      results: [],
+      results: keptResults,
       activeResultId: null,
+      resultLayouts: nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
       status: "queued",
       runId: null,
       revision,
@@ -1847,13 +1859,18 @@ export const useStudio = create<StudioState>((set, get) => ({
         (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
       );
       if (tab && querySessionForTab(tab, get().sessions)?.id === next.sessionId) {
+        const pinnedSet = new Set(tab.pinnedResultIds ?? []);
+        const keptPinned = tab.results.filter(
+          (r) => pinnedSet.has(r.id) && !liveIds.has(r.id) && !releasedIds.has(r.id),
+        );
+        const mergedResults = keptPinned.length > 0 ? [...keptPinned, ...results] : results;
         get().updateTab(tab.id, {
           status: consoleRunStatus(view),
           runId: consoleReceiptHeld(next) ? next.runId! : null,
-          results,
-          activeResultId: results.some((r) => r.id === tab.activeResultId)
+          results: mergedResults,
+          activeResultId: mergedResults.some((r) => r.id === tab.activeResultId)
             ? tab.activeResultId
-            : (results[0]?.id ?? null),
+            : (results[0]?.id ?? keptPinned[0]?.id ?? null),
         });
       }
       if (current.cancellationRequested && !view.run.terminal)
@@ -2043,11 +2060,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         .catch((error) => get().notify(messageOf(error)));
       return false;
     }
+    const excluding = new Set([tabId]);
     for (const result of current.results) {
-      resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     set((state) => {
       const existing = (state.sessionPool[session.connectionId] ?? []).filter(
@@ -2067,6 +2087,9 @@ export const useStudio = create<StudioState>((set, get) => ({
                 querySession: session,
                 querySessionClosed: false,
                 results: [],
+                pinnedResultIds: undefined,
+                pinnedResultLabels: undefined,
+                resultLayouts: undefined,
                 planSource: undefined,
                 activeResultId: null,
                 dataSessionId: null,
@@ -2109,11 +2132,14 @@ export const useStudio = create<StudioState>((set, get) => ({
       return true;
     }
     if (targetInfo) sealConsoleSession(targetInfo);
+    const excluding = new Set([tabId]);
     for (const result of current.results) {
-      resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     get().updateTab(tabId, {
       querySession: targetInfo,
@@ -2121,6 +2147,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       snowflakeDdlResult: undefined,
       snowflakeDmlResult: undefined,
       results: [],
+      pinnedResultIds: undefined,
+      pinnedResultLabels: undefined,
+      resultLayouts: undefined,
       planSource: undefined,
       activeResultId: null,
       dataSessionId: null,

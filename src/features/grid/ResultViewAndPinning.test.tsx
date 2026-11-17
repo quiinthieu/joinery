@@ -136,6 +136,7 @@ describe("Local query result filter/sort and pinned console result subtabs", () 
     await waitFor(() => {
       expect(screen.getByTestId("mapped-indices").textContent).toBe("2,0");
     });
+    expect(document.querySelector(".result-quick-filter-count")?.textContent).toBe("2 / 4");
 
     fireEvent.change(screen.getByLabelText("Result filter column"), {
       target: { value: "c_name" },
@@ -144,14 +145,49 @@ describe("Local query result filter/sort and pinned console result subtabs", () 
     await waitFor(() => {
       expect(screen.getByTestId("mapped-indices").textContent).toBe("2");
     });
+    expect(document.querySelector(".result-quick-filter-count")?.textContent).toBe("1 / 4");
 
-    fireEvent.click(screen.getByRole("button", { name: "Reset result filter and sort" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
     expect(screen.getByTestId("mapped-indices").textContent).toBe("unfiltered");
+    expect(document.querySelector(".result-quick-filter-count")).toBeNull();
     expect(callSpy).toHaveBeenCalled();
 
-    // Respects lockedReason when pending edits exist
+    // Surfaces inline error badge when query_result_view rejects (e.g. >100k row sort limit)
+    vi.spyOn(client, "call").mockRejectedValueOnce(
+      new Error("In-memory result sorting is capped at 100000 matching rows"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Sort ID" }));
+    await waitFor(() => {
+      expect(document.querySelector(".result-quick-filter-error")?.textContent).toContain(
+        "capped at 100000",
+      );
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
+    expect(document.querySelector(".result-quick-filter-error")).toBeNull();
+
+    // Respects lockedReason on both toggleSort AND resetView when pending edits exist
     const notify = vi.fn();
-    render(
+    vi.spyOn(client, "call").mockResolvedValue({
+      resultId: "res-locked",
+      rowIndices: [0],
+      matchedRows: 1,
+      scannedRows: 5,
+      truncated: false,
+      elapsedMs: 1,
+    });
+    const { rerender } = render(
+      <ResultFilterHarness
+        result={makeResult("res-locked")}
+        lockedReason={null}
+        onNotify={notify}
+      />,
+    );
+    const filterInputs = screen.getAllByLabelText("Filter result rows");
+    fireEvent.change(filterInputs[1], { target: { value: "row0" } });
+    await waitFor(() => {
+      expect(screen.getAllByTestId("mapped-indices")[1].textContent).toBe("0");
+    });
+    rerender(
       <ResultFilterHarness
         result={makeResult("res-locked")}
         lockedReason="Review pending edits first"
@@ -161,6 +197,9 @@ describe("Local query result filter/sort and pinned console result subtabs", () 
     const sortButtons = screen.getAllByRole("button", { name: "Sort ID" });
     fireEvent.click(sortButtons[1]);
     expect(notify).toHaveBeenCalledWith("Review pending edits first");
+    fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
+    expect(notify).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByTestId("mapped-indices")[1].textContent).toBe("0");
   });
 
   it("pins result subtabs across query re-executions, releases only unpinned snapshots, and enforces cap", async () => {
@@ -255,5 +294,69 @@ describe("Local query result filter/sort and pinned console result subtabs", () 
       false,
     );
     expect(useStudio.getState().toast).toMatch(/at most 8 results/i);
+
+    // Switching console session clears pinnedResultIds/Labels and preserves results referenced by another tab
+    released.length = 0;
+    const shared = makeResult("res-shared-detached", 0, 2);
+    const localOnly = makeResult("res-local-only", 1, 2);
+    useStudio.setState({
+      sessionPool: {
+        "conn-1": [
+          {
+            label: "Console #2",
+            primary: false,
+            info: {
+              id: "sess-pool-2",
+              connectionId: "conn-1",
+              engine: "postgres",
+              serverVersion: "18.0",
+              latencyMs: 1,
+              encrypted: false,
+              consoleMode: false,
+              capabilities: {
+                sql: true,
+                transactions: true,
+                explicitTransactionControls: false,
+                cancellation: true,
+                tableBrowsing: true,
+                relationBrowsing: false,
+                tableEditing: true,
+                tableFiltering: true,
+                processes: true,
+                objectExplorer: true,
+                schemaDiagram: true,
+                schemaDiff: true,
+                ddlEditing: true,
+                snowflakeReviewedDdl: false,
+                snowflakeGridEditing: false,
+                lockInspection: true,
+                explainAnalyze: true,
+                oauthBrowser: false,
+              },
+            },
+          },
+        ],
+      },
+    });
+    const otherTabId = useStudio.getState().openQuery("conn-1", "SELECT 2;");
+    useStudio.getState().updateTab(otherTabId, {
+      kind: "result",
+      status: "completed",
+      results: [shared],
+      activeResultId: shared.id,
+    });
+    useStudio.getState().updateTab(tabId, {
+      status: "completed",
+      results: [shared, localOnly],
+      activeResultId: shared.id,
+      pinnedResultIds: [shared.id],
+      pinnedResultLabels: { [shared.id]: "Pinned #1" },
+    });
+    expect(useStudio.getState().attachQuerySession(tabId, "sess-pool-2")).toBe(true);
+    expect(released).toEqual([localOnly.id]);
+    tab = useStudio.getState().tabs.find((t) => t.id === tabId)!;
+    expect(tab.results).toEqual([]);
+    expect(tab.pinnedResultIds).toBeUndefined();
+    expect(tab.pinnedResultLabels).toBeUndefined();
   });
 });

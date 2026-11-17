@@ -194,7 +194,17 @@ export function useResultViewState(
     },
     resetView: () => {
       if (!resultId) return;
+      if (options?.lockedReason) {
+        options.onNotify?.(options.lockedReason);
+        return;
+      }
       setConfigs((prev) => {
+        if (!(resultId in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[resultId];
+        return copy;
+      });
+      setErrors((prev) => {
         if (!(resultId in prev)) return prev;
         const copy = { ...prev };
         delete copy[resultId];
@@ -291,11 +301,39 @@ export function ResultQuickFilterBar({
           Aa
         </button>
       )}
-      {active && (
+      {active && response && !error && (
+        <span
+          className="badge result-quick-filter-count"
+          aria-live="polite"
+          title={
+            response.truncated
+              ? `Showing first ${response.rowIndices.length.toLocaleString()} of ${response.matchedRows.toLocaleString()} matching rows (${response.scannedRows.toLocaleString()} scanned)`
+              : `Showing ${response.rowIndices.length.toLocaleString()} of ${response.scannedRows.toLocaleString()} rows`
+          }
+        >
+          {response.rowIndices.length.toLocaleString()} / {response.scannedRows.toLocaleString()}
+          {response.truncated ? "+" : ""}
+        </span>
+      )}
+      {error && (
+        <span
+          className="badge warning result-quick-filter-error"
+          role="status"
+          title={error}
+          style={{
+            maxWidth: 260,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {error}
+        </span>
+      )}
+      {(active || Boolean(error)) && (
         <button
           type="button"
           className="button ghost small"
-          aria-label="Reset result filter and sort"
           disabled={disabled}
           title={
             error

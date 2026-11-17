@@ -161,7 +161,13 @@ fn cell_matches_filter(
     case_sensitive: bool,
     needle_is_ascii: bool,
 ) -> bool {
-    let text = cell.unwrap_or("NULL");
+    let Some(text) = cell else {
+        return if case_sensitive {
+            needle_raw == "NULL"
+        } else {
+            needle_lower == "null"
+        };
+    };
     if case_sensitive {
         text.contains(needle_raw)
     } else if needle_is_ascii && text.is_ascii() {
@@ -373,12 +379,18 @@ pub fn compute_result_view(
             }
             matched_rows += 1;
             if keyed_rows.len() >= MAX_RESULT_VIEW_ROWS {
-                truncated = true;
-                continue;
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    format!(
+                        "In-memory result sorting is capped at {MAX_RESULT_VIEW_ROWS} matching rows to prevent partial top-N distortion; narrow the row filter or add an ORDER BY clause in SQL."
+                    ),
+                ));
             }
             let Ok(idx_u32) = u32::try_from(actual_idx) else {
-                truncated = true;
-                continue;
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    "Result row index exceeds 32-bit in-memory sort range; filter or order in SQL.",
+                ));
             };
             let mut keys = Vec::with_capacity(sort_mapped.len());
             let mut row_mem = 32usize;
@@ -392,8 +404,10 @@ pub fn compute_result_view(
                 keys.push(val);
             }
             if sort_memory_bytes.saturating_add(row_mem) > MAX_SORT_KEY_MEMORY_BYTES {
-                truncated = true;
-                continue;
+                return Err(AppError::new(
+                    ErrorCode::ResultLimitReached,
+                    "In-memory sort keys exceeded the 32 MiB budget; narrow the row filter or sort in SQL with ORDER BY.",
+                ));
             }
             sort_memory_bytes += row_mem;
             keyed_rows.push((idx_u32, keys));
@@ -573,11 +587,12 @@ mod tests {
         // Rows 1 & 3 both have amount = NULL; secondary sort c_big ASC orders 9007199254740991 (row 3) before 9007199254740993 (row 1)!
         assert_eq!(desc_all.row_indices, vec![3, 1, 0, 2]);
 
-        // 3. Searching "null" matches NULL cells when filtering across columns
+        // 3. Searching "null" matches NULL cells when filtering across columns,
+        //    while partial substrings like "ul" or "u" do NOT false-match NULL cells!
         let null_hits = compute_result_view(
             &store,
             &ResultViewRequest {
-                result_id: info.id,
+                result_id: info.id.clone(),
                 filter_text: Some("null".into()),
                 filter_column_id: None,
                 case_sensitive: false,
@@ -586,5 +601,96 @@ mod tests {
         )
         .unwrap();
         assert_eq!(null_hits.row_indices, vec![1, 3]);
+
+        let non_null_substring = compute_result_view(
+            &store,
+            &ResultViewRequest {
+                result_id: info.id,
+                filter_text: Some("ul".into()),
+                filter_column_id: None,
+                case_sensitive: false,
+                sort: vec![],
+            },
+        )
+        .unwrap();
+        assert!(non_null_substring.row_indices.is_empty());
+    }
+
+    #[test]
+    fn rejects_in_memory_sort_above_row_cap_instead_of_silently_distorting_top_rows() {
+        let store = ResultStore::default();
+        let created = store
+            .create(
+                "run-view-cap",
+                0,
+                vec![make_col("c_id", "id", ColumnKind::Integer)],
+                None,
+            )
+            .unwrap();
+        let total = MAX_RESULT_VIEW_ROWS + 5;
+        let mut chunk = Vec::with_capacity(2048);
+        for i in 0..total {
+            chunk.push(vec![Some(i.to_string())]);
+            if chunk.len() == 2048 {
+                assert!(
+                    store
+                        .append(&created.id, std::mem::take(&mut chunk))
+                        .unwrap()
+                );
+            }
+        }
+        if !chunk.is_empty() {
+            assert!(store.append(&created.id, chunk).unwrap());
+        }
+        let info = store.finish(&created.id, false).unwrap();
+
+        // Unsorted filter-free view caps cleanly with truncated = true
+        let unsorted = compute_result_view(
+            &store,
+            &ResultViewRequest {
+                result_id: info.id.clone(),
+                filter_text: None,
+                filter_column_id: None,
+                case_sensitive: false,
+                sort: vec![],
+            },
+        )
+        .unwrap();
+        assert!(unsorted.truncated);
+        assert_eq!(unsorted.row_indices.len(), MAX_RESULT_VIEW_ROWS);
+
+        // Unfiltered DESC sort over >100,000 rows MUST fail with ResultLimitReached rather than sorting only 0..99,999
+        let err = compute_result_view(
+            &store,
+            &ResultViewRequest {
+                result_id: info.id.clone(),
+                filter_text: None,
+                filter_column_id: None,
+                case_sensitive: false,
+                sort: vec![ResultSortSpec {
+                    column_id: "c_id".into(),
+                    descending: true,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::ResultLimitReached);
+
+        // Narrowing via filter below MAX_RESULT_VIEW_ROWS allows exact DESC sort including row 100,004!
+        let filtered_sort = compute_result_view(
+            &store,
+            &ResultViewRequest {
+                result_id: info.id,
+                filter_text: Some("10000".into()),
+                filter_column_id: Some("c_id".into()),
+                case_sensitive: false,
+                sort: vec![ResultSortSpec {
+                    column_id: "c_id".into(),
+                    descending: true,
+                }],
+            },
+        )
+        .unwrap();
+        assert_eq!(filtered_sort.row_indices[0], 100_004);
     }
 }

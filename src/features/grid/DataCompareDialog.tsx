@@ -81,7 +81,7 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
     const connPrefix = tab.connectionId
       ? `${profileNames.get(tab.connectionId) ?? "Connection"} · `
       : "";
-    if (tab.kind === "query" || tab.kind === "result") {
+    if (tab.kind === "query" || tab.kind === "result" || tab.kind === "workspaceSql") {
       for (const res of tab.results) {
         if (res.columns.length === 0) continue;
         const suffix = res.status === "truncated" ? " · truncated" : "";
@@ -89,7 +89,7 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
         items.push({
           id: `query:${tab.id}:${res.id}`,
           label:
-            tab.kind === "result"
+            tab.kind === "result" || tab.kind === "workspaceSql"
               ? `${connPrefix}${tab.title} (${res.retainedRows.toLocaleString()} rows${suffix})`
               : `${connPrefix}${tab.title} · ${pinnedLabel ?? `Query ${res.statementIndex + 1}`} (${res.retainedRows.toLocaleString()} rows${suffix})`,
           resultIds: [res.id],
@@ -702,7 +702,7 @@ export function DataCompareDialog({
             }}
           >
             <option value="liveTable" disabled={liveProfiles.length === 0}>
-              Live table (PostgreSQL / MySQL)
+              Live table (PostgreSQL / MySQL / SQLite)
             </option>
             <option value="snapshot" disabled={snapshots.length === 0}>
               Retained tab snapshot

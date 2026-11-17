@@ -180,7 +180,20 @@ describe("DataGrip 2026.3 E2E ARIA & selector contracts", () => {
     ).toBeTruthy();
   });
 
-  it("exposes Open result in tab and Open originating SQL buttons in Workbench", () => {
+  it("exposes Open result in tab and Open originating SQL buttons in Workbench", async () => {
+    vi.mocked(client.call).mockImplementation(async (method) => {
+      if (method === "query_result_view") {
+        return {
+          resultId: "res-1",
+          rowIndices: [1],
+          matchedRows: 1,
+          scannedRows: 2,
+          truncated: false,
+          elapsedMs: 1,
+        };
+      }
+      return undefined;
+    });
     const sampleResult: ResultInfo = {
       id: "res-1",
       runId: "run-1",
@@ -272,7 +285,14 @@ describe("DataGrip 2026.3 E2E ARIA & selector contracts", () => {
     );
 
     expect(container.querySelector(".run-button")).toBeTruthy();
-    expect(screen.getByLabelText("Filter result rows")).toBeTruthy();
+    const filterInput = screen.getByLabelText("Filter result rows");
+    fireEvent.change(filterInput, { target: { value: "grace" } });
+    await waitFor(() => {
+      expect(container.querySelector(".result-quick-filter-count")?.textContent).toBe("1 / 2");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Reset view" }));
+    expect(container.querySelector(".result-quick-filter-count")).toBeNull();
+
     const pinBtn = screen.getByRole("button", { name: "Pin result" });
     fireEvent.click(pinBtn);
     const updatedTab = useStudio.getState().tabs.find((t) => t.id === queryTab.id)!;

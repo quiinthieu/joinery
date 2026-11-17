@@ -195,7 +195,12 @@ export function ExportDialog({
           source,
           includeHeaders,
           engine: profile?.engine ?? null,
-          targetTable: tab.kind === "table" ? (tab.table ?? null) : null,
+          targetTable:
+            tab.kind === "table"
+              ? (tab.table ?? null)
+              : snapshotResult?.editability?.status === "editable"
+                ? snapshotResult.editability.table
+                : (snapshotResult?.table ?? null),
         },
         (event: ExportEvent) => {
           if (event.type === "started") {

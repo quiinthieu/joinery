@@ -181,6 +181,7 @@ test("connects embedded SQLite (:memory:), inspects EXPLAIN QUERY PLAN, and extr
   // SQLite live column inspection with typo quick-fix suggestion chip
   await editor.fill("CREATE TABLE demo_users (id INTEGER PRIMARY KEY, customer_email TEXT);");
   await page.locator(".run-button").click();
+  await expect(page.locator(".result-footer")).toContainText("0 rows");
   await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
   const refreshCatalog = page.waitForResponse((r) => r.url().endsWith("/rpc/completion_catalog"));
   await page.getByRole("button", { name: "Refresh completion context", exact: true }).click();

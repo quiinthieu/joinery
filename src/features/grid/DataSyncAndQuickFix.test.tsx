@@ -531,8 +531,20 @@ describe("Data Compare Sync SQL, SQLite column inspection & quick-fixes, and Sno
       pinnedResultLabels: {},
     };
 
+    const workspaceSqlTab: StudioTab = {
+      ...queryTabLeft,
+      id: "ws-sql-1",
+      title: "Workspace SQL",
+      kind: "workspaceSql",
+      connectionId: null,
+      results: [mkResult("res-ws", "main", "joined_snapshot")],
+      activeResultId: "res-ws",
+      pinnedResultIds: undefined,
+      pinnedResultLabels: undefined,
+    };
+
     useStudio.setState({
-      tabs: [queryTabLeft, queryTabRight],
+      tabs: [queryTabLeft, queryTabRight, workspaceSqlTab],
       activeTabId: "q-left",
     });
 
@@ -545,7 +557,7 @@ describe("Data Compare Sync SQL, SQLite column inspection & quick-fixes, and Sno
     render(
       <DataCompareDialog
         initialTab={queryTabLeft}
-        tabs={[queryTabLeft, queryTabRight]}
+        tabs={[queryTabLeft, queryTabRight, workspaceSqlTab]}
         profiles={profiles}
         sessions={{}}
         catalog={{}}
@@ -554,8 +566,12 @@ describe("Data Compare Sync SQL, SQLite column inspection & quick-fixes, and Sno
       />,
     );
 
-    // Pinned snapshot label is surfaced in the snapshot selector
+    // Pinned snapshot label, Workspace SQL snapshot, and SQLite live-table label are surfaced
     expect(screen.getAllByText(/Pinned #1 \(Q1\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Workspace SQL \(1 rows\)/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Live table (PostgreSQL / MySQL / SQLite)").length).toBeGreaterThan(
+      0,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /Compare datasets/i }));
 
@@ -571,8 +587,8 @@ describe("Data Compare Sync SQL, SQLite column inspection & quick-fixes, and Sno
     expect(onClose).toHaveBeenCalledTimes(1);
 
     const openedTabs = useStudio.getState().tabs;
-    expect(openedTabs).toHaveLength(3);
-    const syncTab = openedTabs[2];
+    expect(openedTabs).toHaveLength(4);
+    const syncTab = openedTabs[3];
     expect(syncTab.kind).toBe("query");
     expect(syncTab.connectionId).toBe("mysql-prod");
     expect(syncTab.status).toBe("idle");

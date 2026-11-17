@@ -736,7 +736,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
 
   const applyPaste = useCallback(
     (anchor: Item, values: readonly (readonly string[])[]) => {
-      const { tab: currentTab, result: currentResult } = model.current;
+      const { tab: currentTab, result: currentResult, displayRowIndices: mapped } = model.current;
       const tableEditable =
         connected &&
         isGridEditable &&
@@ -744,7 +744,11 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       const scopeId =
         currentTab.kind === "table" ? currentTab.id : (currentResult?.id ?? currentTab.id);
       const loaded =
-        currentTab.kind === "table" ? currentTab.loadedRows : (currentResult?.retainedRows ?? 0);
+        currentTab.kind === "table"
+          ? currentTab.loadedRows
+          : mapped
+            ? mapped.length
+            : (currentResult?.retainedRows ?? 0);
       const inserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
       const outcome = validatePasteMatrix({
         anchor,

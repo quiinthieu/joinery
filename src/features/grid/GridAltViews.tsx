@@ -95,8 +95,8 @@ function resolveCellTarget(
     const unfilledRequired = !hasKey && !usingDefault && !column.nullable;
     return {
       target: {
-        resultId: scopeId,
-        row: visualRow,
+        resultId: `insert:${draft.id}`,
+        row: visualRow - loaded,
         column: { ...column, editable: column.insertable },
         value: hasKey ? (raw ?? null) : null,
         large: Boolean(raw && (raw.length > 160 || raw.includes("\n"))),
