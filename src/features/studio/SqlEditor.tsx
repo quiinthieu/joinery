@@ -90,6 +90,7 @@ import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
 import { SqlRefactorDialog, type SqlRefactorModalMode } from "./SqlRefactorDialog";
 import {
   analyzeExtractCte,
+  analyzeInlineCte,
   collectWorkspaceSqlDocuments,
   prepareExpandWildcard,
 } from "./sql-refactor";
@@ -838,6 +839,25 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       const plan = analyzeExtractCte(editor.state, latest.current.engine, tableNames);
       setRefactor({
         mode: { kind: "extractCte", plan, state: editor.state },
+        editor,
+        state: editor.state,
+        context: renameContext(),
+        sequence: navRequestSeq.current,
+      });
+    } catch (cause) {
+      setRefactorError(messageOf(cause));
+    }
+    return true;
+  };
+
+  const runInlineCte = () => {
+    clearNavigation();
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return false;
+    try {
+      const plan = analyzeInlineCte(editor.state, latest.current.engine);
+      setRefactor({
+        mode: { kind: "inlineCte", plan },
         editor,
         state: editor.state,
         context: renameContext(),
@@ -1842,6 +1862,16 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 onClick={() => runExtractCte()}
               >
                 Extract CTE
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                title="Inline WITH CTE at cursor into its FROM/JOIN references"
+                aria-label="Inline SQL CTE"
+                onClick={() => runInlineCte()}
+              >
+                Inline CTE
               </button>
               <button
                 type="button"

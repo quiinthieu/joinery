@@ -243,4 +243,112 @@ describe("copy-format", () => {
     }
     expect(MAX_COPY_BYTES).toBe(8 * 1024 * 1024);
   });
+
+  it("formats NDJSON one single-line JSON object per row while preserving >53-bit exact integers", () => {
+    const res = formatGridCells({
+      columns: sampleColumns.slice(0, 5),
+      rows: [
+        ["9007199254740993", "12.50", "hello\nworld", "1", '{"nested":9007199254740995}'],
+        ["42", null, "", "false", null],
+      ],
+      format: "ndjson",
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const lines = res.text.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('"order_id": 9007199254740993');
+    expect(lines[0]).toContain('"amount": 12.50');
+    expect(lines[0]).toContain('"note": "hello\\nworld"');
+    expect(lines[0]).toContain('"active": true');
+    expect(lines[0]).toContain("9007199254740995");
+    expect(lines[1]).toBe(
+      '{"order_id": 42, "amount": null, "note": "", "active": false, "payload": null}',
+    );
+  });
+
+  it("formats SQL UPDATE with PK WHERE clauses and rejects selections missing primary keys", () => {
+    const noPkCols = [
+      { ...col("c2", "amount", "decimal"), primaryKey: false },
+      { ...col("c3", "note", "text"), primaryKey: false },
+    ];
+    const missingPk = formatGridCells({
+      columns: noPkCols,
+      rows: [["10.00", "test"]],
+      format: "sqlUpdate",
+      engine: "postgres",
+      table: { schema: "public", name: "orders" },
+    });
+    expect(missingPk.ok).toBe(false);
+    if (!missingPk.ok) {
+      expect(missingPk.error).toMatch(/primary key/i);
+    }
+
+    const compositeCols: ColumnInfo[] = [
+      { ...col("c1", "tenant", "text"), primaryKey: true },
+      { ...col("c2", "seq", "integer"), primaryKey: true },
+      { ...col("c3", "status", "text"), primaryKey: false },
+    ];
+    const updateRes = formatGridCells({
+      columns: compositeCols,
+      rows: [
+        ["acme", "9007199254740993", "paid"],
+        ["beta", null, null],
+      ],
+      format: "sqlUpdate",
+      engine: "sqlite",
+      table: { schema: "main", name: "orders" },
+    });
+    expect(updateRes.ok).toBe(true);
+    if (!updateRes.ok) return;
+    expect(updateRes.text).toBe(
+      [
+        'UPDATE "main"."orders" SET "status" = \'paid\' WHERE "tenant" = \'acme\' AND "seq" = 9007199254740993;',
+        'UPDATE "main"."orders" SET "status" = NULL WHERE "tenant" = \'beta\' AND "seq" IS NULL;',
+      ].join("\n"),
+    );
+  });
+
+  it("formats deduplicated single-column and composite-tuple SQL IN (...) lists", () => {
+    const single = formatGridCells({
+      columns: [col("c1", "order_id", "integer")],
+      rows: [["101"], [null], ["101"], ["9007199254740993"]],
+      format: "sqlIn",
+      engine: "postgres",
+    });
+    expect(single.ok && single.text).toBe("(101, 9007199254740993)");
+
+    const allNull = formatGridCells({
+      columns: [col("c1", "order_id", "integer")],
+      rows: [[null]],
+      format: "sqlIn",
+    });
+    expect(allNull.ok && allNull.text).toBe("(NULL)");
+
+    const tuples = formatGridCells({
+      columns: [col("c1", "tenant", "text"), col("c2", "seq", "integer")],
+      rows: [
+        ["org'1", "10"],
+        ["org2", "20"],
+      ],
+      format: "sqlIn",
+      engine: "postgres",
+    });
+    expect(tuples.ok && tuples.text).toBe("(('org''1', 10), ('org2', 20))");
+  });
+
+  it("formats HTML <table> escaping special HTML characters in headers and cells", () => {
+    const htmlRes = formatGridCells({
+      columns: [col("c1", "a < b & c", "text")],
+      rows: [['<script>"alert(1)"</script>'], [null], [{ kind: "default" }]],
+      format: "html",
+      includeHeaders: true,
+    });
+    expect(htmlRes.ok).toBe(true);
+    if (!htmlRes.ok) return;
+    expect(htmlRes.text).toContain("<th>a &lt; b &amp; c</th>");
+    expect(htmlRes.text).toContain("<td>&lt;script&gt;&quot;alert(1)&quot;&lt;/script&gt;</td>");
+    expect(htmlRes.text).toContain("<td>NULL</td>");
+    expect(htmlRes.text).toContain("<td>&lt;default&gt;</td>");
+  });
 });

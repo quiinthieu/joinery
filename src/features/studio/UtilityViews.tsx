@@ -36,6 +36,7 @@ import {
 import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectDialog";
 import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
 import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
+import { SQL_CODEGEN_TEMPLATES, generateTableSql, type SqlCodegenTemplate } from "./sql-codegen";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
@@ -760,9 +761,18 @@ export function StructureView({
   const tableRef = details
     ? { schema: details.object.schema, name: details.object.name }
     : schema.table;
+  const canGenerateSql = Boolean(connectionId && profile && profile.engine !== "redis");
+  const handleGenerateSql = (template: SqlCodegenTemplate) => {
+    if (!connectionId || !profile) return;
+    const generated = generateTableSql(template, profile.engine, {
+      ...schema,
+      table: tableRef,
+    });
+    useStudio.getState().openQuery(connectionId, generated);
+  };
   return (
     <div className="structure-scroll">
-      {(canManageSchema || canDropObject) && (
+      {(canGenerateSql || canManageSchema || canDropObject) && (
         <div
           className="structure-section-header"
           style={{
@@ -770,13 +780,37 @@ export function StructureView({
             alignItems: "center",
             justifyContent: "space-between",
             padding: "10px 14px 6px",
+            flexWrap: "wrap",
+            gap: 8,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <strong style={{ fontSize: 12 }}>Columns</strong>
             <span className="schema-count">{schema.columns.length}</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {canGenerateSql && (
+              <div
+                role="group"
+                aria-label="Generate SQL"
+                style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+              >
+                {(isViewLike
+                  ? SQL_CODEGEN_TEMPLATES.filter((t) => t.id === "select")
+                  : SQL_CODEGEN_TEMPLATES
+                ).map((tmpl) => (
+                  <button
+                    key={tmpl.id}
+                    type="button"
+                    className="button ghost small"
+                    aria-label={`Generate ${tmpl.label} SQL`}
+                    onClick={() => handleGenerateSql(tmpl.id)}
+                  >
+                    {tmpl.label}
+                  </button>
+                ))}
+              </div>
+            )}
             {canManageSchema && (
               <button
                 type="button"

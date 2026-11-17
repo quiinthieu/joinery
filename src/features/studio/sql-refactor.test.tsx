@@ -6,7 +6,7 @@ import type { EngineKind, ObjectDetails, SessionInfo, TableSchema } from "../../
 import { client } from "../../ipc/client";
 import { useStudio, type StudioTab } from "../../state/studio";
 import { sqlDialect } from "./sql-identifiers";
-import { analyzeExtractCte, prepareExpandWildcard } from "./sql-refactor";
+import { analyzeExtractCte, analyzeInlineCte, prepareExpandWildcard } from "./sql-refactor";
 import { SqlRefactorDialog } from "./SqlRefactorDialog";
 import { ObjectInspectorView } from "./ObjectInspectorView";
 
@@ -425,5 +425,72 @@ describe("SQL AST refactoring and workspace Find Usages", () => {
 
     fireEvent.click(screen.getByText("Monthly Audit · Ln 1"));
     expect(openSavedQuerySpy).toHaveBeenCalledWith("sq-9");
+  });
+
+  it("inlines single and multi-CTE definitions preserving explicit aliases, adding implicit aliases, and rejecting recursive/materialized CTEs", () => {
+    // 1. Single CTE without explicit alias at call site -> removes WITH and adds `AS active_orders` so `active_orders.id` keeps resolving!
+    const singleDoc =
+      "WITH active_orders AS (SELECT id, total_cents FROM public.orders WHERE status = 'open')\nSELECT active_orders.id FROM active_orders WHERE active_orders.total_cents > 100;";
+    const stateOnHeader = makeEditorState(singleDoc, "postgres", {
+      anchor: singleDoc.indexOf("active_orders"),
+    });
+    const planSingle = analyzeInlineCte(stateOnHeader, "postgres");
+    expect(planSingle.cteName).toBe("active_orders");
+    expect(planSingle.referenceCount).toBe(1);
+    expect(planSingle.previewSql).toBe(
+      "SELECT active_orders.id FROM (SELECT id, total_cents FROM public.orders WHERE status = 'open') AS active_orders WHERE active_orders.total_cents > 100;",
+    );
+
+    // 2. Multi-CTE: cursor on FROM reference inlines only that CTE and preserves explicit alias `ao` + remaining CTE `vip_users`
+    const multiDoc =
+      "WITH active_orders AS (SELECT id, customer_id FROM orders), vip_users AS (SELECT id FROM customers WHERE vip = 1)\nSELECT ao.id FROM active_orders AS ao JOIN vip_users v ON v.id = ao.customer_id;";
+    const stateOnRef = makeEditorState(multiDoc, "sqlite", {
+      anchor: multiDoc.indexOf("active_orders AS ao") + 2,
+    });
+    const planMulti = analyzeInlineCte(stateOnRef, "sqlite");
+    expect(planMulti.cteName).toBe("active_orders");
+    expect(planMulti.previewSql).toBe(
+      "WITH vip_users AS (SELECT id FROM customers WHERE vip = 1)\nSELECT ao.id FROM (SELECT id, customer_id FROM orders) AS ao JOIN vip_users v ON v.id = ao.customer_id;",
+    );
+
+    // 3. Rejects recursive CTEs and explicit column-list CTEs
+    const recDoc =
+      "WITH RECURSIVE nums AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM nums WHERE n < 5) SELECT * FROM nums;";
+    expect(() =>
+      analyzeInlineCte(
+        makeEditorState(recDoc, "postgres", { anchor: recDoc.indexOf("nums") }),
+        "postgres",
+      ),
+    ).toThrow(/recursive/i);
+
+    const colListDoc = "WITH renamed(a, b) AS (SELECT 1, 2) SELECT a, b FROM renamed;";
+    expect(() =>
+      analyzeInlineCte(
+        makeEditorState(colListDoc, "postgres", { anchor: colListDoc.indexOf("renamed") }),
+        "postgres",
+      ),
+    ).toThrow(/column rename list/i);
+
+    const matDoc =
+      "WITH fenced AS MATERIALIZED (SELECT id FROM public.orders) SELECT * FROM fenced;";
+    expect(() =>
+      analyzeInlineCte(
+        makeEditorState(matDoc, "postgres", { anchor: matDoc.indexOf("fenced") }),
+        "postgres",
+      ),
+    ).toThrow(/materialized/i);
+
+    // 4. SqlRefactorDialog renders Inline CTE preview and dispatches `input.inline-cte`
+    const onApply = vi.fn();
+    render(
+      <SqlRefactorDialog
+        mode={{ kind: "inlineCte", plan: planSingle }}
+        onApplyChanges={onApply}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Inline CTE preview").textContent).toContain("AS active_orders");
+    fireEvent.click(screen.getByRole("button", { name: "Inline CTE" }));
+    expect(onApply).toHaveBeenCalledWith(planSingle.changes, "input.inline-cte");
   });
 });

@@ -1,5 +1,7 @@
 import { ExecutionTiming } from "../features/studio/ExecutionTiming";
 import { ExecutionSummary } from "../features/studio/ExecutionSummary";
+import { DatabaseOutputPanel } from "../features/studio/DatabaseOutputPanel";
+import type { GridSelectionStats } from "../features/grid/selection-stats";
 import {
   lazy,
   Suspense,
@@ -37,6 +39,7 @@ import {
   Square,
   Star,
   Table2,
+  Terminal,
   Trash2,
   Unplug,
   Upload,
@@ -191,6 +194,11 @@ export function Workbench({
     [editorSize, setEditorSize] = useState(290),
     [runningTime, setRunningTime] = useState(0),
     [planResultId, setPlanResultId] = useState<string | null>(null),
+    [outputViewTabId, setOutputViewTabId] = useState<string | null>(null),
+    [selectionStatsState, setSelectionStatsState] = useState<{
+      tabId: string;
+      stats: GridSelectionStats;
+    } | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
     [activeCell, setActiveCell] = useState<CellTarget | null>(null),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
@@ -290,6 +298,15 @@ export function Workbench({
         : null;
   const resolvedLayout = resolveTableLayout(rawActiveColumns, activeDataLayout);
   const gridMode: GridDisplayMode = tab.gridMode ?? "grid";
+  const showOutput = tab.kind === "query" && outputViewTabId === tab.id;
+  const outputEntries = tab.outputLog ?? [];
+  const activeSelectionStats =
+    selectionStatsState?.tabId === tab.id && gridMode === "grid" && !showOutput
+      ? selectionStatsState.stats
+      : null;
+  const handleSelectionStatsChange = (stats: GridSelectionStats | null) => {
+    setSelectionStatsState(stats ? { tabId: tab.id, stats } : null);
+  };
   const handleSelectCell = (target: CellTarget | null) => {
     setActiveCell(target);
     onSelect(target);
@@ -1388,11 +1405,18 @@ export function Workbench({
                   role="tab"
                   id={`result-tab-${result.id}`}
                   aria-controls={`result-panel-${tab.id}`}
-                  aria-selected={result.id === (tab.activeResultId ?? tab.results[0]?.id)}
-                  tabIndex={result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1}
-                  className={result.id === tab.activeResultId ? "active" : ""}
+                  aria-selected={
+                    !showOutput && result.id === (tab.activeResultId ?? tab.results[0]?.id)
+                  }
+                  tabIndex={
+                    !showOutput && result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1
+                  }
+                  className={!showOutput && result.id === tab.activeResultId ? "active" : ""}
                   key={result.id}
-                  onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
+                  onClick={() => {
+                    setOutputViewTabId(null);
+                    state.updateTab(tab.id, { activeResultId: result.id });
+                  }}
                 >
                   <Table2 size={12} />
                   Query {result.statementIndex + 1}
@@ -1405,6 +1429,17 @@ export function Workbench({
             ) : (
               <span className="result-placeholder">Results</span>
             )}
+            <button
+              type="button"
+              className={showOutput ? "active" : ""}
+              aria-label="Database output"
+              aria-pressed={showOutput}
+              onClick={() => setOutputViewTabId(showOutput ? null : tab.id)}
+            >
+              <Terminal size={12} />
+              Output
+              {outputEntries.length > 0 && <span>{outputEntries.length}</span>}
+            </button>
           </div>
           <div className="table-view-actions">
             {result && result.editability && (
@@ -1933,6 +1968,11 @@ export function Workbench({
               error={activeTableDetailsError}
             />
           </div>
+        ) : showOutput ? (
+          <DatabaseOutputPanel
+            entries={outputEntries}
+            onClear={() => state.clearTabOutput(tab.id)}
+          />
         ) : tab.kind === "query" &&
           result &&
           isQueryPlanResult(result, tab.planSource) &&
@@ -1995,6 +2035,7 @@ export function Workbench({
               onSelect={handleSelectCell}
               onOpenValue={onOpenValue}
               onSelectedRowsChange={setSelectedRows}
+              onSelectionStatsChange={handleSelectionStatsChange}
               focusRowRequest={focusRowRequest}
               onSort={
                 filtering
@@ -2047,6 +2088,20 @@ export function Workbench({
           )}
         </div>
         <div>
+          {activeSelectionStats && (
+            <span
+              className="selection-stats-summary mono"
+              role="status"
+              aria-label="Grid selection summary"
+              style={{ fontSize: 11 }}
+            >
+              {activeSelectionStats.overLimit
+                ? `${activeSelectionStats.cellCount.toLocaleString()} cells selected`
+                : activeSelectionStats.numericCount > 0
+                  ? `Cells: ${activeSelectionStats.cellCount.toLocaleString()} · Distinct: ${activeSelectionStats.distinctCount.toLocaleString()} · Sum: ${activeSelectionStats.sum} · Avg: ${activeSelectionStats.avg} · Min: ${activeSelectionStats.min} · Max: ${activeSelectionStats.max}`
+                  : `Cells: ${activeSelectionStats.cellCount.toLocaleString()} · Non-null: ${activeSelectionStats.nonNullCount.toLocaleString()} · Distinct: ${activeSelectionStats.distinctCount.toLocaleString()}`}
+            </span>
+          )}
           {pendingCount > 0 && (
             <span className="dirty-count">
               <i className="dirty-dot" />

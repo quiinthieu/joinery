@@ -2,13 +2,17 @@ import { useState } from "react";
 import type { ChangeSpec, EditorState } from "@codemirror/state";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { messageOf } from "../../ipc/client";
-import type { ExtractCtePlan } from "./sql-refactor";
+import type { ExtractCtePlan, InlineCtePlan } from "./sql-refactor";
 
 export type SqlRefactorModalMode =
   | {
       kind: "extractCte";
       plan: ExtractCtePlan;
       state: EditorState;
+    }
+  | {
+      kind: "inlineCte";
+      plan: InlineCtePlan;
     }
   | {
       kind: "expandWildcard";
@@ -30,6 +34,50 @@ export function SqlRefactorDialog({
   onClose(): void;
 }) {
   const [cteName, setCteName] = useState(mode.kind === "extractCte" ? mode.plan.defaultName : "");
+
+  if (mode.kind === "inlineCte") {
+    return (
+      <div onKeyDown={(event) => event.stopPropagation()}>
+        <Modal
+          title={`Inline SQL CTE "${mode.plan.cteName}"`}
+          subtitle={`Preview inlining ${mode.plan.referenceCount} reference${mode.plan.referenceCount === 1 ? "" : "s"} to ${mode.plan.cteName} as derived subqueries. No SQL is executed.`}
+          onClose={onClose}
+          wide
+        >
+          <div className="modal-body" style={{ display: "grid", gap: 10 }}>
+            <div>
+              <span className="eyebrow">INLINED STATEMENT PREVIEW</span>
+              <pre
+                className="mono"
+                aria-label="Inline CTE preview"
+                style={{
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  maxHeight: 280,
+                  overflow: "auto",
+                  margin: "6px 0 0",
+                }}
+              >
+                {mode.plan.previewSql}
+              </pre>
+            </div>
+          </div>
+          <footer className="modal-footer">
+            <button type="button" className="button ghost" onClick={onClose}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="button primary"
+              onClick={() => onApplyChanges(mode.plan.changes, "input.inline-cte")}
+            >
+              Inline CTE
+            </button>
+          </footer>
+        </Modal>
+      </div>
+    );
+  }
 
   if (mode.kind === "expandWildcard") {
     return (

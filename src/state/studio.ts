@@ -62,6 +62,10 @@ import {
   type SnowflakeConsoleReceipt,
 } from "../features/studio/SnowflakeConsole";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
+import {
+  appendDatabaseOutputEntries,
+  type DatabaseOutputEntry,
+} from "../features/studio/DatabaseOutputPanel";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -183,6 +187,8 @@ export interface StudioTab {
   originKind?: "query" | "workspaceSql" | null;
   /** Originating SQL text captured when a query result was detached into its own tab. */
   originSql?: string | null;
+  /** Session-only Database Output log entries (bounded in memory; never persisted). */
+  outputLog?: DatabaseOutputEntry[];
 }
 
 export const MAX_RECENT_LOCATIONS = 50;
@@ -233,6 +239,7 @@ export interface NamedSession {
 }
 
 let sqlFormatSaveTail: Promise<void> = Promise.resolve();
+let outputEntrySeq = 0;
 let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
@@ -372,6 +379,7 @@ interface StudioState {
   deleteSqlSnippet(id: string): Promise<void>;
   saveVirtualForeignKey(input: VirtualForeignKeyInput): Promise<VirtualForeignKey>;
   deleteVirtualForeignKey(id: string): Promise<void>;
+  clearTabOutput(tabId: string): void;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
   openUtility(kind: "history" | "processes" | "benchmark" | "workspaceSql" | "dataSearch"): void;
@@ -4397,11 +4405,29 @@ export const useStudio = create<StudioState>((set, get) => ({
         return {};
       }
       const next = { ...current, results: [...current.results] };
+      const newOutput: DatabaseOutputEntry[] = [];
+      const nowMs = Date.now();
       for (const event of events) {
         if (event.type === "started") {
           next.runId = event.runId;
           next.status = "running";
           next.executionSummary = undefined;
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "info",
+            runId: event.runId,
+            message: "Execution started",
+          });
+        }
+        if (event.type === "notice") {
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "warning",
+            runId: next.runId,
+            message: event.message,
+          });
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
@@ -4414,18 +4440,47 @@ export const useStudio = create<StudioState>((set, get) => ({
             next.results.push(event.result);
           }
           if (!next.activeResultId) next.activeResultId = event.result.id;
+          if (event.result.status !== "streaming" && event.result.columns.length > 0) {
+            newOutput.push({
+              id: `out-${++outputEntrySeq}`,
+              timestampMs: nowMs,
+              level: event.result.status === "truncated" ? "warning" : "success",
+              runId: next.runId,
+              statementIndex: event.result.statementIndex,
+              message: `Result #${event.result.statementIndex + 1}: ${event.result.retainedRows.toLocaleString()} row${event.result.retainedRows === 1 ? "" : "s"}${event.result.status === "truncated" ? " (retention limit reached)" : ""}`,
+            });
+          }
         }
         if (event.type === "progress")
           next.results = next.results.map((r) =>
             r.id === event.resultId ? { ...r, retainedRows: event.retainedRows } : r,
           );
-        if (event.type === "error") next.error = event.error;
+        if (event.type === "error") {
+          next.error = event.error;
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "error",
+            runId: next.runId,
+            code: event.error.code,
+            message: event.error.message,
+          });
+        }
         if (event.type === "statementCompleted") {
           next.elapsedMs += event.elapsedMs;
           next.metrics = {
             ...next.metrics,
             [event.index]: { affectedRows: event.affectedRows, elapsedMs: event.elapsedMs },
           };
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "success",
+            runId: next.runId,
+            statementIndex: event.index,
+            elapsedMs: event.elapsedMs,
+            message: `Statement #${event.index + 1} completed · ${event.affectedRows} affected`,
+          });
         }
         if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
         if (event.type === "finished" && event.runId === next.runId) {
@@ -4435,10 +4490,31 @@ export const useStudio = create<StudioState>((set, get) => ({
           next.executionSummary = event.executionSummary;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level:
+              event.status === "completed"
+                ? "info"
+                : event.status === "cancelled"
+                  ? "warning"
+                  : "error",
+            runId: event.runId,
+            elapsedMs: event.elapsedMs,
+            message: `Run ${event.status} in ${event.elapsedMs} ms`,
+          });
         }
+      }
+      if (newOutput.length > 0) {
+        next.outputLog = appendDatabaseOutputEntries(current.outputLog, newOutput);
       }
       return { tabs: state.tabs.map((t) => (t.id === tabId ? next : t)) };
     });
+  },
+  clearTabOutput(tabId) {
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, outputLog: [] } : t)),
+    }));
   },
 }));
 

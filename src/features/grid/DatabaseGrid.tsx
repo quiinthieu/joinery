@@ -39,6 +39,11 @@ import {
   type CopyCell,
   type CopyFormat,
 } from "./copy-format";
+import {
+  computeSelectionStats,
+  MAX_SELECTION_STAT_CELLS,
+  type GridSelectionStats,
+} from "./selection-stats";
 import { parseTsvClipboard, validatePasteMatrix } from "./paste";
 import {
   clampColumnWidth,
@@ -93,6 +98,7 @@ interface Props {
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
   onSelectedRowsChange?(rows: number[]): void;
+  onSelectionStatsChange?(stats: GridSelectionStats | null): void;
   focusRowRequest?: { seq: number; row: number } | null;
   /** Server-side header sorting for table tabs; absent when unavailable. */
   onSort?(column: ColumnInfo, additive: boolean): void;
@@ -161,6 +167,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     onSelect,
     onOpenValue,
     onSelectedRowsChange,
+    onSelectionStatsChange,
     focusRowRequest,
     onSort,
   }: Props,
@@ -930,12 +937,19 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         const profile = useStudio
           .getState()
           .bootstrap?.profiles.find((p) => p.id === currentTab.connectionId);
+        const currentResult = model.current.result;
+        const resolvedTable =
+          currentTab.kind === "table"
+            ? currentTab.table
+            : currentResult?.editability?.status === "editable"
+              ? currentResult.editability.table
+              : (currentResult?.table ?? null);
         const formatted = formatGridCells({
           columns: colIndices.map((col) => visibleColumns[col]),
           rows,
           format,
           engine: profile?.engine,
-          table: currentTab.kind === "table" ? currentTab.table : null,
+          table: resolvedTable,
           includeHeaders: options?.includeHeaders,
         });
         if (!formatted.ok) {
@@ -958,6 +972,54 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     },
     [locate, resolveCopyMatrix, targetAt, visibleColumns],
   );
+
+  useEffect(() => {
+    if (!onSelectionStatsChange) return;
+    const { colIndices, rowIndices, summary } = resolveCopyMatrix("selection");
+    if (!summary.hasRangeSelection || summary.selectedCellCount < 2) {
+      onSelectionStatsChange(null);
+      return;
+    }
+    if (summary.selectedCellCount > MAX_SELECTION_STAT_CELLS) {
+      onSelectionStatsChange({
+        cellCount: summary.selectedCellCount,
+        nonNullCount: 0,
+        distinctCount: 0,
+        numericCount: 0,
+        sum: null,
+        avg: null,
+        min: null,
+        max: null,
+        overLimit: true,
+      });
+      return;
+    }
+    const cells: (string | null)[] = [];
+    const isBenchmark = model.current.tab.kind === "benchmark";
+    for (const r of rowIndices) {
+      for (const c of colIndices) {
+        if (isBenchmark) {
+          cells.push(benchmarkValue(c, r));
+        } else {
+          const target = targetAt([c, r], false);
+          if (target && !target.insert?.usingDefault) {
+            cells.push(target.value);
+          } else if (target?.insert?.usingDefault) {
+            cells.push(null);
+          }
+        }
+      }
+    }
+    onSelectionStatsChange(cells.length >= 2 ? computeSelectionStats(cells) : null);
+  }, [
+    onSelectionStatsChange,
+    resolveCopyMatrix,
+    result?.id,
+    selection,
+    tab.id,
+    tab.revision,
+    targetAt,
+  ]);
 
   useImperativeHandle(
     ref,

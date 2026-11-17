@@ -64,10 +64,12 @@ function tokenToIdent(tok: SqlToken): Identifier {
 
 interface CteEntry {
   name: string;
+  nameToken: SqlToken;
   norm: string;
   headerFrom: number;
   parens: SqlToken;
   explicitColumns: string[] | null;
+  materialized: boolean;
 }
 
 interface ParsedWithHeader {
@@ -110,19 +112,24 @@ function parseTopLevelWith(
     if (kw(tokens[idx]) !== "AS") break;
     idx++;
     // Optional PostgreSQL MATERIALIZED / NOT MATERIALIZED
+    let materialized = false;
     if (kw(tokens[idx]) === "NOT" && kw(tokens[idx + 1]) === "MATERIALIZED") {
+      materialized = true;
       idx += 2;
     } else if (kw(tokens[idx]) === "MATERIALIZED") {
+      materialized = true;
       idx++;
     }
     const parens = tokens[idx];
     if (parens?.kind !== "Parens") break;
     ctes.push({
       name: ident.value,
+      nameToken: nameTok,
       norm: normKey(ident.value, ident.quoted, engine),
       headerFrom,
       parens,
       explicitColumns,
+      materialized,
     });
     idx++;
     if (tokens[idx]?.text === ",") {
@@ -659,6 +666,261 @@ export function analyzeExtractCte(
   };
 }
 
+export interface InlineCtePlan {
+  cteName: string;
+  referenceCount: number;
+  changes: Array<{ from: number; to: number; insert: string }>;
+  previewSql: string;
+}
+
+const FROM_END_KEYWORDS = new Set([
+  "WHERE",
+  "GROUP",
+  "HAVING",
+  "WINDOW",
+  "QUALIFY",
+  "ORDER",
+  "LIMIT",
+  "OFFSET",
+  "FETCH",
+  "FOR",
+  "UNION",
+  "INTERSECT",
+  "EXCEPT",
+  "MINUS",
+  "SET",
+  "VALUES",
+  "RETURNING",
+  "SELECT",
+]);
+
+interface CteCallSite {
+  from: number;
+  to: number;
+  hasExplicitAlias: boolean;
+}
+
+function collectCteCallSitesInTokens(
+  tokens: readonly SqlToken[],
+  targetNorm: string,
+  engine: EngineKind,
+  into: CteCallSite[],
+) {
+  let startIdx = 0;
+  const innerWith = parseTopLevelWith(tokens, engine);
+  if (innerWith) {
+    let shadowed = false;
+    for (const innerCte of innerWith.ctes) {
+      if (!shadowed) {
+        collectCteCallSitesInTokens(innerCte.parens.children ?? [], targetNorm, engine, into);
+      }
+      if (innerCte.norm === targetNorm) {
+        shadowed = true;
+      }
+    }
+    if (shadowed) return;
+    startIdx = innerWith.bodyStartIndex;
+  }
+
+  let inFromClause = false;
+  for (let i = startIdx; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const word = kw(tok);
+    if (word === "FROM") {
+      inFromClause = true;
+    } else if (FROM_END_KEYWORDS.has(word) || tok.text === ";") {
+      inFromClause = false;
+    }
+
+    if (tok.children) {
+      collectCteCallSitesInTokens(tok.children, targetNorm, engine, into);
+    }
+
+    if (word === "FROM" || word === "JOIN" || (inFromClause && tok.text === ",")) {
+      let j = i + 1;
+      if (kw(tokens[j]) === "LATERAL") j++;
+      const relTok = tokens[j];
+      if (isName(relTok) && tokens[j - 1]?.text !== "." && tokens[j + 1]?.text !== ".") {
+        const relIdent = tokenToIdent(relTok);
+        if (normKey(relIdent.value, relIdent.quoted, engine) === targetNorm) {
+          const nextTok = tokens[j + 1];
+          const hasExplicitAlias =
+            (kw(nextTok) === "AS" && isName(tokens[j + 2])) ||
+            (isName(nextTok) && !CLAUSE_STOP_KEYWORDS.has(nextTok.text.toUpperCase()));
+          into.push({
+            from: relTok.from,
+            to: relTok.to,
+            hasExplicitAlias,
+          });
+        }
+      }
+    }
+  }
+}
+
+function findIdentifierTokenAtPos(tokens: readonly SqlToken[], pos: number): SqlToken | null {
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok.children && pos >= tok.from && pos <= tok.to) {
+      const nested = findIdentifierTokenAtPos(tok.children, pos);
+      if (nested) return nested;
+    }
+    if (
+      isName(tok) &&
+      pos >= tok.from &&
+      pos <= tok.to &&
+      tokens[i - 1]?.text !== "." &&
+      tokens[i + 1]?.text !== "."
+    ) {
+      return tok;
+    }
+  }
+  return null;
+}
+
+export function analyzeInlineCte(state: EditorState, engine: EngineKind): InlineCtePlan {
+  if (engine === "redis") {
+    throw new Error("Inline CTE is only available for SQL editors.");
+  }
+  const sel = state.selection.main;
+  const block = statementTokensAt(state, sel.head);
+  if (!block) {
+    throw new Error("Place the cursor inside a WITH SQL statement to inline a CTE.");
+  }
+  const cleanTokens = stripComments(block.tokens);
+  if (cleanTokens.length === 0) {
+    throw new Error("Place the cursor inside a WITH SQL statement to inline a CTE.");
+  }
+
+  const withHeader = parseTopLevelWith(cleanTokens, engine);
+  if (!withHeader) {
+    throw new Error("This statement has no top-level WITH Common Table Expression to inline.");
+  }
+
+  let targetIdx = -1;
+  for (let i = 0; i < withHeader.ctes.length; i++) {
+    const cte = withHeader.ctes[i];
+    if (sel.head >= cte.headerFrom && sel.head <= cte.parens.to) {
+      targetIdx = i;
+      break;
+    }
+  }
+  if (
+    targetIdx < 0 &&
+    withHeader.ctes.length === 1 &&
+    sel.head >= withHeader.withToken.from &&
+    sel.head <= withHeader.withToken.to
+  ) {
+    targetIdx = 0;
+  }
+  if (targetIdx < 0) {
+    const identTok = findIdentifierTokenAtPos(cleanTokens, sel.head);
+    if (identTok) {
+      const ident = tokenToIdent(identTok);
+      const norm = normKey(ident.value, ident.quoted, engine);
+      for (let i = withHeader.ctes.length - 1; i >= 0; i--) {
+        if (withHeader.ctes[i].norm === norm && identTok.from > withHeader.ctes[i].parens.to) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+  }
+  if (targetIdx < 0) {
+    throw new Error("Place the cursor on a CTE definition or a FROM/JOIN reference to that CTE.");
+  }
+
+  const targetCte = withHeader.ctes[targetIdx];
+  if (targetCte.explicitColumns !== null) {
+    throw new Error(
+      `CTE "${targetCte.name}" declares an explicit column rename list and cannot be inlined automatically.`,
+    );
+  }
+  if (targetCte.materialized) {
+    throw new Error(
+      `CTE "${targetCte.name}" uses MATERIALIZED / NOT MATERIALIZED; remove the materialization hint before inlining.`,
+    );
+  }
+
+  const selfRefs: CteCallSite[] = [];
+  collectCteCallSitesInTokens(targetCte.parens.children ?? [], targetCte.norm, engine, selfRefs);
+  if (selfRefs.length > 0) {
+    throw new Error(`Recursive CTE "${targetCte.name}" cannot be inlined.`);
+  }
+
+  const callSites: CteCallSite[] = [];
+  let shadowedLater = false;
+  for (let i = targetIdx + 1; i < withHeader.ctes.length; i++) {
+    const laterCte = withHeader.ctes[i];
+    if (!shadowedLater) {
+      collectCteCallSitesInTokens(
+        laterCte.parens.children ?? [],
+        targetCte.norm,
+        engine,
+        callSites,
+      );
+    }
+    if (laterCte.norm === targetCte.norm) {
+      shadowedLater = true;
+    }
+  }
+  if (!shadowedLater) {
+    const bodyTokens = cleanTokens.slice(withHeader.bodyStartIndex);
+    collectCteCallSitesInTokens(bodyTokens, targetCte.norm, engine, callSites);
+  }
+
+  if (callSites.length === 0) {
+    throw new Error(`CTE "${targetCte.name}" has no FROM or JOIN references to inline.`);
+  }
+
+  const innerSql = state.sliceDoc(targetCte.parens.from + 1, targetCte.parens.to - 1).trim();
+  const cteNameSql = state.sliceDoc(targetCte.nameToken.from, targetCte.nameToken.to);
+  const subqueryText =
+    !innerSql.includes("\n") && innerSql.length <= 72
+      ? `(${innerSql})`
+      : `(\n${indentBlock(innerSql, 2)}\n)`;
+
+  let removeFrom: number;
+  let removeTo: number;
+  if (withHeader.ctes.length === 1) {
+    const bodyFirst = cleanTokens[withHeader.bodyStartIndex];
+    removeFrom = withHeader.withToken.from;
+    removeTo = bodyFirst ? bodyFirst.from : targetCte.parens.to;
+  } else if (targetIdx < withHeader.ctes.length - 1) {
+    removeFrom = targetCte.headerFrom;
+    removeTo = withHeader.ctes[targetIdx + 1].headerFrom;
+  } else {
+    removeFrom = withHeader.ctes[targetIdx - 1].parens.to;
+    removeTo = targetCte.parens.to;
+  }
+
+  const rawChanges: Array<{ from: number; to: number; insert: string }> = [
+    { from: removeFrom, to: removeTo, insert: "" },
+    ...callSites.map((site) => ({
+      from: site.from,
+      to: site.to,
+      insert: site.hasExplicitAlias ? subqueryText : `${subqueryText} AS ${cteNameSql}`,
+    })),
+  ];
+
+  const stmtStart = cleanTokens[0].from;
+  const stmtEnd = block.to;
+  const fullStmt = state.sliceDoc(stmtStart, stmtEnd);
+  const relativeChanges = rawChanges.map((c) => ({
+    from: c.from - stmtStart,
+    to: c.to - stmtStart,
+    insert: c.insert,
+  }));
+  const previewSql = applyChangesToDoc(fullStmt, relativeChanges);
+
+  return {
+    cteName: targetCte.name,
+    referenceCount: callSites.length,
+    changes: rawChanges,
+    previewSql,
+  };
+}
+
 export interface WildcardExpansionPlan {
   tablesToFetch: TableRef[];
   wildcardText: string;
@@ -914,10 +1176,12 @@ export function prepareExpandWildcard(
         } else {
           const fakeCte: CteEntry = {
             name: aliasTok?.text ?? "sub",
+            nameToken: aliasTok ?? subParens,
             norm: "",
             headerFrom: subParens.from,
             parens: subParens,
             explicitColumns: null,
+            materialized: false,
           };
           explicitCols = inferCteProjectionColumns(fakeCte);
         }
