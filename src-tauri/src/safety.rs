@@ -267,15 +267,28 @@ fn prepare_inner(
     let mut parser_error_location: Option<ErrorLocation> = None;
     let statements = match Parser::parse_sql(dialect.as_ref(), parse_sql) {
         Ok(ast) => {
-            let ranges = split_sql_byte_ranges(dialect.as_ref(), parse_sql)?;
+            let mut ranges = split_sql_byte_ranges(dialect.as_ref(), parse_sql)?;
             if ast.is_empty() {
                 return Err(AppError::invalid("The query contains only comments"));
             }
             if ranges.len() != ast.len() {
-                return Err(AppError::new(
-                    ErrorCode::Unsupported,
-                    "This procedural batch cannot be split safely. Execute supported statements separately.",
-                ));
+                if ast.len() == 1
+                    && ranges.len() > 1
+                    && profile.engine != EngineKind::Snowflake
+                    && matches!(
+                        ast[0],
+                        Statement::CreateTrigger { .. }
+                            | Statement::CreateProcedure { .. }
+                            | Statement::CreateFunction { .. }
+                    )
+                {
+                    ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
+                } else {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "This procedural batch cannot be split safely. Execute supported statements separately.",
+                    ));
+                }
             }
             ast.iter()
                 .zip(ranges)
@@ -2267,5 +2280,24 @@ mod tests {
 
         let blocked = prepare("sqlite-ro", &p, "SELECT load_extension('./evil');").unwrap_err();
         assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+
+        // Single-statement SQLite CREATE TRIGGER is blocked in ReadOnly, allowed as DDL in Confirm,
+        // while multi-statement procedural batches remain rejected as Unsupported.
+        let single_trg = "CREATE TRIGGER trg_demo AFTER INSERT ON orders BEGIN SELECT 1; END;";
+        assert_eq!(
+            prepare("sqlite-ro", &p, single_trg).unwrap_err().code,
+            ErrorCode::PolicyBlocked
+        );
+        p.safe_mode = SafeMode::Confirm;
+        let trg_plan = prepare("sqlite-rw", &p, single_trg).unwrap();
+        assert_eq!(trg_plan.statements.len(), 1);
+        assert_eq!(trg_plan.statements[0].kind, StatementKind::Ddl);
+        assert!(trg_plan.requires_approval);
+
+        let batch_trg = "CREATE TRIGGER trg_demo AFTER INSERT ON orders BEGIN SELECT 1; END; DROP TABLE orders;";
+        assert_eq!(
+            prepare("sqlite-rw", &p, batch_trg).unwrap_err().code,
+            ErrorCode::Unsupported
+        );
     }
 }

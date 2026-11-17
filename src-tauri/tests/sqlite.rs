@@ -1292,3 +1292,86 @@ async fn sqlite_ddl_editing_schema_migration_query_result_editing_csv_import_and
     studio.disconnect(&s_left.id);
     studio.disconnect(&s_right.id);
 }
+
+#[tokio::test]
+async fn sqlite_quoted_keyword_columns_and_case_insensitive_metadata_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("quoted_case.sqlite");
+    let (studio, _profile, sess) =
+        open_sqlite_studio(dir.path(), db_path.to_str().unwrap(), SafeMode::Silent).await;
+
+    exec_sql(
+        &studio,
+        &sess.id,
+        r#"
+        CREATE TABLE ParentAcc (Id INTEGER PRIMARY KEY);
+        CREATE TABLE Demo_Quoted (
+            id INTEGER PRIMARY KEY,
+            Parent_Id INTEGER REFERENCES ParentAcc(Id),
+            "check" INTEGER NOT NULL CHECK ("check" >= 0),
+            "primary" INTEGER GENERATED ALWAYS AS ("check" * 2) STORED
+        );
+        "#,
+    )
+    .await;
+    exec_sql(
+        &studio,
+        &sess.id,
+        "CREATE TRIGGER trg_demo_quoted_upper AFTER INSERT ON DEMO_QUOTED BEGIN SELECT 1; END;",
+    )
+    .await;
+
+    // 1. Case-insensitive schema lookup + mixed-case FK column marking
+    let schema = studio
+        .schema(
+            &sess.id,
+            &TableRef {
+                schema: "main".into(),
+                name: "demo_quoted".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(schema.table.name, "Demo_Quoted");
+    let fk_col = schema
+        .columns
+        .iter()
+        .find(|c| c.name == "Parent_Id")
+        .unwrap();
+    assert!(fk_col.foreign_key);
+
+    // 2. Case-insensitive object_details + trigger with uppercase ON DEMO_QUOTED + quoted "check"/"primary" columns
+    let details = studio
+        .object_details(
+            &sess.id,
+            &DatabaseObjectRef {
+                schema: "main".into(),
+                name: "demo_quoted".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(details.triggers.len(), 1);
+    assert_eq!(details.triggers[0].name, "trg_demo_quoted_upper");
+    let check_constraint = details
+        .constraints
+        .iter()
+        .find(|c| c.kind == ConstraintKind::Check)
+        .expect("quoted column \"check\" CHECK constraint parsed");
+    assert_eq!(check_constraint.columns, vec!["check".to_owned()]);
+
+    // 3. Schema snapshot preserves generated expression on quoted keyword column `"primary"`
+    let snap = studio.schema_snapshot(&sess.id, "main").await.unwrap();
+    let tbl = snap
+        .tables
+        .iter()
+        .find(|t| t.name == "Demo_Quoted")
+        .unwrap();
+    let gen_col = tbl.columns.iter().find(|c| c.name == "primary").unwrap();
+    assert_eq!(gen_col.generated.as_deref(), Some("STORED"));
+    assert_eq!(gen_col.default_expression.as_deref(), Some("\"check\" * 2"));
+
+    studio.disconnect(&sess.id);
+}

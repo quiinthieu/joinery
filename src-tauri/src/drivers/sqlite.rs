@@ -835,14 +835,14 @@ impl Sqlite {
                 format!("SQLite schema {schema_name:?} does not exist (expected \"main\")"),
             ));
         }
-        let obj_type: Option<String> = conn
+        let obj_row: Option<(String, String)> = conn
             .query_row(
-                "SELECT type FROM sqlite_schema WHERE type IN ('table', 'view') AND name = ?1",
+                "SELECT name, type FROM sqlite_schema WHERE type IN ('table', 'view') AND LOWER(name) = LOWER(?1) ORDER BY (name = ?1) DESC LIMIT 1",
                 [&table.name],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .ok();
-        let Some(obj_type) = obj_type else {
+        let Some((canonical_name, obj_type)) = obj_row else {
             return Err(AppError::new(
                 ErrorCode::NotFound,
                 format!("SQLite relation {:?} was not found", table.name),
@@ -853,7 +853,7 @@ impl Sqlite {
         // Foreign keys via PRAGMA foreign_key_list
         let fk_sql = format!(
             "PRAGMA main.foreign_key_list({})",
-            quote_sqlite_ident(&table.name)
+            quote_sqlite_ident(&canonical_name)
         );
         let mut fk_stmt = conn.prepare(&fk_sql).map_err(map_sqlite_err)?;
         let mut fk_groups: SqliteFkGroupMap = BTreeMap::new();
@@ -871,7 +871,7 @@ impl Sqlite {
             .map_err(map_sqlite_err)?;
         for item in fk_rows {
             let (id, seq, target_table, from_col, to_col) = item.map_err(map_sqlite_err)?;
-            fk_cols_set.insert(from_col.clone());
+            fk_cols_set.insert(from_col.to_ascii_lowercase());
             let entry = fk_groups
                 .entry(id)
                 .or_insert_with(|| (target_table, Vec::new()));
@@ -900,7 +900,7 @@ impl Sqlite {
                 }
             }
             foreign_keys.push(ForeignKey {
-                name: format!("{}_fk_{id}", table.name),
+                name: format!("{canonical_name}_fk_{id}"),
                 columns: from_cols,
                 target: TableRef {
                     schema: "main".into(),
@@ -914,7 +914,7 @@ impl Sqlite {
         // Columns via PRAGMA table_xinfo
         let info_sql = format!(
             "PRAGMA main.table_xinfo({})",
-            quote_sqlite_ident(&table.name)
+            quote_sqlite_ident(&canonical_name)
         );
         let mut stmt = conn.prepare(&info_sql).map_err(map_sqlite_err)?;
         let raw_cols = stmt
@@ -955,7 +955,7 @@ impl Sqlite {
                 kind,
                 nullable: !not_null && pk_ord == 0,
                 primary_key: pk_ord > 0,
-                foreign_key: fk_cols_set.contains(&name),
+                foreign_key: fk_cols_set.contains(&name.to_ascii_lowercase()),
                 editable: can_write,
                 insertable: can_write,
                 has_default: dflt.is_some() || (pk_ord == 1 && kind == ColumnKind::Integer),
@@ -971,12 +971,12 @@ impl Sqlite {
             }
         }
 
-        let inbound = Self::referencing_keys_sync(conn, &table.name)?;
+        let inbound = Self::referencing_keys_sync(conn, &canonical_name)?;
 
         Ok(TableSchema {
             table: TableRef {
                 schema: "main".into(),
-                name: table.name.clone(),
+                name: canonical_name,
             },
             columns,
             primary_key,
@@ -1391,7 +1391,7 @@ fn split_sqlite_create_table_items(ddl: &str) -> Option<Vec<&str>> {
     Some(items)
 }
 
-fn parse_leading_sqlite_ident(raw: &str) -> Option<(String, &str)> {
+fn parse_leading_sqlite_ident(raw: &str) -> Option<(String, bool, &str)> {
     let bytes = raw.as_bytes();
     let mut idx = 0usize;
     while idx < bytes.len() {
@@ -1431,10 +1431,10 @@ fn parse_leading_sqlite_ident(raw: &str) -> Option<(String, &str)> {
                 unescaped.push(ch);
             }
         }
-        Some((unescaped, &trimmed[pos..]))
+        Some((unescaped, true, &trimmed[pos..]))
     } else if first == '[' {
         let end = trimmed[1..].find(']')?;
-        Some((trimmed[1..1 + end].to_owned(), &trimmed[2 + end..]))
+        Some((trimmed[1..1 + end].to_owned(), true, &trimmed[2 + end..]))
     } else {
         let end = trimmed
             .find(|c: char| c.is_ascii_whitespace() || matches!(c, '(' | ')' | ',' | ';'))
@@ -1442,7 +1442,7 @@ fn parse_leading_sqlite_ident(raw: &str) -> Option<(String, &str)> {
         if end == 0 {
             return None;
         }
-        Some((trimmed[..end].to_owned(), &trimmed[end..]))
+        Some((trimmed[..end].to_owned(), false, &trimmed[end..]))
     }
 }
 
@@ -1484,10 +1484,11 @@ fn is_table_constraint_keyword(ident: &str) -> bool {
 fn extract_sqlite_generated_expr(table_ddl: Option<&str>, col_name: &str) -> Option<String> {
     let ddl = table_ddl?;
     for item in split_sqlite_create_table_items(ddl)? {
-        let Some((ident, rest)) = parse_leading_sqlite_ident(item) else {
+        let Some((ident, quoted, rest)) = parse_leading_sqlite_ident(item) else {
             continue;
         };
-        if is_table_constraint_keyword(&ident) || !ident.eq_ignore_ascii_case(col_name) {
+        if (!quoted && is_table_constraint_keyword(&ident)) || !ident.eq_ignore_ascii_case(col_name)
+        {
             continue;
         }
         // Scan `rest` at top-level parenthesis depth (`depth == 0`) outside quotes/comments for `AS (...)`
@@ -1540,10 +1541,10 @@ fn extract_sqlite_check_constraints(table_ddl: Option<&str>) -> Vec<ConstraintIn
     let mut unnamed_seq = 0usize;
 
     for item in items {
-        let Some((first_ident, _)) = parse_leading_sqlite_ident(item) else {
+        let Some((first_ident, quoted, _)) = parse_leading_sqlite_ident(item) else {
             continue;
         };
-        let col_owner = if is_table_constraint_keyword(&first_ident) {
+        let col_owner = if !quoted && is_table_constraint_keyword(&first_ident) {
             None
         } else {
             Some(first_ident)
@@ -1578,7 +1579,7 @@ fn extract_sqlite_check_constraints(table_ddl: Option<&str>) -> Vec<ConstraintIn
                 }
                 let word = &item[start..i];
                 if word.eq_ignore_ascii_case("CONSTRAINT") {
-                    if let Some((cname, rem)) = parse_leading_sqlite_ident(&item[i..]) {
+                    if let Some((cname, _, rem)) = parse_leading_sqlite_ident(&item[i..]) {
                         pending_constraint_name = Some(cname);
                         i = item.len() - rem.len();
                         continue;
@@ -1703,7 +1704,7 @@ fn parse_sqlite_trigger_header(def: &str) -> (&'static str, Vec<String>) {
 fn load_sqlite_triggers_sync(conn: &Connection, table_name: &str) -> Vec<TriggerInfo> {
     let mut triggers = Vec::new();
     if let Ok(mut trg_stmt) = conn.prepare(
-        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+        "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger' AND LOWER(tbl_name) = LOWER(?1) ORDER BY name",
     ) && let Ok(trg_rows) = trg_stmt.query_map([table_name], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
     }) {
@@ -2011,7 +2012,7 @@ impl Driver for Sqlite {
         self.with_conn(|conn| {
             let row: Option<(String, String, Option<String>)> = conn
                 .query_row(
-                    "SELECT type, tbl_name, sql FROM sqlite_schema WHERE name = ?1 AND name NOT LIKE 'sqlite_%'",
+                    "SELECT type, tbl_name, sql FROM sqlite_schema WHERE LOWER(name) = LOWER(?1) AND name NOT LIKE 'sqlite_%' ORDER BY (name = ?1) DESC LIMIT 1",
                     [&obj.name],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                 )
