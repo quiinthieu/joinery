@@ -125,16 +125,18 @@ sessions (candidate for `v0.1.0-preview.19`):
   `SQLITE_LIMIT_ATTACHED = 0` in `SafeMode::ReadOnly`,
   `PRAGMA foreign_keys = ON` + `busy_timeout = 5000` in writable sessions,
   `sqlite_master` + `PRAGMA table_xinfo`/`index_list`/`index_info`/`foreign_key_list`
-  catalog/explorer/inspector/DDL (`CHECK` constraint and schema-qualified trigger
-  header parsing)/ER `schema_diagram`/`schema_snapshot` diff, GUI DDL & migration
-  builder (`CREATE TABLE`, `ADD`/`RENAME`/`DROP COLUMN`, index create/drop,
+  catalog/explorer/inspector/DDL (quoted keyword column `CHECK`/`GENERATED`
+  extraction, case-insensitive `sqlite_schema` lookup, schema-qualified trigger
+  header parsing, and single-statement `CREATE TRIGGER` console execution)/ER
+  `schema_diagram`/`schema_snapshot` diff, GUI DDL & migration builder
+  (`CREATE TABLE`, `ADD`/`RENAME`/`DROP COLUMN`, index create/drop,
   `ANALYZE`/`VACUUM`/`REINDEX`), server-sorted/filtered/paged `TableView`
-  (supporting explicit PKs and fallback `rowid`), conflict-checked `SAVEPOINT`
-  grid edits/inserts/deletes, editable `SELECT` query results, multi-batch CSV
-  import, live `DataCompareDialog`, manual `BEGIN`/`COMMIT`/`ROLLBACK`
-  transactions, `EXPLAIN QUERY PLAN` tree visualization, parameterized
-  `search_data`, and live `inspection_schema` SQL column diagnostics, verified
-  end-to-end by `src-tauri/tests/sqlite.rs` (`3/3`).
+  (explicit PK keyset pagination and single-page read-only preview on keyless
+  tables), conflict-checked `SAVEPOINT` grid edits/inserts/deletes, editable
+  `SELECT` query results, multi-batch CSV import, live `DataCompareDialog`,
+  manual `BEGIN`/`COMMIT`/`ROLLBACK` transactions, `EXPLAIN QUERY PLAN` tree
+  visualization, parameterized `search_data`, and live `inspection_schema` SQL
+  column diagnostics, verified end-to-end by `src-tauri/tests/sqlite.rs` (`4/4`).
 - **Multi-Format Data Extractors, Selection Summary Stats, Session Output Log, SQL Codegen, and `Inline CTE` (`0f3bcd8`, `f0bf846`, `e66dc75`)**:
   Extended `copy-format.ts` (`CopyAsMenu.tsx` and Snowflake `RelationBrowser.tsx`
   `Copy slice`) across 9 formats (`CSV`, `TSV`, `JSON`, `NDJSON`, `SQL INSERT`,
@@ -142,20 +144,24 @@ sessions (candidate for `v0.1.0-preview.19`):
   fixing uncached query-result `⌘C` page loading in `DatabaseGrid.tsx`. Added
   lossless `BigInt`-scaled `selection-stats.ts` footer metrics (`Cells`,
   `Non-null`, `Sum`, `Avg`, `Min`, `Max`), bounded per-session
-  `DatabaseOutputPanel.tsx` (`<= 250` entries, redacting SQL text when
-  `!store_query_text`), dialect-quoted `sql-codegen.ts` (`SELECT`, `INSERT`,
-  `UPDATE`, `DELETE` with collision-safe `:param` names across `StructureView`,
-  Snowflake `ObjectInspectorView`, and `Sidebar`), and AST-aware `Inline CTE`
-  (supporting `FROM`/`JOIN`/`MERGE ... USING` call sites while rejecting DML
-  target CTEs and recursive/chained CTE hazards).
+  `DatabaseOutputPanel.tsx` (`<= 200` SQL-free execution metadata entries),
+  dialect-quoted `sql-codegen.ts` (`SELECT`, `INSERT`, `UPDATE`, `DELETE` with
+  `<= 64`-char / `<= 64`-slot collision-safe `:param` names and Snowflake
+  `VALUES (DEFAULT)` support across `StructureView`, Snowflake
+  `ObjectInspectorView`, and `Sidebar`), and AST-aware `Inline CTE` (supporting
+  `FROM`/`JOIN`/`MERGE ... USING` call sites while rejecting DML target CTEs and
+  recursive/chained CTE hazards).
 - **Pinned Console Result Subtabs, Rust-Backed Local Result Filter/Sort, Data Synchronization SQL, and Column Typo Quick-Fixes (`faff537`, `e66dc75`)**:
   Added `src-tauri/src/result_view.rs` (`query_result_view`, computing compact
   `Vec<u32>` display-to-actual row maps up to `100,000` rows / `32 MiB` with
-  zero-allocation exact decimal comparison for 38-digit Snowflake `NUMBER` /
-  64-bit integers and `ASC NULLS LAST` / `DESC NULLS FIRST` multi-column sorting)
-  plus `result-view.tsx` (`ResultQuickFilterBar` and header click / Shift+click
-  sorting across Grid, Transpose, Record, detached `"result"`, and
-  `WorkspaceSqlView` tabs without re-executing SQL). Added console result pinning
+  exact `NULL` matching, explicit `ResultLimitReached` rejection on `>100,000`-row
+  in-memory sorts to prevent partial top-N distortion, zero-allocation exact
+  decimal comparison for 38-digit Snowflake `NUMBER` / 64-bit integers, and
+  `ASC NULLS LAST` / `DESC NULLS FIRST` multi-column sorting) plus
+  `result-view.tsx` (`ResultQuickFilterBar` match counts, inline error status,
+  pending-edit `lockedReason` guards, and header click / Shift+click sorting
+  across Grid, Transpose, Record, detached `"result"`, and `WorkspaceSqlView`
+  tabs without re-executing SQL). Added console result pinning
   (`pinnedResultIds` / `pinnedResultLabels`, up to `8` pinned read-only snapshots
   preserved across subsequent console runs and exposed to `DataCompareDialog` and
   `WorkspaceSqlView`), bidirectional dialect-quoted Data Synchronization SQL
@@ -175,21 +181,22 @@ Local verification recorded on `feat/datagrip-2026-3-workflows`:
 - Rust static analysis & unit/integration suites: `cargo fmt --check`,
   `cargo check`, and strict
   `cargo clippy --all-targets --all-features -- -D warnings` clean (`0`
-  warnings), `754` non-socket `--lib` unit tests passed (`0` failed, `5`
-  ignored, including `result_view`, `sql_refactor`, `snowflake_mutations`,
-  `snowflake_explorer`, `drivers::snowflake_external::special_snowflake_tables_and_post_execution_query_profile_round_trip`,
-  `data_search`, `workspace_sql`, and `local_history`
-  tests), plus `114/114` non-socket integration tests (`43/43`
-  `tests/snowflake_process.rs`, `33/33` `tests/snowflake_external.rs` including
-  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`,
-  `11/11` `tests/snowflake_profile.rs`, `9/9`
+  warnings), `741+` non-socket `--lib` unit tests passed (`0` failed, `5`
+  ignored, including `result_view`, `safety`, `sql_refactor`,
+  `snowflake_mutations`, `snowflake_explorer`,
+  `drivers::snowflake_external::special_snowflake_tables_and_post_execution_query_profile_round_trip`,
+  `data_search`, `workspace_sql`, and `local_history` tests), plus `115/115`
+  non-socket integration tests (`43/43` `tests/snowflake_process.rs`, `33/33`
+  `tests/snowflake_external.rs` including real child-process
+  `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`, `11/11`
+  `tests/snowflake_profile.rs`, `9/9`
   `tests/snowflake_table_qualification_cli.rs`, `8/8`
-  `tests/history_lifecycle.rs`, `3/3` end-to-end `tests/sqlite.rs` against a real
+  `tests/history_lifecycle.rs`, `4/4` end-to-end `tests/sqlite.rs` against a real
   embedded SQLite 3 database, `2/2` `tests/groups.rs`, `2/2`
   `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, and `1/1`
-  `tests/recovery.rs`) passed (`868` standard non-socket Rust tests total).
-- Node & Python verification suites: `165/165` non-loopback `snowflake-helper`
-  unit tests, `136/136` `pnpm test:snowflake:qualification`, `59/59`
+  `tests/recovery.rs`) passed.
+- Node & Python verification suites: `137/137` non-loopback `snowflake-helper`
+  unit tests (`9` suites), `136/136` `pnpm test:snowflake:qualification`, `59/59`
   `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
   `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
   `pnpm test:native:recovery:runner`, `11/11`

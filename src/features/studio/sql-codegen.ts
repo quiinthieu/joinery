@@ -13,17 +13,34 @@ export const SQL_CODEGEN_TEMPLATES: readonly {
   { id: "delete", label: "DELETE" },
 ];
 
-function allocateParamName(colName: string, index: number, used: Set<string>): string {
+const MAX_QUERY_PARAMS = 64;
+const MAX_PARAM_BASE_LEN = 56;
+
+function allocateParamName(
+  colName: string,
+  index: number,
+  used: Set<string>,
+  maxSlots = MAX_QUERY_PARAMS,
+): string {
+  if (used.size >= maxSlots) {
+    return "NULL";
+  }
   let base = colName.replace(/[^A-Za-z0-9_]/g, "_");
   if (!base || /^_+$/.test(base)) {
     base = `p${index + 1}`;
   } else if (/^[0-9]/.test(base)) {
     base = `p_${base}`;
   }
+  if (base.length > MAX_PARAM_BASE_LEN) {
+    base = base.slice(0, MAX_PARAM_BASE_LEN);
+  }
   let candidate = base;
   let suffix = 2;
   while (used.has(candidate.toLowerCase())) {
-    candidate = `${base}_${suffix++}`;
+    const suffixStr = `_${suffix++}`;
+    const trimmedBase =
+      base.length + suffixStr.length > 64 ? base.slice(0, 64 - suffixStr.length) : base;
+    candidate = `${trimmedBase}${suffixStr}`;
   }
   used.add(candidate.toLowerCase());
   return `:${candidate}`;
@@ -95,9 +112,15 @@ export function generateTableSql(
       const effectiveCols =
         insertCols.length > 0 ? insertCols : cols.filter((c) => !(c.primaryKey && c.hasDefault));
       if (effectiveCols.length === 0) {
-        return engine === "mysql"
-          ? `INSERT INTO ${targetTable} () VALUES ();`
-          : `INSERT INTO ${targetTable} DEFAULT VALUES;`;
+        if (engine === "mysql") {
+          return `INSERT INTO ${targetTable} () VALUES ();`;
+        }
+        if (engine === "snowflake") {
+          return cols.length > 0
+            ? `INSERT INTO ${targetTable} (${quoteSqlIdentifier(cols[0].name, engine)})\nVALUES (DEFAULT);`
+            : `SELECT * FROM ${targetTable} LIMIT 0;`;
+        }
+        return `INSERT INTO ${targetTable} DEFAULT VALUES;`;
       }
       const usedParams = new Set<string>();
       const colNames = effectiveCols.map((c) => quoteSqlIdentifier(c.name, engine)).join(", ");
@@ -112,13 +135,18 @@ export function generateTableSql(
       const fallbackCols =
         mutableCols.length > 0 ? mutableCols : cols.filter((c) => !pkSet.has(c.name));
       const setCols = fallbackCols.length > 0 ? fallbackCols : cols.slice(0, 1);
+      const reservedKeySlots = Math.min(
+        MAX_QUERY_PARAMS,
+        schema.primaryKey.length > 0 ? schema.primaryKey.length : cols.length > 0 ? 1 : 0,
+      );
+      const setParamBudget = Math.max(0, MAX_QUERY_PARAMS - reservedKeySlots);
       const usedParams = new Set<string>();
       const setClause =
         setCols.length > 0
           ? setCols
               .map(
                 (c, idx) =>
-                  `  ${quoteSqlIdentifier(c.name, engine)} = ${allocateParamName(c.name, idx, usedParams)}`,
+                  `  ${quoteSqlIdentifier(c.name, engine)} = ${allocateParamName(c.name, idx, usedParams, setParamBudget)}`,
               )
               .join(",\n")
           : `  /* no mutable columns */`;

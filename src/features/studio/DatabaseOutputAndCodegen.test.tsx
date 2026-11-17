@@ -224,5 +224,59 @@ describe("Database Output session log and SQL code generation", () => {
     ).toBe(
       'INSERT INTO "public"."metrics" ("2026_sales", "a-b", "a.b")\nVALUES (:p_2026_sales, :a_b, :a_b_2);',
     );
+
+    // Snowflake all-default INSERT emits valid column VALUES (DEFAULT) instead of unsupported DEFAULT VALUES
+    expect(
+      generateTableSql("insert", "snowflake", {
+        table: { schema: "PUBLIC", name: "SEQ_ONLY" },
+        primaryKey: ["ID"],
+        foreignKeys: [],
+        inboundForeignKeys: [],
+        editable: true,
+        columns: [
+          {
+            id: "ID",
+            name: "ID",
+            databaseType: "NUMBER(38,0)",
+            kind: "integer",
+            nullable: false,
+            primaryKey: true,
+            foreignKey: false,
+            editable: false,
+            insertable: false,
+            hasDefault: true,
+          },
+        ],
+      }),
+    ).toBe('INSERT INTO "PUBLIC"."SEQ_ONLY" ("ID")\nVALUES (DEFAULT);');
+
+    // >64-char column names and >64 columns stay within params.rs (<=64 chars, <=64 slots)
+    const longPrefix = "c".repeat(75);
+    const wideCols = Array.from({ length: 68 }, (_, idx) => ({
+      id: `${longPrefix}_${idx}`,
+      name: `${longPrefix}_${idx}`,
+      databaseType: "VARCHAR",
+      kind: "text" as const,
+      nullable: true,
+      primaryKey: idx === 0,
+      foreignKey: false,
+      editable: idx > 0,
+      insertable: true,
+      hasDefault: false,
+    }));
+    const wideUpdate = generateTableSql("update", "postgres", {
+      table: { schema: "public", name: "wide_tbl" },
+      primaryKey: [wideCols[0].name],
+      foreignKeys: [],
+      inboundForeignKeys: [],
+      editable: true,
+      columns: wideCols,
+    });
+    const paramMatches = [...wideUpdate.matchAll(/:([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+    expect(paramMatches.length).toBe(64);
+    expect(paramMatches.every((p) => p.length <= 64)).toBe(true);
+    expect(new Set(paramMatches).size).toBe(64);
+    expect(wideUpdate).toContain("WHERE ");
+    expect(wideUpdate.split("WHERE ")[1]).toMatch(/:[A-Za-z_][A-Za-z0-9_]*;/);
   });
 });
