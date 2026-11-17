@@ -31,6 +31,7 @@ import type {
   TableStorageStats,
 } from "../../ipc/generated";
 import { collectWorkspaceSqlDocuments } from "./sql-refactor";
+import { SQL_CODEGEN_TEMPLATES, generateTableSql, type SqlCodegenTemplate } from "./sql-codegen";
 import { client, messageOf } from "../../ipc/client";
 import { revokeSchemaSelectionBeforeWork, useStudio, type StudioTab } from "../../state/studio";
 import { objectTabTitle } from "../connections/explorer-tree";
@@ -719,7 +720,69 @@ export function ObjectInspectorView({
 
       {details.snowflakeTable && details.snowflakeTable.columns.length > 0 && (
         <section className="object-section" aria-label="Object columns">
-          <h3 className="object-section-title">Columns</h3>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              flexWrap: "wrap",
+              marginBottom: 8,
+            }}
+          >
+            <h3 className="object-section-title" style={{ margin: 0 }}>
+              Columns
+            </h3>
+            {(onOpenInEditor || tab.connectionId) &&
+              session &&
+              session.engine !== "redis" &&
+              (() => {
+                const sfSubtype = details.snowflakeTable.subtype;
+                const readOnlySubtype =
+                  details.object.kind === "view" ||
+                  details.object.kind === "materializedView" ||
+                  sfSubtype === "dynamic" ||
+                  sfSubtype === "external" ||
+                  sfSubtype === "event";
+                const templates = readOnlySubtype
+                  ? SQL_CODEGEN_TEMPLATES.filter((t) => t.id === "select")
+                  : SQL_CODEGEN_TEMPLATES;
+                const pkCols = details.snowflakeTable.columns
+                  .filter((c) => c.primaryKey)
+                  .map((c) => c.name);
+                const runCodegen = (tmpl: SqlCodegenTemplate) => {
+                  const sql = generateTableSql(tmpl, session.engine, {
+                    table: { schema: details.object.schema, name: details.object.name },
+                    columns: details.snowflakeTable!.columns,
+                    primaryKey: pkCols,
+                    foreignKeys: [],
+                    inboundForeignKeys: [],
+                    editable: !readOnlySubtype,
+                  });
+                  if (onOpenInEditor) onOpenInEditor(sql);
+                  else if (tab.connectionId) useStudio.getState().openQuery(tab.connectionId, sql);
+                };
+                return (
+                  <div
+                    role="group"
+                    aria-label="Generate SQL"
+                    style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                  >
+                    {templates.map((tmpl) => (
+                      <button
+                        key={tmpl.id}
+                        type="button"
+                        className="button ghost small"
+                        aria-label={`Generate ${tmpl.label} SQL`}
+                        onClick={() => runCodegen(tmpl.id)}
+                      >
+                        {tmpl.label}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+          </div>
           <table className="structure-table" aria-label="Columns">
             <thead>
               <tr>

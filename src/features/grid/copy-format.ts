@@ -188,7 +188,7 @@ function quoteSqlString(raw: string, engine?: EngineKind): string {
   return `'${raw.replace(/'/g, "''")}'`;
 }
 
-function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind): string {
+export function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind): string {
   if (isDefaultCell(cell)) return "DEFAULT";
   if (cell === null) return "NULL";
   if (column.kind === "integer") {

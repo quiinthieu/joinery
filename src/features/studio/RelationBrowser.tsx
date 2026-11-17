@@ -24,6 +24,14 @@ import { InlineError, Modal } from "../../components/ui/Modal";
 import { tabNavigation } from "../../components/ui/tabs";
 import { JsonTreeViewer, SpatialViewer } from "../grid/ValueDialog";
 import {
+  COPY_FORMATS,
+  copyFormatLabel,
+  formatGridCells,
+  writeClipboardText,
+  type CopyCell,
+  type CopyFormat,
+} from "../grid/copy-format";
+import {
   MAX_HEX_PREVIEW_BYTES,
   buildJsonTree,
   decodeBinaryPreview,
@@ -281,6 +289,8 @@ export function RelationBrowser({
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
   const [previewTransposed, setPreviewTransposed] = useState(false);
+  const [copyFormat, setCopyFormat] = useState<CopyFormat>("csv");
+  const [copyScope, setCopyScope] = useState<"page" | "slice">("page");
   const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
   const virtualForeignKeys = useStudio((state) => state.virtualForeignKeys);
   const [inspectedCell, setInspectedCell] = useState<{
@@ -2657,6 +2667,93 @@ export function RelationBrowser({
                 onClick={() => setPreviewTransposed((prev) => !prev)}
               >
                 {previewTransposed ? "Table view" : "Transpose"}
+              </button>
+              <label>
+                Format{" "}
+                <select
+                  aria-label="Copy Snowflake preview format"
+                  value={copyFormat}
+                  onChange={(e) => setCopyFormat(e.target.value as CopyFormat)}
+                >
+                  {COPY_FORMATS.map((fmt) => (
+                    <option key={fmt.id} value={fmt.id}>
+                      {fmt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Scope{" "}
+                <select
+                  aria-label="Copy Snowflake preview scope"
+                  value={copyScope}
+                  onChange={(e) => setCopyScope(e.target.value as "page" | "slice")}
+                >
+                  <option value="page">Visible page ({rows.length})</option>
+                  <option value="slice">Retained slice ({preview.rows.length})</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="button small"
+                aria-label="Copy Snowflake preview slice"
+                disabled={preview.columns.length === 0}
+                onClick={() => {
+                  const pkCols = new Set<string>();
+                  if (
+                    mappings &&
+                    mappings.contextKey === contextKey &&
+                    mappings.value.targetId === selected &&
+                    mappings.value.revision === catalog?.revision
+                  ) {
+                    for (const m of mappings.value.mappings) {
+                      if (m.kind === "primaryKey" && m.status === "available") {
+                        for (const c of m.columns) pkCols.add(c.columnName);
+                      }
+                    }
+                  }
+                  const enrichedColumns = preview.columns.map((c) =>
+                    pkCols.has(c.name) ? { ...c, primaryKey: true } : c,
+                  );
+                  const startIdx = copyScope === "page" ? rowPage * PAGE_ROWS : 0;
+                  const sourceRows = copyScope === "page" ? rows : preview.rows;
+                  const matrix: CopyCell[][] = sourceRows.map((row, localIdx) => {
+                    const absIdx = startIdx + localIdx;
+                    const rowEdits = updatedCells[absIdx];
+                    if (!rowEdits) return row;
+                    return row.map((cell, cIdx) => {
+                      const override = rowEdits[cIdx];
+                      if (!override) return cell;
+                      if (override.kind === "default") return { kind: "default" } as const;
+                      if (override.kind === "null") return null;
+                      return override.value;
+                    });
+                  });
+                  const formatted = formatGridCells({
+                    columns: enrichedColumns,
+                    rows: matrix,
+                    format: copyFormat,
+                    engine: "snowflake",
+                    table: inspection?.table ?? target?.table ?? null,
+                    includeHeaders: true,
+                  });
+                  if (!formatted.ok) {
+                    setError(formatted.error);
+                    return;
+                  }
+                  void writeClipboardText(formatted.text)
+                    .then(() => {
+                      setError(null);
+                      useStudio
+                        .getState()
+                        .notify(
+                          `Copied ${formatted.rowCount.toLocaleString()} Snowflake row${formatted.rowCount === 1 ? "" : "s"} as ${copyFormatLabel(copyFormat)}`,
+                        );
+                    })
+                    .catch((err) => setError(messageOf(err)));
+                }}
+              >
+                Copy slice
               </button>
             </div>
             <div className="relation-table-scroll">
