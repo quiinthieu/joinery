@@ -61,6 +61,15 @@ test("exercises Transpose/Record views, detached result tabs, Workspace SQL, Dat
   await page.getByRole("button", { name: "Next record", exact: true }).click();
   await expect(page.getByTestId("record-card-view")).toContainText("grace@example.test");
 
+  // 1b. Local Result Quick Filter + Pinned Console Result subtab across runs
+  await page.getByLabel("Filter result rows", { exact: true }).fill("grace");
+  await expect(page.locator(".result-quick-filter-count")).toContainText("1 / 2");
+  await page.getByRole("button", { name: "Reset view", exact: true }).click();
+
+  await page.getByRole("button", { name: "Pin result", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Unpin result", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Pinned #1/ })).toBeVisible();
+
   await page.getByRole("button", { name: "Open result in tab", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Open originating SQL", exact: true }),
@@ -168,6 +177,22 @@ test("connects embedded SQLite (:memory:), inspects EXPLAIN QUERY PLAN, and extr
   await expect(page.getByRole("region", { name: "Database output" })).toContainText(
     "Execution started",
   );
+
+  // SQLite live column inspection with typo quick-fix suggestion chip
+  await editor.fill("CREATE TABLE demo_users (id INTEGER PRIMARY KEY, customer_email TEXT);");
+  await page.locator(".run-button").click();
+  await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+  const refreshCatalog = page.waitForResponse((r) => r.url().endsWith("/rpc/completion_catalog"));
+  await page.getByRole("button", { name: "Refresh completion context", exact: true }).click();
+  await refreshCatalog;
+
+  await placeCaret(editor, "SELECT u.|custmoer_email FROM demo_users u;");
+  await page.getByRole("button", { name: "Inspect SQL columns", exact: true }).click();
+  const quickFixGroup = page.getByRole("group", { name: "Column typo quick-fixes" });
+  await expect(quickFixGroup).toBeVisible();
+  await quickFixGroup.getByRole("button", { name: "customer_email", exact: true }).click();
+  await page.getByRole("button", { name: "Apply column correction", exact: true }).click();
+  await expect(editor).toContainText('"customer_email"');
 
   expect(errors).toEqual([]);
 });

@@ -42,7 +42,11 @@ DataGrip-replacement workflow surface across the bundled Apache-2.0
   (`OFFSET`), single-column `ORDER BY ... ASC/DESC NULLS FIRST/LAST`, typed
   column filters, `Transpose` & `Record` grid views, persisted column pinning /
   freezing (`Show all` / `Hide optional` / `Fit to window`), detached `"result"`
-  tabs, and multi-batch RFC-4180 CSV staging up to `100,000` rows in frame- and
+  tabs, pinned console result subtabs, Rust-backed local query-result
+  quick-filter & multi-column sort (`result_view.rs`), 9-format data extractors
+  across `DatabaseGrid` and Snowflake `RelationBrowser`, lossless selection
+  summary stats, Data Compare synchronization SQL generation, and multi-batch
+  RFC-4180 CSV staging up to `100,000` rows in frame- and
   row-bounded batches (`<= 500` rows, `<= 2,000` scalar binds, `<= 768 KiB` unit
   SQL, and `< 1 MiB` helper frame per batch) across base/temporary tables up to
   `1,000` columns and all lossless Snowflake scalar/temporal/binary/semi-structured/spatial
@@ -87,9 +91,10 @@ DataGrip-replacement workflow surface across the bundled Apache-2.0
   `AUTOCOMMIT=true` with post-execution metadata reconciliation; and Snowflake
   SQL dialect authoring with semi-structured `:path` completion, `$$` /
   single-quote literal context suppression, live `inspection_schema`
-  unknown-column diagnostics, AST-aware workspace `Find Usages`
+  unknown-column diagnostics with typo quick-fix chips, dialect-quoted
+  `SELECT`/`INSERT`/`UPDATE`/`DELETE` SQL codegen, AST-aware workspace `Find Usages`
   (`sql_refactor.rs` across open tabs + saved queries), and `Extract CTE` /
-  `Expand Wildcard (* / alias.*)` refactorings (`SqlRefactorDialog.tsx`).
+  `Inline CTE` / `Expand Wildcard (* / alias.*)` refactorings (`SqlRefactorDialog.tsx`).
 - **Cross-source Workspace SQL, bounded full-text data search, SQL Local History, durable outcomes, retained console, and million-row results**
   (`8ec0477`, `d8bbba8`): Read-only sandboxed in-memory SQLite `WorkspaceSqlView`
   joining retained `ResultStore` snapshots across engines; bounded parameterized
@@ -124,7 +129,7 @@ acceptance remain open gates.
 | History and scripts            | Reuse scripts, query history and session-independent drafts with chosen privacy/persistence, no automatic reconnect/execute after restart                                                                                | Schema-8 durable original outcomes, SQL-free batch archive, paged search, privacy controls, and encrypted metadata recovery locally verified; hands-on owner restart acceptance open                                                                                                                                                                                                                                                                                     |
 | Performance                    | Appropriate Snowflake estimated/actual plans, query history/profile/timing and required monitoring/cancellation workflow                                                                                                 | Observed Snowflake `EXPLAIN USING JSON` `PlanContext` operator-tree parsing, partition/byte estimates, `SqlEditor` plan snapshot capture/diff, and post-execution `QUERY_HISTORY_BY_SESSION` + `GET_QUERY_OPERATOR_STATS` operator profiler (`SnowflakeQueryProfileModal`) locally verified (`a05306a`, `7434818`, `8e1b5f1`); live account plan/operator-stats shapes open                                                                                              |
 | Schema and engine behavior     | Required Snowflake DDL/object operations, schema compare/migration and session/role behavior, with explicit implicit-commit warnings and stale-target checks                                                             | 8 reviewed Snowflake DDL actions plus `SchemaDiffView` live/snapshot schema comparison and dialect-accurate Snowflake `CREATE`/`ALTER`/`DROP` migration DDL generation (`CLUSTER BY`, `IDENTITY`, sequences, views, `$$`-delimited routines, unsupported-table disclosures, and `Open in SQL editor`) locally verified; live account DDL qualification open                                                                                                              |
-| Everyday macOS use             | Full applicable keyboard/accessibility workflows, native installation/update/startup/quit/relaunch, secure credential/session lifecycle and local persistence                                                            | Playwright E2E workflows (`27/27` Snowflake specs), native WebView smoke/recovery, and schema-8 macOS `Joinery.app` bundle locally verified (`v0.1.0-preview.17` shipped/installed; `v0.1.0-preview.18` candidate); Developer ID/notarization and hands-on owner walkthrough open                                                                                                                                                                                        |
+| Everyday macOS use             | Full applicable keyboard/accessibility workflows, native installation/update/startup/quit/relaunch, secure credential/session lifecycle and local persistence                                                            | Playwright E2E workflows (`27/27` Snowflake specs), native WebView smoke/recovery, and schema-8 macOS `Joinery.app` bundle locally verified (`v0.1.0-preview.18` shipped/installed; `v0.1.0-preview.19` candidate); Developer ID/notarization and hands-on owner walkthrough open                                                                                                                                                                                        |
 | Other DataGrip facilities      | Identify remaining applicable features in current official documentation, including integrations/AI where provided by the non-commercial context; explicitly track provider/entitlement limits                           | Tracked in [feature matrix](datagrip-feature-matrix.md); external AI/VCS entitlements remain separate from core Snowflake database workflows                                                                                                                                                                                                                                                                                                                             |
 
 ## Implementation sequence and safety gates

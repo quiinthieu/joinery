@@ -272,6 +272,42 @@ describe("DataGrip 2026.3 E2E ARIA & selector contracts", () => {
     );
 
     expect(container.querySelector(".run-button")).toBeTruthy();
+    expect(screen.getByLabelText("Filter result rows")).toBeTruthy();
+    const pinBtn = screen.getByRole("button", { name: "Pin result" });
+    fireEvent.click(pinBtn);
+    const updatedTab = useStudio.getState().tabs.find((t) => t.id === queryTab.id)!;
+    rerender(
+      <Workbench
+        tab={updatedTab}
+        profile={pgProfile}
+        session={pgSession}
+        editorRef={editorRef}
+        gridRef={gridRef}
+        onRun={vi.fn()}
+        onExplain={vi.fn()}
+        onAnalyze={vi.fn()}
+        onOpenParameters={vi.fn()}
+        onReview={vi.fn()}
+        onTransactionControl={vi.fn().mockResolvedValue(undefined)}
+        onConfirm={vi.fn()}
+        onSelect={vi.fn()}
+        onOpenValue={vi.fn()}
+        onOpenColumns={vi.fn()}
+        onOpenExport={vi.fn()}
+        onOpenImport={vi.fn()}
+        onOpenCompare={vi.fn()}
+        onNewSession={vi.fn()}
+        onOpenSqlFile={vi.fn()}
+        onSaveSqlFile={vi.fn()}
+        onSaveToLibrary={vi.fn()}
+        onOpenLocalHistory={vi.fn()}
+        onToggleBookmark={vi.fn()}
+        onQueryChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Unpin result" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /Pinned #1/ })).toBeTruthy();
+
     const detachBtn = screen.getByRole("button", { name: "Open result in tab" });
     fireEvent.click(detachBtn);
 

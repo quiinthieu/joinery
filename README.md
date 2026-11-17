@@ -88,11 +88,17 @@ columns (including writable `GEOGRAPHY` and `GEOMETRY` WKT/EWKT/RFC-7946 GeoJSON
 codecs with `TO_GEOGRAPHY`/`TO_GEOMETRY` binds and `ST_ASEWKB` conflict checks),
 `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
 browsing, DataGrip 2026.3 column pinning/freezing + `Transpose`/`Record` views +
-row `Clone` + detached `"result"` tabs, frame-bounded multi-batch CSV imports up
+row `Clone` + detached `"result"` tabs + pinned console result subtabs +
+Rust-backed local query result quick-filter & multi-column sort + 9-format data
+extractors (`CSV`/`TSV`/`JSON`/`NDJSON`/`SQL INSERT`/`SQL UPDATE`/`SQL IN`/`Markdown`/`HTML`)
+across `DatabaseGrid` and Snowflake `RelationBrowser`, lossless grid selection
+summary stats, per-session `DatabaseOutputPanel`, Data Compare synchronization
+SQL generation (`INSERT`/`UPDATE`/`DELETE`), frame-bounded multi-batch CSV imports up
 to `100,000` rows, `ObjectExplorer` / `ObjectInspector` (including `DYNAMIC`,
 `EXTERNAL`, `HYBRID`, `EVENT`, `ICEBERG`, `TRANSIENT`, and `TEMPORARY` table
-subtypes, `SHOW DYNAMIC TABLES` / `SHOW EXTERNAL TABLES` attributes, and Dynamic
-Table upstream lineage), user-defined Virtual
+subtypes, `SHOW DYNAMIC TABLES` / `SHOW EXTERNAL TABLES` attributes, Dynamic
+Table upstream lineage, and dialect-quoted `SELECT`/`INSERT`/`UPDATE`/`DELETE` SQL
+codegen), user-defined Virtual
 Foreign Keys across ER diagrams, SQL `JOIN` completion, and row navigation,
 bounded Snowflake `SchemaDiagram` ER views (PK and composite physical/virtual FK
 layout with `ObjectInspector` navigation), Snowflake `SchemaDiff` live/snapshot
@@ -104,8 +110,10 @@ table disclosures and `Open in SQL editor` handoff), cross-source Workspace SQL
 in-memory SQLite), bounded parameterized full-text data search (`data_search.rs`),
 privacy-safe SQL Local History (`local_history.rs` with diff and restore),
 AST-aware workspace SQL `Find Usages` (`sql_refactor.rs` across open tabs and
-saved queries) plus `Extract CTE` and `Expand Wildcard (* / alias.*)`
-refactorings, rich
+saved queries) plus `Extract CTE`, `Inline CTE` (including `MERGE USING`), and
+`Expand Wildcard (* / alias.*)`
+refactorings, live `inspection_schema` column diagnostics with typo quick-fix
+suggestion chips across PostgreSQL, MySQL/MariaDB, SQLite, and Snowflake, rich
 cell value inspection across `ValueDialog` and Snowflake `RelationBrowser`
 (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON formatter + staged cell
 apply, raw hex `BINARY` Hex/ASCII dump, and `GEOGRAPHY`/`GEOMETRY`
