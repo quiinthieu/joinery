@@ -55,7 +55,7 @@ function stripComments(tokens: readonly SqlToken[]): SqlToken[] {
 
 function normKey(raw: string, quoted: boolean, engine: EngineKind): string {
   const val = identifierValue({ value: raw, quoted }, engine);
-  return engine === "mysql" ? val.toLowerCase() : val;
+  return engine === "mysql" || engine === "sqlite" ? val.toLowerCase() : val;
 }
 
 function tokenToIdent(tok: SqlToken): Identifier {
@@ -722,11 +722,45 @@ function collectCteCallSitesInTokens(
     startIdx = innerWith.bodyStartIndex;
   }
 
+  const unquotedWord = (t?: SqlToken) =>
+    t?.kind === "Keyword" || t?.kind === "Identifier" ? t.text.toUpperCase() : "";
+  const tailTokens = tokens.slice(startIdx);
+  const hasMerge = tailTokens.some((t) => unquotedWord(t) === "MERGE");
+  const hasRelationStatement =
+    hasMerge || tailTokens.some((t) => ["SELECT", "UPDATE", "DELETE"].includes(kw(t)));
+
   let inFromClause = false;
   for (let i = startIdx; i < tokens.length; i++) {
     const tok = tokens[i];
     const word = kw(tok);
-    if (word === "FROM") {
+    const prevWord = kw(tokens[i - 1]);
+    const prevAnyWord = unquotedWord(tokens[i - 1]);
+    const isDeleteFrom = word === "FROM" && prevWord === "DELETE";
+    const isDmlInto = word === "INTO" && (prevWord === "INSERT" || prevAnyWord === "MERGE");
+    const isDistinctFrom = word === "FROM" && prevWord === "DISTINCT";
+
+    if (word === "UPDATE" || isDeleteFrom || isDmlInto) {
+      let targetPos = i + 1;
+      if (unquotedWord(tokens[targetPos]) === "ONLY") targetPos++;
+      const targetTok = tokens[targetPos];
+      if (isName(targetTok) && tokens[targetPos + 1]?.text !== ".") {
+        const targetIdent = tokenToIdent(targetTok);
+        if (normKey(targetIdent.value, targetIdent.quoted, engine) === targetNorm) {
+          throw new Error(
+            `CTE "${targetIdent.value}" is used as a DML target and cannot be inlined as a derived subquery.`,
+          );
+        }
+      }
+    }
+
+    const isRelationFrom =
+      hasRelationStatement && word === "FROM" && !isDeleteFrom && !isDistinctFrom;
+    const isMergeUsing =
+      hasMerge &&
+      unquotedWord(tok) === "USING" &&
+      prevWord !== "JOIN" &&
+      tokens[i + 1]?.kind !== "Parens";
+    if (isRelationFrom) {
       inFromClause = true;
     } else if (FROM_END_KEYWORDS.has(word) || tok.text === ";") {
       inFromClause = false;
@@ -736,7 +770,7 @@ function collectCteCallSitesInTokens(
       collectCteCallSitesInTokens(tok.children, targetNorm, engine, into);
     }
 
-    if (word === "FROM" || word === "JOIN" || (inFromClause && tok.text === ",")) {
+    if (isRelationFrom || word === "JOIN" || isMergeUsing || (inFromClause && tok.text === ",")) {
       let j = i + 1;
       if (kw(tokens[j]) === "LATERAL") j++;
       const relTok = tokens[j];

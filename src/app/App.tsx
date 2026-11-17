@@ -2562,10 +2562,10 @@ export function App() {
               if (!connectionId || !sess) return [];
               const canDiagram =
                 sess.capabilities.schemaDiagram ??
-                (sess.engine === "postgres" || sess.engine === "mysql");
+                (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite");
               const canDiff =
                 sess.capabilities.schemaDiff ??
-                (sess.engine === "postgres" || sess.engine === "mysql");
+                (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite");
               if (!canDiagram && !canDiff) return [];
               const connProfile = state.bootstrap?.profiles.find((p) => p.id === connectionId);
               const schemaSet = new Set<string>([
@@ -2574,6 +2574,8 @@ export function App() {
               ]);
               if (schemaSet.size === 0 && sess.engine === "snowflake") {
                 schemaSet.add(connProfile?.snowflake?.schema || "PUBLIC");
+              } else if (schemaSet.size === 0 && sess.engine === "sqlite") {
+                schemaSet.add("main");
               }
               const schemas = [...schemaSet];
               const preferred =

@@ -101,7 +101,8 @@ export function prepareColumnInspection(
     (nameToken(token) ||
       (["Keyword", "Type", "Builtin"].includes(token.kind) &&
         /^[A-Za-z_][A-Za-z0-9_$]*$/.test(token.text)));
-  const columnKey = (name: string) => (context.engine === "mysql" ? name.toLowerCase() : name);
+  const columnKey = (name: string) =>
+    context.engine === "mysql" || context.engine === "sqlite" ? name.toLowerCase() : name;
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
   if (!tree) throw unsupported();
   let invalid = false;
@@ -128,7 +129,8 @@ export function prepareColumnInspection(
   );
   const key = (raw: string) => {
     const value = identifierValue(readIdentifier(raw), context.engine);
-    return context.engine === "mysql" && context.caseSensitiveTableNames === false
+    return (context.engine === "mysql" && context.caseSensitiveTableNames === false) ||
+      context.engine === "sqlite"
       ? value.toLowerCase()
       : value;
   };
@@ -660,9 +662,16 @@ export function prepareColumnInspection(
       "TIMESTAMP",
       "VARCHAR",
     ]);
+    const isImplicitRowId = (rawIdent: string) => {
+      const lower = readIdentifier(rawIdent).value.toLowerCase();
+      if (context.engine === "mysql") return lower === "_rowid";
+      if (context.engine === "sqlite") {
+        return lower === "rowid" || lower === "oid" || lower === "_rowid_";
+      }
+      return false;
+    };
     function noteUnqualified(token: SqlToken, owners: Binding[]) {
-      if (context.engine === "mysql" && readIdentifier(token.text).value.toLowerCase() === "_rowid")
-        throw unsupported();
+      if (isImplicitRowId(token.text)) throw unsupported();
       checkName(token);
       if (!owners.length) throw unsupported();
       const ref: MissingSqlColumn = {
@@ -719,11 +728,7 @@ export function prepareColumnInspection(
         // Qualified function names are not column references; their arguments
         // are still visited on the next iteration.
         if (!list[i + 3]?.children) {
-          if (
-            context.engine === "mysql" &&
-            readIdentifier(column.text).value.toLowerCase() === "_rowid"
-          )
-            throw unsupported();
+          if (isImplicitRowId(column.text)) throw unsupported();
           const binding = scope.find((item) => item.key === key(token.text));
           if (!binding)
             throw new Error(

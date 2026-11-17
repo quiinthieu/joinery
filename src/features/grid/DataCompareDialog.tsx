@@ -742,11 +742,17 @@ export function DataCompareDialog({
                   }}
                 >
                   {liveProfiles.length === 0 ? (
-                    <option value="">No connected PG/MySQL session</option>
+                    <option value="">No connected PG/MySQL/SQLite session</option>
                   ) : (
                     liveProfiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.engine === "mysql" ? "MySQL" : "PostgreSQL"})
+                        {p.name} (
+                        {p.engine === "mysql"
+                          ? "MySQL"
+                          : p.engine === "sqlite"
+                            ? "SQLite"
+                            : "PostgreSQL"}
+                        )
                       </option>
                     ))
                   )}

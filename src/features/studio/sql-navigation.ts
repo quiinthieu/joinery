@@ -421,7 +421,7 @@ function buildLookup(context: SqlSymbolContext): TableLookup {
 
 function normalizeSymbolKey(ident: Identifier, engine: EngineKind): string {
   const val = identifierValue(ident, engine);
-  return engine === "mysql" && !ident.quoted ? val.toLowerCase() : val;
+  return (engine === "mysql" && !ident.quoted) || engine === "sqlite" ? val.toLowerCase() : val;
 }
 
 function sameNormalizedName(
@@ -430,7 +430,7 @@ function sameNormalizedName(
   engine: EngineKind,
   caseSensitiveOverride?: boolean,
 ): boolean {
-  if (engine === "mysql" && caseSensitiveOverride === false) {
+  if ((engine === "mysql" && caseSensitiveOverride === false) || engine === "sqlite") {
     return candidateName.toLowerCase() === ident.value.toLowerCase();
   }
   return candidateName === identifierValue(ident, engine);
@@ -987,7 +987,7 @@ function analyzeLocalRename(
   const cteRelations = new Map<DetailedBinding, Cte>();
   const key = (token: SqlToken) => {
     const value = identifierValue(readIdentifier(token.text), engine);
-    return engine === "mysql" ? value.toLowerCase() : value;
+    return engine === "mysql" || engine === "sqlite" ? value.toLowerCase() : value;
   };
   const exceedsIdentifierLimit = (name: string) =>
     (engine === "postgres" && new TextEncoder().encode(name).length > 63) ||
@@ -1313,7 +1313,7 @@ function analyzeLocalRename(
         throw new Error("Use a name of 1–128 characters without control characters.");
       if (exceedsIdentifierLimit(name))
         throw new Error("Name exceeds this database's identifier length limit.");
-      const replacement = engine === "mysql" ? name.toLowerCase() : name;
+      const replacement = engine === "mysql" || engine === "sqlite" ? name.toLowerCase() : name;
       if (replacement === targetKey) throw new Error("Choose a different name.");
       if (cte) {
         const owning = cteScopes.find((scope) => scope.includes(cte))!;

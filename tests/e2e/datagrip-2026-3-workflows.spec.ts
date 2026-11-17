@@ -98,6 +98,8 @@ test("exercises Transpose/Record views, detached result tabs, Workspace SQL, Dat
     .getByRole("button", { name: "browse_sort", exact: true })
     .click();
   await page.getByRole("button", { name: "Structure", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Generate SELECT SQL" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Generate INSERT SQL" })).toBeVisible();
   await page.getByRole("button", { name: "Add virtual FK…" }).click();
   const vfkDialog = page.getByRole("dialog");
   await vfkDialog
@@ -150,6 +152,22 @@ test("connects embedded SQLite (:memory:), inspects EXPLAIN QUERY PLAN, and extr
   await cteDialog.getByLabel("CTE name", { exact: true }).fill("ver_cte");
   await cteDialog.getByRole("button", { name: "Extract CTE", exact: true }).click();
   await expect(editor).toContainText("WITH ver_cte AS");
+
+  await placeCaret(
+    editor,
+    "WITH |ver_cte AS (\n  SELECT sqlite_version() AS v\n)\nSELECT sub.v FROM ver_cte AS sub;",
+  );
+  await page.getByRole("button", { name: "Inline SQL CTE", exact: true }).click();
+  const inlineDialog = page.getByRole("dialog", { name: /Inline SQL CTE/i });
+  await inlineDialog.getByRole("button", { name: "Inline CTE", exact: true }).click();
+  await expect(editor).not.toContainText("WITH ver_cte AS");
+
+  await page.locator(".run-button").click();
+  await expect(page.locator(".result-footer")).toContainText("1 row");
+  await page.getByRole("button", { name: "Database output" }).click();
+  await expect(page.getByRole("region", { name: "Database output" })).toContainText(
+    "Execution started",
+  );
 
   expect(errors).toEqual([]);
 });

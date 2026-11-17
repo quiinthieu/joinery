@@ -1222,7 +1222,10 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                     !locate(row)
                   )
                     await useStudio.getState().ensureTablePage(tabId, row);
-                  const source = row < model.current.tab.loadedRows ? locate(row) : null;
+                  const source =
+                    model.current.tab.kind !== "table" || row < model.current.tab.loadedRows
+                      ? locate(row)
+                      : null;
                   if (source)
                     await resultCache.ensure(
                       source.result.id,

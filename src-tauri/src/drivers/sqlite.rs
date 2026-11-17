@@ -1297,142 +1297,407 @@ fn parse_sqlite_index_ddl(
     (expressions, predicate)
 }
 
-fn extract_sqlite_generated_expr(table_ddl: Option<&str>, col_name: &str) -> Option<String> {
-    let ddl = table_ddl?;
+fn skip_sql_quoted_or_comment(bytes: &[u8], i: usize) -> Option<usize> {
+    match bytes.get(i)? {
+        b'\'' | b'"' | b'`' => {
+            let q = bytes[i];
+            let mut k = i + 1;
+            while k < bytes.len() {
+                if bytes[k] == q {
+                    if bytes.get(k + 1) == Some(&q) {
+                        k += 2;
+                    } else {
+                        return Some(k + 1);
+                    }
+                } else {
+                    k += 1;
+                }
+            }
+            Some(bytes.len())
+        }
+        b'[' => {
+            let mut k = i + 1;
+            while k < bytes.len() && bytes[k] != b']' {
+                k += 1;
+            }
+            Some((k + 1).min(bytes.len()))
+        }
+        b'-' if bytes.get(i + 1) == Some(&b'-') => {
+            let mut k = i + 2;
+            while k < bytes.len() && bytes[k] != b'\n' {
+                k += 1;
+            }
+            Some((k + 1).min(bytes.len()))
+        }
+        b'/' if bytes.get(i + 1) == Some(&b'*') => {
+            let mut k = i + 2;
+            while k + 1 < bytes.len() && !(bytes[k] == b'*' && bytes[k + 1] == b'/') {
+                k += 1;
+            }
+            Some((k + 2).min(bytes.len()))
+        }
+        _ => None,
+    }
+}
+
+fn split_sqlite_create_table_items(ddl: &str) -> Option<Vec<&str>> {
     let bytes = ddl.as_bytes();
     let mut open_paren = None;
-    for (idx, b) in bytes.iter().enumerate() {
-        if *b == b'(' {
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if let Some(next) = skip_sql_quoted_or_comment(bytes, idx) {
+            idx = next;
+            continue;
+        }
+        if bytes[idx] == b'(' {
             open_paren = Some(idx);
             break;
         }
+        idx += 1;
     }
     let start = open_paren? + 1;
-    // Split top-level column/constraint items inside CREATE TABLE (...)
     let mut items = Vec::new();
     let mut depth = 0usize;
     let mut item_start = start;
     let mut i = start;
     while i < bytes.len() {
+        if let Some(next) = skip_sql_quoted_or_comment(bytes, i) {
+            i = next;
+            continue;
+        }
         match bytes[i] {
-            b'\'' | b'"' | b'`' => {
-                let q = bytes[i];
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == q {
-                        if bytes.get(i + 1) == Some(&q) {
-                            i += 2;
-                        } else {
-                            i += 1;
-                            break;
-                        }
-                    } else {
-                        i += 1;
-                    }
-                }
-                continue;
-            }
             b'(' => depth += 1,
             b')' => {
                 if depth == 0 {
-                    items.push(ddl[item_start..i].trim());
+                    let seg = ddl[item_start..i].trim();
+                    if !seg.is_empty() {
+                        items.push(seg);
+                    }
                     break;
                 }
                 depth -= 1;
             }
             b',' if depth == 0 => {
-                items.push(ddl[item_start..i].trim());
+                let seg = ddl[item_start..i].trim();
+                if !seg.is_empty() {
+                    items.push(seg);
+                }
                 item_start = i + 1;
             }
             _ => {}
         }
         i += 1;
     }
+    Some(items)
+}
 
-    for item in items {
-        let trimmed = item.trim();
-        // Match leading column identifier (quoted or unquoted)
-        let (ident, rest) = if let Some(quote_ch) = trimmed
-            .chars()
-            .next()
-            .filter(|c| matches!(c, '"' | '`' | '\''))
-        {
-            let q_bytes = trimmed.as_bytes();
-            let mut pos = 1usize;
-            let mut unescaped = String::new();
-            while pos < q_bytes.len() {
-                let ch = trimmed[pos..].chars().next().unwrap();
-                pos += ch.len_utf8();
-                if ch == quote_ch {
-                    if trimmed[pos..].starts_with(quote_ch) {
-                        unescaped.push(quote_ch);
-                        pos += quote_ch.len_utf8();
-                    } else {
-                        break;
-                    }
-                } else {
-                    unescaped.push(ch);
-                }
-            }
-            (unescaped, &trimmed[pos..])
-        } else {
-            let end = trimmed
-                .find(|c: char| c.is_ascii_whitespace() || c == '(')
-                .unwrap_or(trimmed.len());
-            (trimmed[..end].to_owned(), &trimmed[end..])
-        };
-
-        if !ident.eq_ignore_ascii_case(col_name) {
+fn parse_leading_sqlite_ident(raw: &str) -> Option<(String, &str)> {
+    let bytes = raw.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        if bytes[idx].is_ascii_whitespace() {
+            idx += 1;
             continue;
         }
-        // Look for `AS (...)` in `rest`
-        let upper = rest.to_ascii_uppercase();
-        let mut search_from = 0usize;
-        while let Some(rel) = upper[search_from..].find("AS") {
-            let pos = search_from + rel;
-            let before_ok = pos == 0
-                || rest.as_bytes()[pos - 1].is_ascii_whitespace()
-                || rest.as_bytes()[pos - 1] == b')';
-            let after_slice = rest[pos + 2..].trim_start();
-            if before_ok && after_slice.starts_with('(') {
-                let ab = after_slice.as_bytes();
-                let mut d = 0usize;
-                let mut k = 0usize;
-                while k < ab.len() {
-                    match ab[k] {
-                        b'\'' | b'"' | b'`' => {
-                            let q = ab[k];
-                            k += 1;
-                            while k < ab.len() {
-                                if ab[k] == q {
-                                    if ab.get(k + 1) == Some(&q) {
-                                        k += 2;
-                                    } else {
-                                        k += 1;
-                                        break;
-                                    }
-                                } else {
-                                    k += 1;
-                                }
-                            }
-                            continue;
-                        }
-                        b'(' => d += 1,
-                        b')' => {
-                            d -= 1;
-                            if d == 0 {
-                                return Some(after_slice[1..k].trim().to_owned());
-                            }
-                        }
-                        _ => {}
-                    }
-                    k += 1;
+        if matches!(
+            (bytes[idx], bytes.get(idx + 1)),
+            (b'-', Some(b'-')) | (b'/', Some(b'*'))
+        ) && let Some(next) = skip_sql_quoted_or_comment(bytes, idx)
+        {
+            idx = next;
+            continue;
+        }
+        break;
+    }
+    let trimmed = &raw[idx..];
+    if trimmed.is_empty() {
+        return None;
+    }
+    let first = trimmed.chars().next()?;
+    if matches!(first, '"' | '`' | '\'') {
+        let mut pos = first.len_utf8();
+        let mut unescaped = String::new();
+        while pos < trimmed.len() {
+            let ch = trimmed[pos..].chars().next()?;
+            pos += ch.len_utf8();
+            if ch == first {
+                if trimmed[pos..].starts_with(first) {
+                    unescaped.push(first);
+                    pos += first.len_utf8();
+                } else {
+                    break;
+                }
+            } else {
+                unescaped.push(ch);
+            }
+        }
+        Some((unescaped, &trimmed[pos..]))
+    } else if first == '[' {
+        let end = trimmed[1..].find(']')?;
+        Some((trimmed[1..1 + end].to_owned(), &trimmed[2 + end..]))
+    } else {
+        let end = trimmed
+            .find(|c: char| c.is_ascii_whitespace() || matches!(c, '(' | ')' | ',' | ';'))
+            .unwrap_or(trimmed.len());
+        if end == 0 {
+            return None;
+        }
+        Some((trimmed[..end].to_owned(), &trimmed[end..]))
+    }
+}
+
+fn extract_balanced_paren_inner(slice: &str) -> Option<(&str, &str)> {
+    let trimmed = slice.trim_start();
+    if !trimmed.starts_with('(') {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut depth = 0usize;
+    let mut k = 0usize;
+    while k < bytes.len() {
+        if let Some(next) = skip_sql_quoted_or_comment(bytes, k) {
+            k = next;
+            continue;
+        }
+        match bytes[k] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((trimmed[1..k].trim(), &trimmed[k + 1..]));
                 }
             }
-            search_from = pos + 2;
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+fn is_table_constraint_keyword(ident: &str) -> bool {
+    matches!(
+        ident.to_ascii_uppercase().as_str(),
+        "CONSTRAINT" | "PRIMARY" | "UNIQUE" | "CHECK" | "FOREIGN"
+    )
+}
+
+fn extract_sqlite_generated_expr(table_ddl: Option<&str>, col_name: &str) -> Option<String> {
+    let ddl = table_ddl?;
+    for item in split_sqlite_create_table_items(ddl)? {
+        let Some((ident, rest)) = parse_leading_sqlite_ident(item) else {
+            continue;
+        };
+        if is_table_constraint_keyword(&ident) || !ident.eq_ignore_ascii_case(col_name) {
+            continue;
+        }
+        // Scan `rest` at top-level parenthesis depth (`depth == 0`) outside quotes/comments for `AS (...)`
+        let bytes = rest.as_bytes();
+        let mut i = 0usize;
+        let mut depth = 0usize;
+        while i < bytes.len() {
+            if let Some(next) = skip_sql_quoted_or_comment(bytes, i) {
+                i = next;
+                continue;
+            }
+            match bytes[i] {
+                b'(' => depth += 1,
+                b')' => depth = depth.saturating_sub(1),
+                _ if depth == 0
+                    && rest[i..]
+                        .get(..2)
+                        .is_some_and(|w| w.eq_ignore_ascii_case("AS")) =>
+                {
+                    let before_ok =
+                        i == 0 || bytes[i - 1].is_ascii_whitespace() || bytes[i - 1] == b')';
+                    let after_slice = &rest[i + 2..];
+                    let after_ok = after_slice
+                        .as_bytes()
+                        .first()
+                        .is_some_and(|b| b.is_ascii_whitespace() || *b == b'(');
+                    if before_ok
+                        && after_ok
+                        && let Some((inner, _)) = extract_balanced_paren_inner(after_slice)
+                    {
+                        return Some(inner.to_owned());
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
         }
     }
     None
+}
+
+fn extract_sqlite_check_constraints(table_ddl: Option<&str>) -> Vec<ConstraintInfo> {
+    let Some(ddl) = table_ddl else {
+        return Vec::new();
+    };
+    let Some(items) = split_sqlite_create_table_items(ddl) else {
+        return Vec::new();
+    };
+    let mut checks = Vec::new();
+    let mut unnamed_seq = 0usize;
+
+    for item in items {
+        let Some((first_ident, _)) = parse_leading_sqlite_ident(item) else {
+            continue;
+        };
+        let col_owner = if is_table_constraint_keyword(&first_ident) {
+            None
+        } else {
+            Some(first_ident)
+        };
+
+        let bytes = item.as_bytes();
+        let mut i = 0usize;
+        let mut depth = 0usize;
+        let mut pending_constraint_name: Option<String> = None;
+
+        while i < bytes.len() {
+            if let Some(next) = skip_sql_quoted_or_comment(bytes, i) {
+                i = next;
+                continue;
+            }
+            if bytes[i] == b'(' {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+            if bytes[i] == b')' {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+            if depth == 0 && (bytes[i].is_ascii_alphabetic() || bytes[i] == b'_') {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+                {
+                    i += 1;
+                }
+                let word = &item[start..i];
+                if word.eq_ignore_ascii_case("CONSTRAINT") {
+                    if let Some((cname, rem)) = parse_leading_sqlite_ident(&item[i..]) {
+                        pending_constraint_name = Some(cname);
+                        i = item.len() - rem.len();
+                        continue;
+                    }
+                } else if word.eq_ignore_ascii_case("CHECK") {
+                    if let Some((expr, rem)) = extract_balanced_paren_inner(&item[i..]) {
+                        let name = pending_constraint_name.take().unwrap_or_else(|| {
+                            unnamed_seq += 1;
+                            format!("sqlite_check_{unnamed_seq}")
+                        });
+                        checks.push(ConstraintInfo {
+                            name,
+                            kind: ConstraintKind::Check,
+                            columns: col_owner.iter().cloned().collect(),
+                            target: None,
+                            target_columns: Vec::new(),
+                            definition: format!("CHECK ({expr})"),
+                        });
+                        i = item.len() - rem.len();
+                        continue;
+                    }
+                } else if matches!(
+                    word.to_ascii_uppercase().as_str(),
+                    "PRIMARY" | "UNIQUE" | "FOREIGN" | "NOT" | "DEFAULT" | "COLLATE" | "GENERATED"
+                ) {
+                    pending_constraint_name = None;
+                }
+                continue;
+            }
+            i += 1;
+        }
+    }
+    checks
+}
+
+fn parse_sqlite_trigger_header(def: &str) -> (&'static str, Vec<String>) {
+    let bytes = def.as_bytes();
+    let mut words: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some(next) = skip_sql_quoted_or_comment(bytes, i) {
+            if matches!(bytes[i], b'"' | b'`' | b'\'' | b'[') {
+                words.push("<QUOTED>".to_owned());
+            }
+            i = next;
+            continue;
+        }
+        if bytes[i] == b'.' {
+            words.push(".".to_owned());
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'('
+            && let Some((_, rem)) = extract_balanced_paren_inner(&def[i..])
+        {
+            i = def.len() - rem.len();
+            continue;
+        }
+        if bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            words.push(def[start..i].to_ascii_uppercase());
+            continue;
+        }
+        i += 1;
+    }
+
+    // Locate TRIGGER keyword, skip optional IF NOT EXISTS + [schema .] trigger_name, and stop at ON / BEGIN
+    let trig_pos = words.iter().position(|w| w == "TRIGGER").unwrap_or(0);
+    let mut start_idx = trig_pos + 1;
+    if words.get(start_idx..start_idx + 3)
+        == Some(&["IF".to_owned(), "NOT".to_owned(), "EXISTS".to_owned()])
+    {
+        start_idx += 3;
+    }
+    if start_idx < words.len() {
+        if words.get(start_idx + 1).map(String::as_str) == Some(".") {
+            start_idx = (start_idx + 3).min(words.len());
+        } else {
+            start_idx += 1;
+        }
+    }
+    let end_idx = words
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .find_map(|(idx, w)| (w == "ON" || w == "BEGIN").then_some(idx))
+        .unwrap_or(words.len());
+    let header = &words[start_idx.min(end_idx)..end_idx];
+
+    let timing = if header.windows(2).any(|w| w[0] == "INSTEAD" && w[1] == "OF") {
+        "INSTEAD OF"
+    } else if header.iter().any(|w| w == "BEFORE") {
+        "BEFORE"
+    } else {
+        "AFTER"
+    };
+
+    let mut events = Vec::new();
+    let mut in_update_of = false;
+    for w in header {
+        if w == "OF" {
+            in_update_of = true;
+            continue;
+        }
+        if in_update_of {
+            continue;
+        }
+        for ev in ["INSERT", "UPDATE", "DELETE"] {
+            if w == ev && !events.iter().any(|e| e == ev) {
+                events.push(ev.to_owned());
+            }
+        }
+    }
+    (timing, events)
 }
 
 fn load_sqlite_triggers_sync(conn: &Connection, table_name: &str) -> Vec<TriggerInfo> {
@@ -1444,20 +1709,7 @@ fn load_sqlite_triggers_sync(conn: &Connection, table_name: &str) -> Vec<Trigger
     }) {
         for (trg_name, trg_sql) in trg_rows.flatten() {
             let def = trg_sql.unwrap_or_default();
-            let upper = def.to_ascii_uppercase();
-            let timing = if upper.contains("BEFORE ") {
-                "BEFORE"
-            } else if upper.contains("INSTEAD OF ") {
-                "INSTEAD OF"
-            } else {
-                "AFTER"
-            };
-            let mut events = Vec::new();
-            for ev in ["INSERT", "UPDATE", "DELETE"] {
-                if upper.contains(ev) {
-                    events.push(ev.to_owned());
-                }
-            }
+            let (timing, events) = parse_sqlite_trigger_header(&def);
             triggers.push(TriggerInfo {
                 name: trg_name,
                 table_name: table_name.to_owned(),
@@ -1771,10 +2023,10 @@ impl Driver for Sqlite {
                 ));
             };
 
-            let ddl = match ddl_sql {
+            let ddl = match &ddl_sql {
                 Some(s) if !s.trim().is_empty() => {
                     let formatted = if s.trim_end().ends_with(';') {
-                        s
+                        s.clone()
                     } else {
                         format!("{s};")
                     };
@@ -1929,6 +2181,7 @@ impl Driver for Sqlite {
                     }
                 }
 
+                constraints.extend(extract_sqlite_check_constraints(ddl_sql.as_deref()));
                 triggers = load_sqlite_triggers_sync(conn, &obj.name);
             }
 
@@ -2151,6 +2404,9 @@ impl Driver for Sqlite {
                 });
             }
             snap_constraints.extend(snap_unique_constraints);
+            if !is_view {
+                snap_constraints.extend(extract_sqlite_check_constraints(relation_sql.as_deref()));
+            }
             for fk in &ts.foreign_keys {
                 let quoted_src = fk
                     .columns

@@ -1161,19 +1161,67 @@ async fn sqlite_ddl_editing_schema_migration_query_result_editing_csv_import_and
     );
     exec_sql(&studio, &s_left.id, "DROP TABLE temp.products;").await;
 
-    // 4. Schema Diff + Migration DDL execution converging `s_right` to match `s_left` (including FK + View)!
-    exec_sql(
+    // 4. Schema Diff + Migration DDL execution converging `s_right` to match `s_left` (including FK, CHECK, Trigger, Generated Column, and View)!
+    let create_reviews_evs = exec_sql(
         &studio,
         &s_left.id,
-        "CREATE TABLE product_reviews (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), rating INTEGER NOT NULL DEFAULT 5);",
+        "CREATE TABLE product_reviews (id INTEGER PRIMARY KEY, product_id INTEGER NOT NULL REFERENCES products(id), rating INTEGER NOT NULL DEFAULT 5 CONSTRAINT chk_rating CHECK (rating BETWEEN 1 AND 5), note TEXT CHECK (note != 'AS (fake)') GENERATED ALWAYS AS ('R:' || rating) VIRTUAL);",
     )
     .await;
+    assert!(
+        create_reviews_evs.iter().any(|e| matches!(
+            e,
+            QueryEvent::Finished {
+                status: RunStatus::Completed,
+                ..
+            }
+        )),
+        "Expected CREATE TABLE product_reviews to succeed, got: {create_reviews_evs:?}"
+    );
+    {
+        let seed_conn = rusqlite::Connection::open(&db_left).unwrap();
+        seed_conn
+            .execute_batch(
+                "CREATE TRIGGER main.\"on\" AFTER INSERT ON product_reviews BEGIN UPDATE products SET price_cents = price_cents WHERE id = NEW.product_id; END;",
+            )
+            .unwrap();
+    }
     exec_sql(
         &studio,
         &s_left.id,
         "CREATE VIEW expensive_products_v AS SELECT id, sku, price_cents FROM products WHERE price_cents >= 1500;",
     )
     .await;
+
+    let reviews_details = studio
+        .object_details(
+            &s_left.id,
+            &DatabaseObjectRef {
+                schema: "main".into(),
+                name: "product_reviews".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        reviews_details
+            .constraints
+            .iter()
+            .any(|c| c.kind == joinery_core::domain::ConstraintKind::Check
+                && c.name == "chk_rating"
+                && c.definition == "CHECK (rating BETWEEN 1 AND 5)"),
+        "Expected chk_rating CHECK constraint in SQLite object_details, got: {:?}",
+        reviews_details.constraints
+    );
+    assert_eq!(reviews_details.triggers.len(), 1);
+    assert_eq!(reviews_details.triggers[0].timing, "AFTER");
+    assert_eq!(
+        reviews_details.triggers[0].events,
+        vec!["INSERT".to_string()],
+        "Trigger header parser must not confuse trigger name or body UPDATE with trigger event"
+    );
 
     let snap_left = studio.schema_snapshot(&s_left.id, "main").await.unwrap();
     let snap_right_before = studio.schema_snapshot(&s_right.id, "main").await.unwrap();

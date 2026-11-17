@@ -480,6 +480,71 @@ describe("SQL AST refactoring and workspace Find Usages", () => {
       ),
     ).toThrow(/materialized/i);
 
+    const dmlTargetDoc =
+      "WITH doomed AS (SELECT id FROM public.orders) DELETE FROM doomed WHERE id = 1;";
+    expect(() =>
+      analyzeInlineCte(
+        makeEditorState(dmlTargetDoc, "postgres", { anchor: dmlTargetDoc.indexOf("doomed") }),
+        "postgres",
+      ),
+    ).toThrow(/DML target/i);
+
+    const distinctFromDoc =
+      "WITH target_cte AS (SELECT 1 AS target_cte) SELECT EXTRACT(YEAR FROM target_cte) FROM target_cte WHERE target_cte IS NOT DISTINCT FROM target_cte;";
+    const distinctPlan = analyzeInlineCte(
+      makeEditorState(distinctFromDoc, "postgres", {
+        anchor: distinctFromDoc.indexOf("target_cte"),
+      }),
+      "postgres",
+    );
+    expect(distinctPlan.referenceCount).toBe(1);
+    expect(distinctPlan.previewSql).toBe(
+      "SELECT EXTRACT(YEAR FROM target_cte) FROM (SELECT 1 AS target_cte) AS target_cte WHERE target_cte IS NOT DISTINCT FROM target_cte;",
+    );
+
+    const mergeIntoTargetDoc =
+      "WITH doomed AS (SELECT id FROM public.orders) MERGE INTO doomed USING public.staging s ON doomed.id = s.id WHEN MATCHED THEN DELETE;";
+    expect(() =>
+      analyzeInlineCte(
+        makeEditorState(mergeIntoTargetDoc, "snowflake", {
+          anchor: mergeIntoTargetDoc.indexOf("doomed"),
+        }),
+        "snowflake",
+      ),
+    ).toThrow(/DML target/i);
+
+    const mergeUsingSourceDoc =
+      "WITH staged AS (SELECT id, val FROM PUBLIC.STAGING) MERGE INTO PUBLIC.TARGET t USING staged s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.val = s.val;";
+    const mergeUsingPlan = analyzeInlineCte(
+      makeEditorState(mergeUsingSourceDoc, "snowflake", {
+        anchor: mergeUsingSourceDoc.indexOf("staged"),
+      }),
+      "snowflake",
+    );
+    expect(mergeUsingPlan.referenceCount).toBe(1);
+    expect(mergeUsingPlan.previewSql).toBe(
+      "MERGE INTO PUBLIC.TARGET t USING (SELECT id, val FROM PUBLIC.STAGING) s ON t.id = s.id WHEN MATCHED THEN UPDATE SET t.val = s.val;",
+    );
+
+    // SQLite mixed-case table wildcard expansion
+    const sqliteMixedSql = "SELECT * FROM MyOrders;";
+    const sqliteState = makeEditorState(sqliteMixedSql, "sqlite", {
+      anchor: sqliteMixedSql.indexOf("*"),
+    });
+    const sqlitePlan = prepareExpandWildcard(sqliteState, sqliteMixedSql.indexOf("*"), {
+      engine: "sqlite",
+      tables: [
+        {
+          table: { schema: "main", name: "MyOrders" },
+          kind: "table",
+          estimatedRows: 10,
+          totalBytes: null,
+        },
+      ],
+      defaultSchema: "main",
+    });
+    expect(sqlitePlan.tablesToFetch).toEqual([{ schema: "main", name: "MyOrders" }]);
+
     // 4. SqlRefactorDialog renders Inline CTE preview and dispatches `input.inline-cte`
     const onApply = vi.fn();
     render(

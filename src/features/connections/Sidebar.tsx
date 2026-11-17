@@ -451,7 +451,9 @@ export function Sidebar({
                     <span className="schema-count">{group.totalCount}</span>
                   </button>
                   {(selectedSession?.capabilities.ddlEditing ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    (selected.engine === "postgres" ||
+                      selected.engine === "mysql" ||
+                      selected.engine === "sqlite")) && (
                     <button
                       type="button"
                       tabIndex={-1}
@@ -469,7 +471,9 @@ export function Sidebar({
                     </button>
                   )}
                   {(selectedSession?.capabilities.schemaDiagram ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    (selected.engine === "postgres" ||
+                      selected.engine === "mysql" ||
+                      selected.engine === "sqlite")) && (
                     <button
                       type="button"
                       tabIndex={-1}
@@ -482,7 +486,9 @@ export function Sidebar({
                     </button>
                   )}
                   {(selectedSession?.capabilities.schemaDiff ??
-                    (selected.engine === "postgres" || selected.engine === "mysql")) && (
+                    (selected.engine === "postgres" ||
+                      selected.engine === "mysql" ||
+                      selected.engine === "sqlite")) && (
                     <button
                       type="button"
                       tabIndex={-1}

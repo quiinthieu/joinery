@@ -1815,7 +1815,7 @@ pub fn generate_migration_ddl(
             if let Some(destructive) = status {
                 if engine == EngineKind::Sqlite {
                     warnings.push(format!(
-                        "Table '{}' removed or modified foreign key '{}'; SQLite does not support ALTER TABLE DROP CONSTRAINT and requires a table rebuild.",
+                        "Table '{}' removed or modified constraint '{}'; SQLite does not support ALTER TABLE DROP CONSTRAINT and requires a table rebuild.",
                         tbl_name, l_c.name
                     ));
                 } else {

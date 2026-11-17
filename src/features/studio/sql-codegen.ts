@@ -13,18 +13,27 @@ export const SQL_CODEGEN_TEMPLATES: readonly {
   { id: "delete", label: "DELETE" },
 ];
 
-function placeholderForColumn(col: ColumnInfo, index: number, engine: EngineKind): string {
-  const safeParamName = col.name.replace(/[^A-Za-z0-9_]/g, "_") || `p${index + 1}`;
-  if (engine === "postgres") {
-    return `:${safeParamName}`;
+function allocateParamName(colName: string, index: number, used: Set<string>): string {
+  let base = colName.replace(/[^A-Za-z0-9_]/g, "_");
+  if (!base || /^_+$/.test(base)) {
+    base = `p${index + 1}`;
+  } else if (/^[0-9]/.test(base)) {
+    base = `p_${base}`;
   }
-  return `:${safeParamName}`;
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate.toLowerCase())) {
+    candidate = `${base}_${suffix++}`;
+  }
+  used.add(candidate.toLowerCase());
+  return `:${candidate}`;
 }
 
 function buildWhereKeyClause(
   columns: readonly ColumnInfo[],
   primaryKey: readonly string[],
   engine: EngineKind,
+  usedParams: Set<string>,
 ): string {
   const keyCols =
     primaryKey.length > 0
@@ -52,7 +61,7 @@ function buildWhereKeyClause(
   return keyCols
     .map(
       (col, idx) =>
-        `${quoteSqlIdentifier(col.name, engine)} = ${placeholderForColumn(col, idx, engine)}`,
+        `${quoteSqlIdentifier(col.name, engine)} = ${allocateParamName(col.name, idx, usedParams)}`,
     )
     .join(" AND ");
 }
@@ -90,8 +99,11 @@ export function generateTableSql(
           ? `INSERT INTO ${targetTable} () VALUES ();`
           : `INSERT INTO ${targetTable} DEFAULT VALUES;`;
       }
+      const usedParams = new Set<string>();
       const colNames = effectiveCols.map((c) => quoteSqlIdentifier(c.name, engine)).join(", ");
-      const values = effectiveCols.map((c, idx) => placeholderForColumn(c, idx, engine)).join(", ");
+      const values = effectiveCols
+        .map((c, idx) => allocateParamName(c.name, idx, usedParams))
+        .join(", ");
       return `INSERT INTO ${targetTable} (${colNames})\nVALUES (${values});`;
     }
     case "update": {
@@ -100,20 +112,22 @@ export function generateTableSql(
       const fallbackCols =
         mutableCols.length > 0 ? mutableCols : cols.filter((c) => !pkSet.has(c.name));
       const setCols = fallbackCols.length > 0 ? fallbackCols : cols.slice(0, 1);
+      const usedParams = new Set<string>();
       const setClause =
         setCols.length > 0
           ? setCols
               .map(
                 (c, idx) =>
-                  `  ${quoteSqlIdentifier(c.name, engine)} = ${placeholderForColumn(c, idx, engine)}`,
+                  `  ${quoteSqlIdentifier(c.name, engine)} = ${allocateParamName(c.name, idx, usedParams)}`,
               )
               .join(",\n")
           : `  /* no mutable columns */`;
-      const whereClause = buildWhereKeyClause(cols, schema.primaryKey, engine);
+      const whereClause = buildWhereKeyClause(cols, schema.primaryKey, engine, usedParams);
       return `UPDATE ${targetTable}\nSET\n${setClause}\nWHERE ${whereClause};`;
     }
     case "delete": {
-      const whereClause = buildWhereKeyClause(cols, schema.primaryKey, engine);
+      const usedParams = new Set<string>();
+      const whereClause = buildWhereKeyClause(cols, schema.primaryKey, engine, usedParams);
       return `DELETE FROM ${targetTable}\nWHERE ${whereClause};`;
     }
   }

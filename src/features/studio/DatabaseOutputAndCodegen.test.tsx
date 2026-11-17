@@ -173,5 +173,56 @@ describe("Database Output session log and SQL code generation", () => {
         table: { schema: "PUBLIC", name: "ORDERS" },
       }),
     ).toBe('DELETE FROM "PUBLIC"."ORDERS"\nWHERE "id" = :id;');
+
+    // Leading-digit and colliding punctuation column names produce valid, unique :param slots
+    expect(
+      generateTableSql("insert", "postgres", {
+        table: { schema: "public", name: "metrics" },
+        primaryKey: [],
+        foreignKeys: [],
+        inboundForeignKeys: [],
+        editable: true,
+        columns: [
+          {
+            id: "2026_sales",
+            name: "2026_sales",
+            databaseType: "numeric",
+            kind: "decimal",
+            nullable: false,
+            primaryKey: false,
+            foreignKey: false,
+            editable: true,
+            insertable: true,
+            hasDefault: false,
+          },
+          {
+            id: "a-b",
+            name: "a-b",
+            databaseType: "text",
+            kind: "text",
+            nullable: true,
+            primaryKey: false,
+            foreignKey: false,
+            editable: true,
+            insertable: true,
+            hasDefault: false,
+          },
+          {
+            id: "a.b",
+            name: "a.b",
+            databaseType: "text",
+            kind: "text",
+            nullable: true,
+            primaryKey: false,
+            foreignKey: false,
+            editable: true,
+            insertable: true,
+            hasDefault: false,
+          },
+        ],
+      }),
+    ).toBe(
+      'INSERT INTO "public"."metrics" ("2026_sales", "a-b", "a.b")\nVALUES (:p_2026_sales, :a_b, :a_b_2);',
+    );
   });
 });
