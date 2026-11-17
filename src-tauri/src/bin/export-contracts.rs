@@ -290,6 +290,9 @@ fn main() {
         SqlFindUsagesRequest::decl(),
         SqlUsageHit::decl(),
         SqlFindUsagesReport::decl(),
+        ResultSortSpec::decl(),
+        ResultViewRequest::decl(),
+        ResultViewResponse::decl(),
         ErrorCode::decl(),
         AppError::decl(),
     ];

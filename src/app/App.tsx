@@ -732,13 +732,7 @@ export function App() {
       return;
     }
     if (active.kind === "query" && !preserveResults) {
-      for (const previous of active.results) {
-        resultCache.release(previous.id);
-        dirtyStore.clearTab(previous.id, [previous.id]);
-        if (!isConsoleOwnedResult(previous))
-          await client.call("release_result", { resultId: previous.id });
-      }
-      state.updateTab(tabId, { results: [], activeResultId: null });
+      await state.prepareQueryRunResults(tabId);
     }
     const revision = active.revision + 1;
     const executionState = useStudio.getState();
@@ -2243,6 +2237,30 @@ export function App() {
                     contextBadge: "Active tab",
                     icon: BookmarkPlus,
                     action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
+                  },
+                  {
+                    label: (() => {
+                      const activeResId = current.activeResultId ?? current.results[0]?.id;
+                      const isResPinned = Boolean(
+                        activeResId && current.pinnedResultIds?.includes(activeResId),
+                      );
+                      return isResPinned ? "Unpin active query result" : "Pin active query result";
+                    })(),
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: !current.results.length
+                      ? "Run a query first to pin its result across console runs."
+                      : ["queued", "running"].includes(current.status)
+                        ? "Wait for the query to finish running first."
+                        : null,
+                    icon: current.pinnedResultIds?.includes(
+                      current.activeResultId ?? current.results[0]?.id ?? "",
+                    )
+                      ? PinOff
+                      : Pin,
+                    action: () => {
+                      state.togglePinResult(current.id);
+                    },
                   },
                   {
                     label: "Open active result in tab",

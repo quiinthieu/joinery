@@ -18,6 +18,7 @@ pub mod params;
 pub mod persistence;
 mod query_plan;
 mod relation_inspection;
+pub mod result_view;
 pub mod results;
 pub mod safety;
 pub mod schema_diff;
@@ -290,6 +291,7 @@ pub fn run() {
             commands::delete_local_history_entry,
             commands::clear_local_history,
             commands::find_sql_usages,
+            commands::query_result_view,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

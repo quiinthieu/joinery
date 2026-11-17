@@ -145,6 +145,7 @@
     "allow-record-local-history",
     "allow-delete-local-history-entry",
     "allow-clear-local-history",
-    "allow-find-sql-usages"
+    "allow-find-sql-usages",
+    "allow-query-result-view"
   ]
 }

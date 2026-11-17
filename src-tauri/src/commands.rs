@@ -1426,3 +1426,14 @@ pub async fn find_sql_usages(
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn query_result_view(
+    studio: State<'_, Arc<Studio>>,
+    request: ResultViewRequest,
+) -> AppResult<ResultViewResponse> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.query_result_view(request))
+        .await
+        .map_err(join_error)?
+}

@@ -3133,6 +3133,41 @@ pub struct SqlFindUsagesReport {
     pub hits: Vec<SqlUsageHit>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResultSortSpec {
+    pub column_id: String,
+    #[serde(default)]
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResultViewRequest {
+    pub result_id: String,
+    #[serde(default)]
+    pub filter_text: Option<String>,
+    #[serde(default)]
+    pub filter_column_id: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub sort: Vec<ResultSortSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultViewResponse {
+    pub result_id: String,
+    pub row_indices: Vec<u32>,
+    #[ts(type = "number")]
+    pub matched_rows: usize,
+    #[ts(type = "number")]
+    pub scanned_rows: usize,
+    pub truncated: bool,
+    pub elapsed_ms: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

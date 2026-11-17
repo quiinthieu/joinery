@@ -60,6 +60,8 @@ import type {
   ResourceUsage,
   ResultChanges,
   ResultInfo,
+  ResultViewRequest,
+  ResultViewResponse,
   SavedBookmark,
   SavedQuery,
   SavedQueryInput,
@@ -718,6 +720,10 @@ export interface JoineryCommandMap {
   find_sql_usages: {
     args: { request: SqlFindUsagesRequest };
     result: SqlFindUsagesReport;
+  };
+  query_result_view: {
+    args: { request: ResultViewRequest };
+    result: ResultViewResponse;
   };
   local_history_entries: {
     args: { tabKey?: string | null };

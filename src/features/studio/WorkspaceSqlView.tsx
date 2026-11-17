@@ -27,6 +27,7 @@ type StudioSnapshot = ReturnType<typeof useStudio.getState>;
 import type { CellTarget, DatabaseGridHandle } from "../grid/DatabaseGrid";
 import { CopyAsMenu } from "../grid/CopyAsMenu";
 import { RecordCardView, TransposeGridView } from "../grid/GridAltViews";
+import { ResultQuickFilterBar, useResultViewState } from "../grid/result-view";
 import { ValueDialog } from "../grid/ValueDialog";
 import { resolveTableLayout } from "../grid/table-layout";
 
@@ -127,10 +128,20 @@ export function discoverMountableDatasets(
     } else if (t.kind === "query" || t.kind === "result") {
       t.results.forEach((res, idx) => {
         if (isResultConsoleOwned(studioState, res) || res.columns.length === 0) return;
-        const suffix = t.results.length > 1 ? ` #${idx + 1}` : "";
+        const pinnedLabel = t.pinnedResultLabels?.[res.id];
+        const suffix = pinnedLabel
+          ? ` · ${pinnedLabel}`
+          : t.results.length > 1
+            ? ` #${idx + 1}`
+            : "";
         out.push({
           key: `res:${t.id}:${res.id}`,
-          defaultAlias: claimAlias(res.table?.name ?? `${t.title}${idx > 0 ? `_${idx + 1}` : ""}`),
+          defaultAlias: claimAlias(
+            res.table?.name ??
+              (pinnedLabel
+                ? `${t.title}_${pinnedLabel.replace(/[^A-Za-z0-9]+/g, "_")}`
+                : `${t.title}${idx > 0 ? `_${idx + 1}` : ""}`),
+          ),
           title: `${t.title}${suffix}`,
           connectionLabel: connName,
           resultIds: [res.id],
@@ -229,6 +240,10 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
       ),
     [activeResult, tab.resultLayouts],
   );
+  const resultView = useResultViewState(activeResult, {
+    disabled: running || !activeResult || activeResult.columns.length === 0,
+    onNotify: (msg) => state.notify(msg),
+  });
 
   async function runQuery() {
     if (activeMounts.length === 0) {
@@ -434,7 +449,11 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                 <button className="active" type="button" aria-pressed="true">
                   <Layers size={12} />
                   Workspace result
-                  <span>{activeResult.retainedRows.toLocaleString()}</span>
+                  <span>
+                    {resultView.displayRowIndices
+                      ? `${resultView.displayRowIndices.length.toLocaleString()} / ${activeResult.retainedRows.toLocaleString()}`
+                      : activeResult.retainedRows.toLocaleString()}
+                  </span>
                   {activeResult.status === "truncated" && (
                     <span className="query-error-badge" style={{ marginLeft: 4 }}>
                       Truncated
@@ -443,6 +462,11 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                 </button>
               </div>
               <div className="table-view-actions">
+                <ResultQuickFilterBar
+                  columns={resolvedLayout.visibleColumns}
+                  view={resultView}
+                  disabled={running}
+                />
                 <div className="segmented-inline" role="group" aria-label="Result layout view">
                   <button
                     type="button"
@@ -493,6 +517,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                   tab={tab}
                   result={activeResult}
                   visibleColumns={resolvedLayout.visibleColumns}
+                  displayRowIndices={resultView.displayRowIndices}
                   onSelect={() => {}}
                   onOpenValue={(target) => setValueTarget(target)}
                 />
@@ -501,6 +526,7 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                   tab={tab}
                   result={activeResult}
                   visibleColumns={resolvedLayout.visibleColumns}
+                  displayRowIndices={resultView.displayRowIndices}
                   onSelect={() => {}}
                   onOpenValue={(target) => setValueTarget(target)}
                 />
@@ -511,6 +537,9 @@ export function WorkspaceSqlView({ tab }: { tab: StudioTab }) {
                     tab={tab}
                     result={activeResult}
                     theme={state.theme}
+                    displayRowIndices={resultView.displayRowIndices}
+                    resultSort={resultView.config.sort}
+                    onSort={(column, additive) => resultView.toggleSort(column, additive)}
                     onSelect={() => {}}
                     onOpenValue={(target) => setValueTarget(target)}
                   />

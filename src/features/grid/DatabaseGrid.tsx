@@ -22,7 +22,8 @@ import DataEditor, {
   type Theme,
 } from "@glideapps/glide-data-grid";
 import "@glideapps/glide-data-grid/dist/index.css";
-import type { ColumnInfo, ResultInfo } from "../../ipc/generated";
+import type { ColumnInfo, ResultInfo, ResultSortSpec } from "../../ipc/generated";
+import { resultSortIndicator } from "./result-view";
 import { resultCache } from "../../data/result-cache";
 import { dirtyStore } from "../../data/dirty-store";
 import {
@@ -100,7 +101,11 @@ interface Props {
   onSelectedRowsChange?(rows: number[]): void;
   onSelectionStatsChange?(stats: GridSelectionStats | null): void;
   focusRowRequest?: { seq: number; row: number } | null;
-  /** Server-side header sorting for table tabs; absent when unavailable. */
+  /** Optional filtered/sorted display-to-actual row index map for retained query results. */
+  displayRowIndices?: readonly number[] | null;
+  /** Active local sort specification on retained query results (for header sort arrows). */
+  resultSort?: readonly ResultSortSpec[];
+  /** Header sorting callback for table tabs (server-side) or query results (local). */
   onSort?(column: ColumnInfo, additive: boolean): void;
 }
 
@@ -169,6 +174,8 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     onSelectedRowsChange,
     onSelectionStatsChange,
     focusRowRequest,
+    displayRowIndices,
+    resultSort,
     onSort,
   }: Props,
   ref,
@@ -214,8 +221,8 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
       : tab.kind === "query" && result?.editability?.status === "editable");
   const insertScopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const visible = useRef<Rectangle>({ x: 0, y: 0, width: 8, height: 20 });
-  const model = useRef({ tab, result });
-  model.current = { tab, result };
+  const model = useRef({ tab, result, displayRowIndices });
+  model.current = { tab, result, displayRowIndices };
   const selectionTarget = useRef<CellTarget | null>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
@@ -260,7 +267,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
   const columns = useMemo<GridColumn[]>(
     () =>
       visibleColumns.map((column) => {
-        const indicator = sortQuery ? sortIndicator(sortQuery, column.name) : "";
+        const indicator = sortQuery
+          ? sortIndicator(sortQuery, column.name)
+          : resultSortIndicator(resultSort, column.id);
         return {
           id: column.id,
           title: `${column.primaryKey ? "⌑ " : column.foreignKey ? "↗ " : ""}${column.name}${
@@ -281,9 +290,12 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
                     : "headerString",
         };
       }),
-    [visibleColumns, resolvedLayout.widths, hasManagedLayout, widths, sortQuery],
+    [visibleColumns, resolvedLayout.widths, hasManagedLayout, widths, sortQuery, resultSort],
   );
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
+  const baseResultRowCount = displayRowIndices
+    ? displayRowIndices.length
+    : (result?.retainedRows ?? 0);
   const rowCount =
     tab.kind === "benchmark"
       ? 1_000_000
@@ -291,7 +303,7 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
         ? draftInserts.length > 0
           ? tab.loadedRows + draftInserts.length
           : tab.loadedRows + (tab.hasMore ? 1 : 0)
-        : (result?.retainedRows ?? 0) + draftInserts.length;
+        : baseResultRowCount + draftInserts.length;
   const theme = useMemo<Partial<Theme>>(() => {
     const style = getComputedStyle(document.documentElement),
       color = (key: string) => style.getPropertyValue(key).trim();
@@ -349,20 +361,26 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     onSelectedRowsChange?.([]);
     selectTarget(null);
     redraw();
-  }, [tab.id, tab.revision, result?.id, visibleOrderKey, redraw, selectTarget]);
+  }, [tab.id, tab.revision, result?.id, visibleOrderKey, displayRowIndices, redraw, selectTarget]);
 
   const locate = useCallback((row: number) => {
-    const { tab, result } = model.current;
+    const { tab, result, displayRowIndices: mapped } = model.current;
     if (tab.kind === "table") {
       const page = tab.pages.find((p) => row >= p.start && row < p.start + p.result.retainedRows);
       return page ? { result: page.result, row: row - page.start } : null;
     }
-    return result ? { result, row } : null;
+    if (!result) return null;
+    if (mapped) {
+      const actualRow = mapped[row];
+      return actualRow !== undefined ? { result, row: actualRow } : null;
+    }
+    return { result, row };
   }, []);
 
   const locateDraft = useCallback((row: number) => {
-    const { tab, result } = model.current;
-    const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+    const { tab, result, displayRowIndices: mapped } = model.current;
+    const loaded =
+      tab.kind === "table" ? tab.loadedRows : mapped ? mapped.length : (result?.retainedRows ?? 0);
     const scopeId = tab.kind === "table" ? tab.id : result?.id;
     if (!scopeId || (tab.kind !== "table" && tab.kind !== "query") || row < loaded) {
       return null;
@@ -427,7 +445,9 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
     const loaded =
       model.current.tab.kind === "table"
         ? model.current.tab.loadedRows
-        : (model.current.result?.retainedRows ?? 0);
+        : model.current.displayRowIndices
+          ? model.current.displayRowIndices.length
+          : (model.current.result?.retainedRows ?? 0);
     const isDraft =
       (model.current.tab.kind === "table" || model.current.tab.kind === "query") &&
       targetRow >= loaded;
@@ -781,19 +801,20 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
 
   const resolveCopyMatrix = useCallback(
     (scope: CopyScope) => {
-      const { tab: currentTab, result: currentResult } = model.current;
+      const { tab: currentTab, result: currentResult, displayRowIndices: mapped } = model.current;
       const scopeId =
         currentTab.kind === "table" ? currentTab.id : (currentResult?.id ?? currentTab.id);
       const draftCount =
         currentTab.kind === "table" || currentTab.kind === "query"
           ? dirtyStore.insertsForTab(scopeId).length
           : 0;
+      const baseResultRows = mapped ? mapped.length : (currentResult?.retainedRows ?? 0);
       const maxCopyableRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
           : currentTab.kind === "table"
             ? currentTab.loadedRows + draftCount
-            : (currentResult?.retainedRows ?? 0) + draftCount;
+            : baseResultRows + draftCount;
       const loadedDefaultRows =
         currentTab.kind === "benchmark"
           ? 1_000_000
@@ -801,8 +822,8 @@ const DatabaseGrid = forwardRef<DatabaseGridHandle, Props>(function DatabaseGrid
             ? currentTab.loadedRows > 0
               ? currentTab.loadedRows
               : draftCount
-            : (currentResult?.retainedRows ?? 0) > 0
-              ? (currentResult?.retainedRows ?? 0)
+            : baseResultRows > 0
+              ? baseResultRows
               : draftCount;
 
       const sel = selectionRef.current;

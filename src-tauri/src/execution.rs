@@ -5827,6 +5827,11 @@ impl Studio {
         crate::sql_refactor::find_sql_usages(&request)
     }
 
+    pub fn query_result_view(&self, request: ResultViewRequest) -> AppResult<ResultViewResponse> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        crate::result_view::compute_result_view(&self.results, &request)
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         let grid_runs = {

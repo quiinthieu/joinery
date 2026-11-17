@@ -189,7 +189,13 @@ export interface StudioTab {
   originSql?: string | null;
   /** Session-only Database Output log entries (bounded in memory; never persisted). */
   outputLog?: DatabaseOutputEntry[];
+  /** Result IDs pinned inside a SQL query console so re-running SQL keeps them alongside new results. */
+  pinnedResultIds?: string[];
+  /** Human-readable labels captured when a result subtab was pinned (keyed by result ID). */
+  pinnedResultLabels?: Record<string, string>;
 }
+
+export const MAX_PINNED_RESULTS_PER_TAB = 8;
 
 export const MAX_RECENT_LOCATIONS = 50;
 export const MAX_CLOSED_TABS = 10;
@@ -240,6 +246,7 @@ export interface NamedSession {
 
 let sqlFormatSaveTail: Promise<void> = Promise.resolve();
 let outputEntrySeq = 0;
+let pinnedResultSeq = 0;
 let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
@@ -321,6 +328,9 @@ interface StudioState {
   setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
   resetTableLayout(connectionId: string, table: TableRef): void;
   setResultLayout(tabId: string, resultId: string, layout: SavedTableLayout | null): void;
+  togglePinResult(tabId: string, resultId?: string): boolean;
+  closeResultSubtab(tabId: string, resultId: string): void;
+  prepareQueryRunResults(tabId: string): Promise<void>;
   detachResultToTab(tabId: string, resultId?: string): string | null;
   openOriginatingSql(resultTabId: string): string | null;
   setWorkspaceSqlResult(tabId: string, sql: string, response: WorkspaceSqlResponse): void;
@@ -1196,6 +1206,148 @@ export const useStudio = create<StudioState>((set, get) => ({
       }),
     }));
   },
+  togglePinResult(tabId, resultId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return false;
+    if (["queued", "running"].includes(current.status)) {
+      get().notify("Wait for the query to finish before pinning its result.");
+      return false;
+    }
+    const target = resultId
+      ? current.results.find((r) => r.id === resultId)
+      : (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0]);
+    if (!target) {
+      get().notify("Run a query first to pin its result.");
+      return false;
+    }
+    if (isConsoleOwnedResult(target)) {
+      get().notify("Retained Snowflake console results stay managed by their console receipt.");
+      return false;
+    }
+    const existingPinned = current.pinnedResultIds ?? [];
+    if (existingPinned.includes(target.id)) {
+      const nextIds = existingPinned.filter((id) => id !== target.id);
+      const nextLabels = current.pinnedResultLabels ? { ...current.pinnedResultLabels } : undefined;
+      if (nextLabels) delete nextLabels[target.id];
+      set((state) => ({
+        tabs: state.tabs.map((entry) =>
+          entry.id === tabId
+            ? {
+                ...entry,
+                pinnedResultIds: nextIds.length > 0 ? nextIds : undefined,
+                pinnedResultLabels:
+                  nextLabels && Object.keys(nextLabels).length > 0 ? nextLabels : undefined,
+              }
+            : entry,
+        ),
+      }));
+      return false;
+    }
+    if (existingPinned.length >= MAX_PINNED_RESULTS_PER_TAB) {
+      get().notify(
+        `Pin at most ${MAX_PINNED_RESULTS_PER_TAB} results per query console, or open a result in its own tab.`,
+      );
+      return false;
+    }
+    dirtyStore.clearTab(target.id, [target.id]);
+    const label = `Pinned #${++pinnedResultSeq} (Q${target.statementIndex + 1})`;
+    const nextIds = [...existingPinned, target.id];
+    const nextLabels = { ...(current.pinnedResultLabels ?? {}), [target.id]: label };
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              results: entry.results.map((r) =>
+                r.id === target.id
+                  ? {
+                      ...r,
+                      columns: r.columns.map((c) => ({ ...c, editable: false, insertable: false })),
+                      editability: {
+                        status: "readOnly",
+                        reason: "Pinned result snapshot is preserved read-only across console runs",
+                      },
+                    }
+                  : r,
+              ),
+              pinnedResultIds: nextIds,
+              pinnedResultLabels: nextLabels,
+            }
+          : entry,
+      ),
+    }));
+    return true;
+  },
+  closeResultSubtab(tabId, resultId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return;
+    const target = current.results.find((r) => r.id === resultId);
+    if (!target) return;
+    dirtyStore.clearTab(target.id, [target.id]);
+    if (!isResultReferencedByOtherTabs(snapshot.tabs, new Set([tabId]), target.id)) {
+      resultCache.release(target.id);
+      if (!isConsoleOwnedResult(target)) {
+        void client.call("release_result", { resultId: target.id }).catch(() => {});
+      }
+    }
+    const idx = current.results.findIndex((r) => r.id === resultId);
+    const remaining = current.results.filter((r) => r.id !== resultId);
+    const nextPinned = current.pinnedResultIds?.filter((id) => id !== resultId);
+    const nextLabels = current.pinnedResultLabels ? { ...current.pinnedResultLabels } : undefined;
+    if (nextLabels) delete nextLabels[resultId];
+    const nextLayouts = current.resultLayouts ? { ...current.resultLayouts } : undefined;
+    if (nextLayouts) delete nextLayouts[resultId];
+    const nextActive =
+      current.activeResultId === resultId
+        ? (remaining[Math.min(idx, remaining.length - 1)]?.id ?? null)
+        : current.activeResultId;
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              results: remaining,
+              activeResultId: nextActive,
+              pinnedResultIds: nextPinned && nextPinned.length > 0 ? nextPinned : undefined,
+              pinnedResultLabels:
+                nextLabels && Object.keys(nextLabels).length > 0 ? nextLabels : undefined,
+              resultLayouts:
+                nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
+            }
+          : entry,
+      ),
+    }));
+  },
+  async prepareQueryRunResults(tabId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return;
+    const pinnedSet = new Set(current.pinnedResultIds ?? []);
+    const keptResults = current.results.filter((r) => pinnedSet.has(r.id));
+    const excluding = new Set([tabId]);
+    for (const previous of current.results) {
+      if (pinnedSet.has(previous.id)) continue;
+      dirtyStore.clearTab(previous.id, [previous.id]);
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, previous.id)) {
+        resultCache.release(previous.id);
+        if (!isConsoleOwnedResult(previous)) {
+          await client.call("release_result", { resultId: previous.id });
+        }
+      }
+    }
+    const nextLayouts = current.resultLayouts
+      ? Object.fromEntries(
+          Object.entries(current.resultLayouts).filter(([rid]) => pinnedSet.has(rid)),
+        )
+      : undefined;
+    get().updateTab(tabId, {
+      results: keptResults,
+      activeResultId: null,
+      resultLayouts: nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
+    });
+  },
   detachResultToTab(tabId, resultId) {
     const state = get();
     const sourceTab = state.tabs.find(
@@ -1243,6 +1395,11 @@ export const useStudio = create<StudioState>((set, get) => ({
     const remainingResults = sourceTab.results.filter((r) => r.id !== targetResult.id);
     const nextSourceLayouts = sourceTab.resultLayouts ? { ...sourceTab.resultLayouts } : undefined;
     if (nextSourceLayouts) delete nextSourceLayouts[targetResult.id];
+    const nextPinnedIds = sourceTab.pinnedResultIds?.filter((id) => id !== targetResult.id);
+    const nextPinnedLabels = sourceTab.pinnedResultLabels
+      ? { ...sourceTab.pinnedResultLabels }
+      : undefined;
+    if (nextPinnedLabels) delete nextPinnedLabels[targetResult.id];
     set((prev) => ({
       tabs: orderPinnedFirst([
         ...prev.tabs.map((entry) =>
@@ -1257,6 +1414,12 @@ export const useStudio = create<StudioState>((set, get) => ({
                 resultLayouts:
                   nextSourceLayouts && Object.keys(nextSourceLayouts).length > 0
                     ? nextSourceLayouts
+                    : undefined,
+                pinnedResultIds:
+                  nextPinnedIds && nextPinnedIds.length > 0 ? nextPinnedIds : undefined,
+                pinnedResultLabels:
+                  nextPinnedLabels && Object.keys(nextPinnedLabels).length > 0
+                    ? nextPinnedLabels
                     : undefined,
               }
             : entry,
@@ -4336,6 +4499,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(tab.id, {
         results: [],
+        pinnedResultIds: undefined,
+        pinnedResultLabels: undefined,
+        resultLayouts: undefined,
         snowflakeDdlResult: undefined,
         snowflakeDmlResult: undefined,
         planSource: undefined,
@@ -4490,6 +4656,9 @@ export const useStudio = create<StudioState>((set, get) => ({
           next.executionSummary = event.executionSummary;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
+          if (!next.activeResultId && next.results.length > 0) {
+            next.activeResultId = next.results[next.results.length - 1].id;
+          }
           newOutput.push({
             id: `out-${++outputEntrySeq}`,
             timestampMs: nowMs,

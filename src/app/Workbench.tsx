@@ -2,6 +2,7 @@ import { ExecutionTiming } from "../features/studio/ExecutionTiming";
 import { ExecutionSummary } from "../features/studio/ExecutionSummary";
 import { DatabaseOutputPanel } from "../features/studio/DatabaseOutputPanel";
 import type { GridSelectionStats } from "../features/grid/selection-stats";
+import { ResultQuickFilterBar, useResultViewState } from "../features/grid/result-view";
 import {
   lazy,
   Suspense,
@@ -30,6 +31,8 @@ import {
   Layers,
   Loader2,
   Pencil,
+  Pin,
+  PinOff,
   Play,
   Plus,
   RefreshCw,
@@ -300,6 +303,22 @@ export function Workbench({
   const gridMode: GridDisplayMode = tab.gridMode ?? "grid";
   const showOutput = tab.kind === "query" && outputViewTabId === tab.id;
   const outputEntries = tab.outputLog ?? [];
+  const canLocalFilterResult =
+    (tab.kind === "query" || tab.kind === "result") &&
+    Boolean(result && result.columns.length > 0 && !isQueryPlanResult(result, tab.planSource));
+  const resultView = useResultViewState(canLocalFilterResult ? result : undefined, {
+    disabled: running || !canLocalFilterResult,
+    lockedReason:
+      pendingCount > 0 ? "Review or discard pending edits to change sort or filters" : null,
+    onNotify: (msg) => state.notify(msg),
+  });
+  const activeResultRowIndices = canLocalFilterResult ? resultView.displayRowIndices : null;
+  const baseQueryResultRows = activeResultRowIndices
+    ? activeResultRowIndices.length
+    : (result?.retainedRows ?? 0);
+  const isActiveResultPinned = Boolean(
+    tab.kind === "query" && result && tab.pinnedResultIds?.includes(result.id),
+  );
   const activeSelectionStats =
     selectionStatsState?.tabId === tab.id && gridMode === "grid" && !showOutput
       ? selectionStatsState.stats
@@ -344,11 +363,14 @@ export function Workbench({
     }
   } else if (tab.kind === "query" && result) {
     for (const visualRow of selectedRows) {
-      if (visualRow >= result.retainedRows) {
-        const draft = draftInserts[visualRow - result.retainedRows];
+      if (visualRow >= baseQueryResultRows) {
+        const draft = draftInserts[visualRow - baseQueryResultRows];
         if (draft) selectedDraftIds.push(draft.id);
       } else if (visualRow >= 0) {
-        selectedExisting.push({ resultId: result.id, row: visualRow });
+        const actualRow = activeResultRowIndices ? activeResultRowIndices[visualRow] : visualRow;
+        if (actualRow !== undefined) {
+          selectedExisting.push({ resultId: result.id, row: actualRow });
+        }
       }
     }
   }
@@ -392,11 +414,16 @@ export function Workbench({
                 const page = tab.pages.find((p) => p.result.id === activeCell.resultId);
                 return page ? page.start + activeCell.row : null;
               })()
-            : activeCell.row
+            : activeResultRowIndices
+              ? (() => {
+                  const idx = activeResultRowIndices.indexOf(activeCell.row);
+                  return idx >= 0 ? idx : null;
+                })()
+              : activeCell.row
         : null;
   function stageInsertRow() {
     try {
-      const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+      const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
       dirtyStore.addInsertRow(insertScopeId);
       const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
@@ -410,7 +437,7 @@ export function Workbench({
       return;
     }
     try {
-      const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+      const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
       const cols = tab.kind === "table" ? (tab.schema?.columns ?? []) : (result?.columns ?? []);
       const values: Record<string, string | null> = {};
       if (cloneCandidateVisualRow >= baseRows) {
@@ -436,7 +463,12 @@ export function Workbench({
                   : null;
               })()
             : result
-              ? { result, row: cloneCandidateVisualRow }
+              ? (() => {
+                  const actualRow = activeResultRowIndices
+                    ? activeResultRowIndices[cloneCandidateVisualRow]
+                    : cloneCandidateVisualRow;
+                  return actualRow !== undefined ? { result, row: actualRow } : null;
+                })()
               : null;
         if (!source) {
           state.notify("Scroll to load that row before cloning it.");
@@ -1400,32 +1432,46 @@ export function Workbench({
             onKeyDown={tabNavigation}
           >
             {tab.results.length ? (
-              tab.results.map((result, i) => (
-                <button
-                  role="tab"
-                  id={`result-tab-${result.id}`}
-                  aria-controls={`result-panel-${tab.id}`}
-                  aria-selected={
-                    !showOutput && result.id === (tab.activeResultId ?? tab.results[0]?.id)
-                  }
-                  tabIndex={
-                    !showOutput && result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1
-                  }
-                  className={!showOutput && result.id === tab.activeResultId ? "active" : ""}
-                  key={result.id}
-                  onClick={() => {
-                    setOutputViewTabId(null);
-                    state.updateTab(tab.id, { activeResultId: result.id });
-                  }}
-                >
-                  <Table2 size={12} />
-                  Query {result.statementIndex + 1}
-                  {tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1
-                    ? ` · ${i + 1}`
-                    : ""}
-                  <span>{result.retainedRows.toLocaleString()}</span>
-                </button>
-              ))
+              tab.results.map((resItem, i) => {
+                const isPinnedSubtab = Boolean(tab.pinnedResultIds?.includes(resItem.id));
+                const pinnedTitle = tab.pinnedResultLabels?.[resItem.id];
+                return (
+                  <button
+                    role="tab"
+                    id={`result-tab-${resItem.id}`}
+                    aria-controls={`result-panel-${tab.id}`}
+                    aria-selected={
+                      !showOutput && resItem.id === (tab.activeResultId ?? tab.results[0]?.id)
+                    }
+                    tabIndex={
+                      !showOutput && resItem.id === (tab.activeResultId ?? tab.results[0]?.id)
+                        ? 0
+                        : -1
+                    }
+                    className={!showOutput && resItem.id === tab.activeResultId ? "active" : ""}
+                    key={resItem.id}
+                    onClick={() => {
+                      setOutputViewTabId(null);
+                      state.updateTab(tab.id, { activeResultId: resItem.id });
+                    }}
+                  >
+                    {isPinnedSubtab ? <Pin size={11} /> : <Table2 size={12} />}
+                    {pinnedTitle ?? (
+                      <>
+                        Query {resItem.statementIndex + 1}
+                        {tab.results.filter(
+                          (r) =>
+                            !tab.pinnedResultIds?.includes(r.id) &&
+                            r.statementIndex === resItem.statementIndex,
+                        ).length > 1
+                          ? ` · ${i + 1}`
+                          : ""}
+                      </>
+                    )}
+                    <span>{resItem.retainedRows.toLocaleString()}</span>
+                  </button>
+                );
+              })
             ) : (
               <span className="result-placeholder">Results</span>
             )}
@@ -1547,6 +1593,13 @@ export function Workbench({
             )}
             {result && result.columns.length > 0 && (
               <>
+                {canLocalFilterResult && !showOutput && (
+                  <ResultQuickFilterBar
+                    columns={resolvedLayout.visibleColumns}
+                    view={resultView}
+                    disabled={running || pendingCount > 0}
+                  />
+                )}
                 {renderGridModeSwitch()}
                 {isQueryPlanResult(result, tab.planSource) && (
                   <button
@@ -1588,6 +1641,34 @@ export function Workbench({
                     ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
                     : ""}
                 </button>
+                <button
+                  type="button"
+                  className={`button ghost small ${isActiveResultPinned ? "active" : ""}`}
+                  aria-label={isActiveResultPinned ? "Unpin result" : "Pin result"}
+                  aria-pressed={isActiveResultPinned}
+                  disabled={running || isConsoleOwnedResult(result)}
+                  title={
+                    isActiveResultPinned
+                      ? "Unpin result snapshot (allow replacing on next query run)"
+                      : "Pin result snapshot inside console across future runs"
+                  }
+                  onClick={() => state.togglePinResult(tab.id, result.id)}
+                >
+                  {isActiveResultPinned ? <PinOff size={12} /> : <Pin size={12} />}
+                  {isActiveResultPinned ? "Unpin" : "Pin"}
+                </button>
+                {(isActiveResultPinned || tab.results.length > 1) && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    aria-label="Close result snapshot"
+                    disabled={running || isConsoleOwnedResult(result)}
+                    title="Close and release this result subtab"
+                    onClick={() => state.closeResultSubtab(tab.id, result.id)}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="button ghost small"
@@ -1640,6 +1721,9 @@ export function Workbench({
           <div className="table-view-actions">
             {result && result.columns.length > 0 && (
               <>
+                {canLocalFilterResult && (
+                  <ResultQuickFilterBar columns={resolvedLayout.visibleColumns} view={resultView} />
+                )}
                 {renderGridModeSwitch()}
                 <CopyAsMenu gridRef={gridRef} disabled={gridMode !== "grid"} />
                 <button type="button" className="button ghost small" onClick={onOpenCompare}>
@@ -2011,6 +2095,7 @@ export function Workbench({
             tab={tab}
             result={result}
             visibleColumns={resolvedLayout.visibleColumns}
+            displayRowIndices={activeResultRowIndices}
             focusRowRequest={focusRowRequest}
             onSelect={handleSelectCell}
             onOpenValue={onOpenValue}
@@ -2020,6 +2105,7 @@ export function Workbench({
             tab={tab}
             result={result}
             visibleColumns={resolvedLayout.visibleColumns}
+            displayRowIndices={activeResultRowIndices}
             focusRowRequest={focusRowRequest}
             onSelect={handleSelectCell}
             onOpenValue={onOpenValue}
@@ -2037,13 +2123,17 @@ export function Workbench({
               onSelectedRowsChange={setSelectedRows}
               onSelectionStatsChange={handleSelectionStatsChange}
               focusRowRequest={focusRowRequest}
+              displayRowIndices={activeResultRowIndices}
+              resultSort={canLocalFilterResult ? resultView.config.sort : undefined}
               onSort={
                 filtering
                   ? (column, additive) =>
                       queryLock
                         ? state.notify(queryLock)
                         : applyQuery(cycleSort(tab.query, column.name, additive))
-                  : undefined
+                  : canLocalFilterResult
+                    ? (column, additive) => resultView.toggleSort(column, additive)
+                    : undefined
               }
             />
           </Suspense>
@@ -2077,9 +2167,14 @@ export function Workbench({
           ) : (
             <>
               <span className={`status-dot ${tab.status}`} />
-              {result?.retainedRows.toLocaleString() ?? "0"} rows
+              {activeResultRowIndices && result
+                ? `${activeResultRowIndices.length.toLocaleString()} of ${result.retainedRows.toLocaleString()} rows`
+                : `${result?.retainedRows.toLocaleString() ?? "0"} rows`}
               {result?.status === "truncated" && (
                 <span className="truncated-label">Retention limit reached</span>
+              )}
+              {resultView.response?.truncated && (
+                <span className="truncated-label">View capped at 100,000 rows</span>
               )}
               {tab.status === "completed" && result?.columns.length === 0 && (
                 <span>{tab.metrics[result.statementIndex]?.affectedRows ?? "0"} affected</span>

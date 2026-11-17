@@ -26,6 +26,7 @@ interface AltViewProps {
   tab: StudioTab;
   result?: ResultInfo;
   visibleColumns: ColumnInfo[];
+  displayRowIndices?: readonly number[] | null;
   focusRowRequest?: { seq: number; row: number } | null;
   onSelect(target: CellTarget | null): void;
   onOpenValue(target: CellTarget): void;
@@ -60,8 +61,14 @@ function resolveCellTarget(
   visualColIndex: number,
   visualRow: number,
   isGridEditable: boolean,
+  displayRowIndices?: readonly number[] | null,
 ): { target: CellTarget | null; dirty: boolean; loading: boolean } {
-  const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+  const loaded =
+    tab.kind === "table"
+      ? tab.loadedRows
+      : displayRowIndices
+        ? displayRowIndices.length
+        : (result?.retainedRows ?? 0);
   const scopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   if (tab.kind === "benchmark") {
     const val = benchmarkCellText(visualColIndex, visualRow);
@@ -114,7 +121,10 @@ function resolveCellTarget(
           return page ? { result: page.result, row: visualRow - page.start } : null;
         })()
       : result
-        ? { result, row: visualRow }
+        ? (() => {
+            const actualRow = displayRowIndices ? displayRowIndices[visualRow] : visualRow;
+            return actualRow !== undefined ? { result, row: actualRow } : null;
+          })()
         : null;
   if (!source) return { target: null, dirty: false, loading: true };
   const cached = resultCache.read(source.result.id, column.id, source.row, true);
@@ -140,6 +150,7 @@ export function TransposeGridView({
   tab,
   result,
   visibleColumns,
+  displayRowIndices,
   focusRowRequest,
   onSelect,
   onOpenValue,
@@ -182,12 +193,13 @@ export function TransposeGridView({
 
   const scopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
+  const baseResultRows = displayRowIndices ? displayRowIndices.length : (result?.retainedRows ?? 0);
   const totalRows =
     tab.kind === "benchmark"
       ? 1_000_000
       : tab.kind === "table"
         ? tab.loadedRows + draftInserts.length
-        : (result?.retainedRows ?? 0) + draftInserts.length;
+        : baseResultRows + draftInserts.length;
 
   const [rowPage, setRowPage] = useState(0);
   const [columnFilter, setColumnFilter] = useState("");
@@ -204,7 +216,7 @@ export function TransposeGridView({
 
   useEffect(() => {
     setRowPage(0);
-  }, [tab.id, tab.revision, result?.id]);
+  }, [tab.id, tab.revision, result?.id, displayRowIndices]);
 
   useEffect(() => {
     if (!focusRowRequest) return;
@@ -213,7 +225,7 @@ export function TransposeGridView({
 
   useEffect(() => {
     if (tab.kind === "benchmark") return;
-    const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+    const loaded = tab.kind === "table" ? tab.loadedRows : baseResultRows;
     for (const r of rowIndices) {
       if (r >= loaded) continue;
       if (tab.kind === "table") {
@@ -224,10 +236,22 @@ export function TransposeGridView({
           void resultCache.ensure(page.result.id, r - page.start, page.result.retainedRows);
         }
       } else if (result) {
-        void resultCache.ensure(result.id, r, result.retainedRows);
+        const actualRow = displayRowIndices ? displayRowIndices[r] : r;
+        if (actualRow !== undefined) {
+          void resultCache.ensure(result.id, actualRow, result.retainedRows);
+        }
       }
     }
-  }, [result, rowIndices, tab.id, tab.kind, tab.loadedRows, tab.pages]);
+  }, [
+    baseResultRows,
+    displayRowIndices,
+    result,
+    rowIndices,
+    tab.id,
+    tab.kind,
+    tab.loadedRows,
+    tab.pages,
+  ]);
 
   const normalizedFilter = columnFilter.trim().toLowerCase();
   const filteredColumns = useMemo(
@@ -311,7 +335,7 @@ export function TransposeGridView({
                 Type
               </th>
               {rowIndices.map((r) => {
-                const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+                const loaded = tab.kind === "table" ? tab.loadedRows : baseResultRows;
                 const isInsert = tab.kind !== "benchmark" && r >= loaded;
                 return (
                   <th scope="col" key={r}>
@@ -330,7 +354,15 @@ export function TransposeGridView({
                 </th>
                 <td className="sticky-type-col muted mono">{col.databaseType}</td>
                 {rowIndices.map((r) => {
-                  const resolved = resolveCellTarget(tab, result, col, idx, r, isGridEditable);
+                  const resolved = resolveCellTarget(
+                    tab,
+                    result,
+                    col,
+                    idx,
+                    r,
+                    isGridEditable,
+                    displayRowIndices,
+                  );
                   const isActive = activeCoord?.colId === col.id && activeCoord.row === r;
                   const cellTarget = resolved.target;
                   return (
@@ -386,6 +418,7 @@ export function RecordCardView({
   tab,
   result,
   visibleColumns,
+  displayRowIndices,
   focusRowRequest,
   onSelect,
   onOpenValue,
@@ -428,12 +461,13 @@ export function RecordCardView({
 
   const scopeId = tab.kind === "table" ? tab.id : (result?.id ?? tab.id);
   const draftInserts = isGridEditable ? dirtyStore.insertsForTab(scopeId) : [];
+  const baseResultRows = displayRowIndices ? displayRowIndices.length : (result?.retainedRows ?? 0);
   const totalRows =
     tab.kind === "benchmark"
       ? 1_000_000
       : tab.kind === "table"
         ? tab.loadedRows + draftInserts.length
-        : (result?.retainedRows ?? 0) + draftInserts.length;
+        : baseResultRows + draftInserts.length;
 
   const [rowIndex, setRowIndex] = useState(0);
   const [fieldFilter, setFieldFilter] = useState("");
@@ -441,7 +475,7 @@ export function RecordCardView({
 
   useEffect(() => {
     setRowIndex(0);
-  }, [tab.id, tab.revision, result?.id]);
+  }, [tab.id, tab.revision, result?.id, displayRowIndices]);
 
   useEffect(() => {
     if (!focusRowRequest) return;
@@ -450,7 +484,7 @@ export function RecordCardView({
 
   useEffect(() => {
     if (tab.kind === "benchmark" || totalRows === 0) return;
-    const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+    const loaded = tab.kind === "table" ? tab.loadedRows : baseResultRows;
     if (clampedRow >= loaded) return;
     if (tab.kind === "table") {
       const page = tab.pages.find(
@@ -462,9 +496,22 @@ export function RecordCardView({
         void resultCache.ensure(page.result.id, clampedRow - page.start, page.result.retainedRows);
       }
     } else if (result) {
-      void resultCache.ensure(result.id, clampedRow, result.retainedRows);
+      const actualRow = displayRowIndices ? displayRowIndices[clampedRow] : clampedRow;
+      if (actualRow !== undefined) {
+        void resultCache.ensure(result.id, actualRow, result.retainedRows);
+      }
     }
-  }, [clampedRow, result, tab.id, tab.kind, tab.loadedRows, tab.pages, totalRows]);
+  }, [
+    baseResultRows,
+    clampedRow,
+    displayRowIndices,
+    result,
+    tab.id,
+    tab.kind,
+    tab.loadedRows,
+    tab.pages,
+    totalRows,
+  ]);
 
   const normalizedFilter = fieldFilter.trim().toLowerCase();
   const filteredFields = useMemo(
@@ -490,7 +537,7 @@ export function RecordCardView({
     );
   }
 
-  const loaded = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+  const loaded = tab.kind === "table" ? tab.loadedRows : baseResultRows;
   const isInsertRow = tab.kind !== "benchmark" && clampedRow >= loaded;
 
   return (
@@ -561,7 +608,15 @@ export function RecordCardView({
       </div>
       <div className="alt-grid-scroll record-fields-list">
         {filteredFields.map(({ col, idx }) => {
-          const resolved = resolveCellTarget(tab, result, col, idx, clampedRow, isGridEditable);
+          const resolved = resolveCellTarget(
+            tab,
+            result,
+            col,
+            idx,
+            clampedRow,
+            isGridEditable,
+            displayRowIndices,
+          );
           const cellTarget = resolved.target;
           const canRevertCell =
             Boolean(cellTarget) &&

@@ -79,12 +79,13 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
       for (const res of tab.results) {
         if (res.columns.length === 0) continue;
         const suffix = res.status === "truncated" ? " · truncated" : "";
+        const pinnedLabel = tab.pinnedResultLabels?.[res.id];
         items.push({
           id: `query:${tab.id}:${res.id}`,
           label:
             tab.kind === "result"
               ? `${connPrefix}${tab.title} (${res.retainedRows.toLocaleString()} rows${suffix})`
-              : `${connPrefix}${tab.title} · Query ${res.statementIndex + 1} (${res.retainedRows.toLocaleString()} rows${suffix})`,
+              : `${connPrefix}${tab.title} · ${pinnedLabel ?? `Query ${res.statementIndex + 1}`} (${res.retainedRows.toLocaleString()} rows${suffix})`,
           resultIds: [res.id],
           columns: res.columns,
           rowCount: res.retainedRows,

@@ -668,6 +668,20 @@ export async function runNativeSmoke() {
           }),
       ],
       [
+        "query_result_view",
+        "invalidInput",
+        () =>
+          client.call("query_result_view", {
+            request: {
+              resultId: "   ",
+              filterText: null,
+              filterColumnId: null,
+              caseSensitive: false,
+              sort: [],
+            },
+          }),
+      ],
+      [
         "delete_sql_snippet",
         "notFound",
         () => client.call("delete_sql_snippet", { id: "missing-native-smoke-snippet" }),
