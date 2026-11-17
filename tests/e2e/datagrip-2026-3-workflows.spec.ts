@@ -1,6 +1,16 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, test, type Locator, type Page } from "./fixtures";
 
 const PG_PORT = process.env.JOINERY_POSTGRES_PORT ?? "55432";
+
+async function placeCaret(editor: Locator, marked: string) {
+  const pos = marked.indexOf("|");
+  expect(pos).toBeGreaterThanOrEqual(0);
+  await editor.fill(marked.replace("|", ""));
+  await editor.press("ControlOrMeta+Home");
+  for (const _ of marked.slice(0, pos)) {
+    await editor.press("ArrowRight");
+  }
+}
 
 async function connectPostgresWithHistory(page: Page, name: string) {
   await page.goto("/");
@@ -40,7 +50,7 @@ test("exercises Transpose/Record views, detached result tabs, Workspace SQL, Dat
   await editor.fill(
     "SELECT 101 AS account_id, 'ada@example.test' AS owner_email UNION ALL SELECT 102, 'grace@example.test';",
   );
-  await page.getByRole("button", { name: "Run", exact: true }).click();
+  await page.locator(".run-button").click();
   await expect(page.locator(".result-footer")).toContainText("2 rows");
 
   await page.getByRole("button", { name: "Transpose", exact: true }).click();
@@ -51,9 +61,11 @@ test("exercises Transpose/Record views, detached result tabs, Workspace SQL, Dat
   await page.getByRole("button", { name: "Next record", exact: true }).click();
   await expect(page.getByTestId("record-card-view")).toContainText("grace@example.test");
 
-  await page.getByRole("button", { name: "Open in tab", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Reopen originating SQL" })).toBeVisible();
-  await page.getByRole("button", { name: "Reopen originating SQL" }).click();
+  await page.getByRole("button", { name: "Open result in tab", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Open originating SQL", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open originating SQL", exact: true }).click();
 
   // 2. SQL Local History snapshot, diff, and restore
   await page.getByRole("button", { name: "Open SQL Local History", exact: true }).click();
@@ -68,30 +80,40 @@ test("exercises Transpose/Record views, detached result tabs, Workspace SQL, Dat
   await expect(editor).toContainText("ada@example.test");
 
   // 3. Cross-source Workspace SQL over retained result snapshot
-  await page.getByRole("button", { name: "Workspace SQL" }).click();
+  await page.getByRole("button", { name: "Workspace SQL", exact: true }).click();
   await expect(page.getByLabel("Workspace SQL query")).toContainText('FROM "');
   await page.getByRole("button", { name: "Run workspace SQL" }).click();
   await expect(page.locator(".workspace-sql-view")).toContainText("mounted rows");
 
   // 4. Full-text Data Search across disposable PostgreSQL catalog
-  await page.getByRole("button", { name: "Data search" }).click();
+  await page.getByRole("button", { name: "Data search", exact: true }).click();
   await page.getByLabel("Search database values").fill("odd_%");
   await page.getByRole("button", { name: "Search tables" }).click();
   await expect(page.locator(".data-search-view")).toContainText("browse_sort");
 
-  // 5. Virtual Foreign Key registration on `browse_sort` (which has no physical FK to `customers`)
-  await page.getByRole("button", { name: /^public/ }).click();
-  await page.getByRole("button", { name: "browse_sort", exact: true }).click();
+  // 5. Virtual Foreign Key registration & removal on `browse_sort` (no physical FK to `customers`)
+  await page.locator('[data-tree-node="schema:public"]').click();
+  await page
+    .locator(".schema-tree")
+    .getByRole("button", { name: "browse_sort", exact: true })
+    .click();
   await page.getByRole("button", { name: "Structure", exact: true }).click();
   await page.getByRole("button", { name: "Add virtual FK…" }).click();
   const vfkDialog = page.getByRole("dialog");
-  await vfkDialog.getByLabel("Constraint name (optional)").fill("vfk_browse_sort_customers");
-  await vfkDialog.getByLabel("Referenced table").fill("customers");
-  await vfkDialog.getByLabel("Source column 1").fill("id");
-  await vfkDialog.getByLabel("Referenced column 1").fill("id");
-  await vfkDialog.getByRole("button", { name: "Save virtual FK" }).click();
+  await vfkDialog
+    .getByLabel("Relationship name", { exact: true })
+    .fill("vfk_browse_sort_customers");
+  await vfkDialog.getByLabel("Referenced table", { exact: true }).fill("customers");
+  await vfkDialog.getByLabel("Source column 1", { exact: true }).fill("id");
+  await vfkDialog.getByLabel("Referenced column 1", { exact: true }).fill("id");
+  await vfkDialog.getByRole("button", { name: "Save virtual FK", exact: true }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.locator(".structure-view")).toContainText("vfk_browse_sort_customers");
+  const fkTable = page.getByRole("table", { name: "Foreign keys" });
+  await expect(fkTable).toContainText("vfk_browse_sort_customers");
+  await fkTable
+    .getByRole("button", { name: "Delete virtual foreign key vfk_browse_sort_customers" })
+    .click();
+  await expect(fkTable).toHaveCount(0);
 
   expect(errors).toEqual([]);
 });
@@ -114,14 +136,19 @@ test("connects embedded SQLite (:memory:), inspects EXPLAIN QUERY PLAN, and extr
 
   await page.getByRole("button", { name: "New query tab" }).click();
   const editor = page.getByRole("textbox", { name: "SQL editor" });
-  await editor.fill("SELECT sub.v FROM (SELECT sqlite_version() AS v) AS sub;");
+  await placeCaret(editor, "SELECT sub.v FROM (SELECT |sqlite_version() AS v) AS sub;");
   await page.getByRole("button", { name: "Explain", exact: true }).click();
-  await expect(page.locator(".plan-view")).toContainText("EXPLAIN QUERY PLAN");
+  await expect(page.locator(".result-footer .status-dot.completed")).toBeVisible();
+  await page.getByRole("button", { name: "View plan", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Query execution plan" })).toContainText(
+    "EXPLAIN QUERY PLAN",
+  );
 
-  await page.getByRole("button", { name: "Extract SQL CTE" }).click();
-  const cteDialog = page.getByRole("dialog");
-  await cteDialog.getByLabel("CTE name").fill("ver_cte");
-  await cteDialog.getByRole("button", { name: "Extract CTE" }).click();
+  await placeCaret(editor, "SELECT sub.v FROM (SELECT |sqlite_version() AS v) AS sub;");
+  await page.getByRole("button", { name: "Extract SQL CTE", exact: true }).click();
+  const cteDialog = page.getByRole("dialog", { name: "Extract SQL CTE" });
+  await cteDialog.getByLabel("CTE name", { exact: true }).fill("ver_cte");
+  await cteDialog.getByRole("button", { name: "Extract CTE", exact: true }).click();
   await expect(editor).toContainText("WITH ver_cte AS");
 
   expect(errors).toEqual([]);
