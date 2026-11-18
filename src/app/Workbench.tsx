@@ -2200,8 +2200,8 @@ export function Workbench({
           {activeSelectionStats && (
             <span
               className="selection-stats-summary mono"
-              role="status"
               aria-label="Grid selection summary"
+              data-testid="grid-selection-summary"
               style={{ fontSize: 11 }}
             >
               {activeSelectionStats.overLimit

@@ -491,6 +491,20 @@ fn resolve_sqlite_candidate_path(raw: &Path, depth: usize) -> AppResult<PathBuf>
     Ok(acc)
 }
 
+fn normalize_sqlite_guard_path(path: &Path) -> String {
+    let mut normalized = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    if let Some(stripped) = normalized.strip_prefix("//?/") {
+        normalized = stripped.to_owned();
+    }
+    while normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+    normalized
+}
+
 fn is_forbidden_joinery_sqlite_path(resolved: &Path, forbidden_roots: &[PathBuf]) -> bool {
     if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
         let lower = name.to_ascii_lowercase();
@@ -501,13 +515,22 @@ fn is_forbidden_joinery_sqlite_path(resolved: &Path, forbidden_roots: &[PathBuf]
             return true;
         }
     }
+    let path_lower = normalize_sqlite_guard_path(resolved);
     for root in forbidden_roots {
         let canon_root = resolve_sqlite_candidate_path(root, 0).unwrap_or_else(|_| root.clone());
         if resolved.starts_with(&canon_root) {
             return true;
         }
+        #[cfg(windows)]
+        {
+            let root_lower = normalize_sqlite_guard_path(&canon_root);
+            if !root_lower.is_empty()
+                && (path_lower == root_lower || path_lower.starts_with(&format!("{root_lower}/")))
+            {
+                return true;
+            }
+        }
     }
-    let path_lower = resolved.to_string_lossy().to_ascii_lowercase();
     if path_lower.contains("/com.joinery.desktop/")
         || path_lower.ends_with("/com.joinery.desktop")
         || path_lower.contains("/application support/joinery/")
@@ -2912,5 +2935,28 @@ impl Driver for Sqlite {
             let mut guard = self.conn.lock();
             let _ = guard.take();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forbidden_sqlite_guard_normalizes_windows_backslashes_and_verbatim_prefixes() {
+        assert!(is_forbidden_joinery_sqlite_path(
+            Path::new(
+                r"C:\Users\RUNNER~1\AppData\Local\Temp\.tmpwNyYRK\snowflake-state\helper.sqlite"
+            ),
+            &[],
+        ));
+        assert!(is_forbidden_joinery_sqlite_path(
+            Path::new(r"\\?\C:\Users\runneradmin\AppData\Roaming\com.joinery.desktop\state.db"),
+            &[],
+        ));
+        assert!(!is_forbidden_joinery_sqlite_path(
+            Path::new(r"C:\Users\runneradmin\Documents\analytics.sqlite"),
+            &[],
+        ));
     }
 }

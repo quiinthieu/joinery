@@ -5872,6 +5872,11 @@ impl Studio {
             for id in ids {
                 self.disconnect(&id);
             }
+            for result_id in self.results.retained_ids() {
+                if !self.console.owns_result(&result_id) {
+                    self.release_result(&result_id);
+                }
+            }
             #[cfg(unix)]
             {
                 self.snowflake_grid.close_all_helpers();
@@ -5905,6 +5910,11 @@ impl Studio {
         let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
         for id in ids {
             self.disconnect(&id);
+        }
+        for result_id in self.results.retained_ids() {
+            if !self.console.owns_result(&result_id) {
+                self.release_result(&result_id);
+            }
         }
         #[cfg(unix)]
         self.snowflake_grid.close_all_helpers();
@@ -8815,6 +8825,20 @@ mod browse_classification_tests {
         assert_eq!(final_explain.columns[0].name, "QUERY PLAN");
         assert_eq!(final_explain.retained_rows, 1);
 
+        let wsql = studio
+            .run_workspace_sql(WorkspaceSqlRequest {
+                mounts: vec![WorkspaceResultMount {
+                    alias: "plan_rows".into(),
+                    result_ids: vec![final_explain.id.clone()],
+                    label: Some("SQLite plan".into()),
+                }],
+                sql: "SELECT * FROM plan_rows;".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(wsql.result.retained_rows, 1);
+        assert!(studio.usage().result_count >= 2);
+
         let ddl_plan = studio
             .prepare_execution(
                 &session.id,
@@ -8869,6 +8893,7 @@ mod browse_classification_tests {
         studio.reset_fixtures().await.unwrap();
         studio.delete_profile(&saved_sqlite.id).unwrap();
         assert!(studio.sessions.lock().is_empty());
+        assert_eq!(studio.usage().result_count, 0);
         assert!(studio.bootstrap().unwrap().profiles.is_empty());
     }
 }
