@@ -438,6 +438,7 @@ impl Studio {
     }
 
     fn protected_sqlite_roots(&self) -> Vec<std::path::PathBuf> {
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut roots = vec![self.persistence.root().to_path_buf()];
         #[cfg(unix)]
         if let Some(runtime) = &self.snowflake_runtime {

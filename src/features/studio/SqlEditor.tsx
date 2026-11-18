@@ -1771,10 +1771,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 fontSize: 11,
                 padding: "4px 12px",
                 display: "flex",
+                flexWrap: "wrap",
                 alignItems: "center",
-                gap: 8,
+                gap: "4px 8px",
                 minWidth: 0,
-                flex: 1,
+                flex: "1 1 320px",
               }}
             >
               <span
@@ -1782,7 +1783,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
-                  flex: 1,
+                  flex: "1 1 220px",
+                  minWidth: 180,
                 }}
                 title={contextError ?? live?.identity.searchPath.join(", ")}
               >
