@@ -8672,4 +8672,203 @@ mod browse_classification_tests {
                 .all(|fk| fk.virtual_relationship)
         );
     }
+
+    #[tokio::test]
+    async fn datagrip_2026_3_profile_cleanup_and_sqlite_memory_explain_inspection_workflow() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+
+        // 1. Simulate Test 1 profile with store_drafts=true, store_query_text=true, saved draft,
+        //    local history, and virtual FK, then verify delete_profile + clear_local_history
+        //    leaves zero leaked drafts/profiles for subsequent E2E specs.
+        let mut pg_profile = profile(EngineKind::Postgres, SafeMode::Silent);
+        pg_profile.name = "DG 2026.3 Studio".into();
+        pg_profile.store_drafts = true;
+        pg_profile.store_query_text = true;
+        let saved_pg = studio.save_profile(pg_profile, None).unwrap();
+
+        let draft_id = new_id();
+        studio
+            .save_workspace(SavedWorkspace {
+                theme: "dark".into(),
+                density: "comfortable".into(),
+                sidebar_visible: true,
+                sidebar_collapsed: false,
+                inspector_visible: false,
+                active_draft_id: Some(draft_id.clone()),
+                drafts: vec![QueryDraft {
+                    id: draft_id.clone(),
+                    connection_id: saved_pg.id.clone(),
+                    title: "Query 1".into(),
+                    sql: "SELECT 101 AS account_id;".into(),
+                    pinned: false,
+                }],
+                table_layouts: Vec::new(),
+                shortcuts: Default::default(),
+            })
+            .unwrap();
+        studio
+            .record_local_history(LocalHistoryInput {
+                tab_key: draft_id,
+                title: "Query 1".into(),
+                connection_id: Some(saved_pg.id.clone()),
+                trigger: LocalHistoryTrigger::Snapshot,
+                sql: "SELECT 101 AS account_id;".into(),
+            })
+            .unwrap();
+        studio
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: saved_pg.id.clone(),
+                name: "vfk_browse_sort_customers".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "browse_sort".into(),
+                },
+                columns: vec!["id".into()],
+                target: TableRef {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                },
+                target_columns: vec!["id".into()],
+            })
+            .unwrap();
+
+        assert_eq!(
+            studio.bootstrap().unwrap().workspace.unwrap().drafts.len(),
+            1
+        );
+
+        studio.clear_local_history(None).unwrap();
+        studio.delete_profile(&saved_pg.id).unwrap();
+
+        let after_pg_cleanup = studio.bootstrap().unwrap();
+        assert!(after_pg_cleanup.profiles.is_empty());
+        assert!(after_pg_cleanup.virtual_foreign_keys.is_empty());
+        assert!(
+            after_pg_cleanup
+                .workspace
+                .as_ref()
+                .is_none_or(|ws| ws.drafts.is_empty() && ws.active_draft_id.is_none())
+        );
+        assert!(studio.local_history_entries(None).unwrap().is_empty());
+
+        // 2. Simulate Test 2 SQLite (:memory:) connection, EXPLAIN QUERY PLAN, CREATE TABLE,
+        //    completion_catalog + inspection_schema, and final profile cleanup.
+        let mut sqlite_profile = profile(EngineKind::Sqlite, SafeMode::Silent);
+        sqlite_profile.name = "SQLite Memory Scratch".into();
+        sqlite_profile.host = "local".into();
+        sqlite_profile.port = 1;
+        sqlite_profile.database = ":memory:".into();
+        sqlite_profile.username = "local".into();
+        let saved_sqlite = studio.save_profile(sqlite_profile, None).unwrap();
+
+        let attempt_id = studio.prepare_connection(&saved_sqlite.id).unwrap();
+        let session = studio
+            .connect_prepared(
+                &attempt_id,
+                ConnectionSecrets {
+                    password: None,
+                    ssh_password: None,
+                    key_passphrase: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let explain_plan = studio
+            .prepare_explain(
+                &session.id,
+                "SELECT sub.v FROM (SELECT sqlite_version() AS v) AS sub;",
+                false,
+            )
+            .unwrap();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let done_tx = Arc::new(Mutex::new(Some(done_tx)));
+        let results = Arc::new(Mutex::new(Vec::<ResultInfo>::new()));
+        let results_ref = results.clone();
+        let done_ref = done_tx.clone();
+        studio
+            .execute(
+                &explain_plan.id,
+                None,
+                Arc::new(move |event| {
+                    if let QueryEvent::Result { result } = &event {
+                        results_ref.lock().push(result.clone());
+                    }
+                    if let QueryEvent::Finished { status, .. } = event
+                        && let Some(tx) = done_ref.lock().take()
+                    {
+                        let _ = tx.send(status);
+                    }
+                    true
+                }),
+            )
+            .unwrap();
+        assert_eq!(done_rx.await.unwrap(), RunStatus::Completed);
+        let explain_results = results.lock().clone();
+        let final_explain = explain_results.last().expect("explain result event");
+        assert_eq!(final_explain.columns[0].name, "QUERY PLAN");
+        assert_eq!(final_explain.retained_rows, 1);
+
+        let ddl_plan = studio
+            .prepare_execution(
+                &session.id,
+                "CREATE TABLE demo_users (id INTEGER PRIMARY KEY, customer_email TEXT);",
+            )
+            .unwrap();
+        let (ddl_tx, ddl_rx) = tokio::sync::oneshot::channel();
+        let ddl_tx = Arc::new(Mutex::new(Some(ddl_tx)));
+        studio
+            .execute(
+                &ddl_plan.id,
+                None,
+                Arc::new(move |event| {
+                    if let QueryEvent::Finished { status, .. } = event
+                        && let Some(tx) = ddl_tx.lock().take()
+                    {
+                        let _ = tx.send(status);
+                    }
+                    true
+                }),
+            )
+            .unwrap();
+        assert_eq!(ddl_rx.await.unwrap(), RunStatus::Completed);
+
+        let catalog = studio.completion_catalog(&session.id).await.unwrap();
+        assert!(
+            catalog
+                .tables
+                .iter()
+                .any(|t| t.table.schema == "main" && t.table.name == "demo_users")
+        );
+        let inspected = studio
+            .inspection_schema(
+                &session.id,
+                &catalog.revision,
+                &TableRef {
+                    schema: "main".into(),
+                    name: "demo_users".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            inspected
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "customer_email"]
+        );
+
+        studio.reset_fixtures().await.unwrap();
+        studio.delete_profile(&saved_sqlite.id).unwrap();
+        assert!(studio.sessions.lock().is_empty());
+        assert!(studio.bootstrap().unwrap().profiles.is_empty());
+    }
 }

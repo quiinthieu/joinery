@@ -930,17 +930,22 @@ test("SQLite connection form defaults to :memory:, hides TCP/SSH fields, and sav
   });
 
   render(<ConnectionDialog onClose={vi.fn()} />);
-  fireEvent.change(screen.getByLabelText("Connection name"), {
+  fireEvent.change(screen.getByLabelText("Connection name", { exact: true }), {
     target: { value: "Local App SQLite" },
   });
-  fireEvent.change(screen.getByLabelText("Database engine"), {
+  fireEvent.change(screen.getByLabelText("Database engine", { exact: true }), {
     target: { value: "sqlite" },
   });
 
-  const dbInput = screen.getByLabelText("Database file path (or :memory:)") as HTMLInputElement;
+  const dbInput = screen.getByLabelText("Database file path (or :memory:)", {
+    exact: true,
+  }) as HTMLInputElement;
   expect(dbInput.value).toBe(":memory:");
-  expect(screen.queryByLabelText("Host")).toBeNull();
-  expect(screen.queryByLabelText("Port")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Safe Mode", { exact: true }), {
+    target: { value: "silent" },
+  });
+  expect(screen.queryByLabelText("Host", { exact: true })).toBeNull();
+  expect(screen.queryByLabelText("Port", { exact: true })).toBeNull();
   expect(screen.queryByLabelText(/Connect through an SSH bastion/i)).toBeNull();
 
   fireEvent.change(dbInput, { target: { value: "/tmp/joinery_fixture.sqlite" } });

@@ -268,6 +268,7 @@ export function ConnectionDialog({
           <label>
             Database engine
             <select
+              aria-label="Database engine"
               value={draft.engine}
               onChange={(e) => {
                 const engine = e.target.value as ConnectionProfile["engine"];

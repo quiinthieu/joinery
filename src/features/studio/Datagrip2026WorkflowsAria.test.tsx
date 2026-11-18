@@ -12,8 +12,12 @@ import type { EditorHandle } from "./SqlEditor";
 import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import { StructureView } from "./UtilityViews";
 import { QueryPlanView } from "./QueryPlanView";
-import { analyzeExtractCte } from "./sql-refactor";
+import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
+import { analyzeExtractCte, analyzeInlineCte } from "./sql-refactor";
+import { prepareColumnInspection } from "./sql-inspections";
 import { sqlDialect } from "./sql-identifiers";
+import { ConnectionDialog } from "../connections/ConnectionDialog";
+import { App } from "../../app/App";
 
 vi.mock("../../ipc/client", () => ({
   client: { call: vi.fn() },
@@ -428,5 +432,165 @@ describe("DataGrip 2026.3 E2E ARIA & selector contracts", () => {
     expect(plan.replacementKind).toBe("derivedTable");
     const preview = plan.preview(insideState, "ver_cte");
     expect(preview.previewSql).toContain("WITH ver_cte AS");
+
+    const inlineDoc =
+      "WITH ver_cte AS (\n  SELECT sqlite_version() AS v\n)\nSELECT sub.v FROM ver_cte AS sub;";
+    const inlineState = EditorState.create({
+      doc: inlineDoc,
+      selection: { anchor: inlineDoc.indexOf("ver_cte") },
+      extensions: [sqlDialect("sqlite")],
+    });
+    const inlinePlan = analyzeInlineCte(inlineState, "sqlite");
+    expect(inlinePlan.cteName).toBe("ver_cte");
+    expect(inlinePlan.previewSql).not.toContain("WITH ver_cte AS");
+  });
+
+  it("exposes exact Database engine label on ConnectionDialog, restores Connect a database after draft profile deletion, and applies SQLite column quick-fix", async () => {
+    render(<ConnectionDialog onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Connection name", { exact: true }), {
+      target: { value: "SQLite Memory Scratch" },
+    });
+    fireEvent.change(screen.getByLabelText("Database engine", { exact: true }), {
+      target: { value: "sqlite" },
+    });
+    const sqlitePath = screen.getByLabelText("Database file path (or :memory:)", {
+      exact: true,
+    }) as HTMLInputElement;
+    expect(sqlitePath.value).toBe(":memory:");
+    fireEvent.change(screen.getByLabelText("Safe Mode", { exact: true }), {
+      target: { value: "silent" },
+    });
+    cleanup();
+
+    // Leaked storeDrafts profile hides Welcome "Connect a database"; deleting it restores Welcome.
+    vi.mocked(client.call).mockResolvedValue(null);
+    const baseBootstrap = useStudio.getState().bootstrap!;
+    useStudio.setState({
+      initialize: vi.fn().mockResolvedValue(undefined),
+      tabs: [
+        {
+          id: "leaked-draft-1",
+          kind: "query",
+          title: "Query 1",
+          connectionId: pgProfile.id,
+          sql: "SELECT 101;",
+          table: null,
+          view: "data",
+          results: [],
+          activeResultId: null,
+          pages: [],
+          pageKeys: {},
+          loadedRows: 0,
+          hasMore: false,
+          loadingPage: false,
+          schema: null,
+          nextKey: null,
+          query: { sort: [], filters: [], whereClause: null, orderClause: null },
+          status: "idle",
+          runId: null,
+          revision: 0,
+          dataSessionId: null,
+          error: null,
+          elapsedMs: 0,
+          metrics: {},
+          fileToken: null,
+          fileName: null,
+          savedSql: null,
+          savedQueryId: null,
+          object: null,
+          querySession: null,
+          querySessionClosed: false,
+        },
+      ],
+      activeTabId: "leaked-draft-1",
+    });
+    render(<App />);
+    expect(screen.queryByRole("button", { name: "Connect a database" })).toBeNull();
+    useStudio.getState().removeConnection(pgProfile.id);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Connect a database" })).toBeTruthy();
+    });
+    cleanup();
+
+    useStudio.setState({ bootstrap: baseBootstrap });
+
+    // SQLite column typo quick-fix contract matching Test 2 lines 190-196.
+    const sql = "SELECT u.custmoer_email FROM demo_users u;";
+    const editorState = EditorState.create({
+      doc: sql,
+      selection: { anchor: sql.indexOf("custmoer_email") },
+      extensions: [sqlDialect("sqlite")],
+    });
+    const inspectionPlan = prepareColumnInspection(editorState, editorState.selection.main.head, {
+      engine: "sqlite",
+      tables: [
+        {
+          table: { schema: "main", name: "demo_users" },
+          kind: "table",
+          estimatedRows: 0,
+          totalBytes: null,
+        },
+      ],
+      databaseObjects: [],
+      schemas: new Map(),
+      database: ":memory:",
+      searchPath: ["main"],
+      unqualifiedTables: [{ schema: "main", name: "demo_users" }],
+    });
+    const result = inspectionPlan.finish(editorState, [
+      {
+        table: { schema: "main", name: "demo_users" },
+        columns: [
+          {
+            id: "id",
+            name: "id",
+            databaseType: "INTEGER",
+            kind: "integer",
+            nullable: false,
+            primaryKey: true,
+            foreignKey: false,
+            editable: true,
+            insertable: true,
+            hasDefault: false,
+          },
+          {
+            id: "customer_email",
+            name: "customer_email",
+            databaseType: "TEXT",
+            kind: "text",
+            nullable: true,
+            primaryKey: false,
+            foreignKey: false,
+            editable: true,
+            insertable: true,
+            hasDefault: false,
+          },
+        ],
+        primaryKey: ["id"],
+        foreignKeys: [],
+        inboundForeignKeys: [],
+        editable: true,
+      },
+    ]);
+    const onApply = vi.fn();
+    render(
+      <SqlColumnInspectionDialog
+        result={result}
+        state={editorState}
+        onApply={onApply}
+        onClose={vi.fn()}
+      />,
+    );
+    const group = screen.getByRole("group", { name: "Column typo quick-fixes" });
+    fireEvent.click(screen.getByRole("button", { name: "customer_email" }));
+    expect(group).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Apply column correction" }));
+    expect(onApply).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "custmoer_email" }),
+      "customer_email",
+    );
+    expect(result.preview(editorState, result.issues[0], "customer_email").insert).toBe(
+      '"customer_email"',
+    );
   });
 });

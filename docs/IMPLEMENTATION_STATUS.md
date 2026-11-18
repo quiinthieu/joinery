@@ -172,48 +172,50 @@ sessions (candidate for `v0.1.0-preview.19`):
   `SqlColumnInspectionDialog.tsx` across PostgreSQL, MySQL/MariaDB, SQLite, and
   Snowflake.
 
-Local verification recorded on `feat/datagrip-2026-3-workflows`:
+Local and macOS ARM64 host verification recorded on `feat/datagrip-2026-3-workflows` (18 November 2026):
 
 - Frontend, formatting, contracts & build: `pnpm format:check` clean,
-  `pnpm contracts && tsc -b` clean, `vitest run` **`1,115/1,115` tests passed
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,116/1,116` tests passed
   across `84` test files** (`0` failed), and `pnpm build` + `pnpm build:smoke` clean
   with `DatabaseGrid` and `SqlEditor` code-split (`0` errors).
 - Rust static analysis & unit/integration suites: `cargo fmt --check`,
   `cargo check`, and strict
-  `cargo clippy --all-targets --all-features -- -D warnings` clean (`0`
-  warnings), `741+` non-socket `--lib` unit tests passed (`0` failed, `5`
-  ignored, including `result_view`, `safety`, `sql_refactor`,
-  `snowflake_mutations`, `snowflake_explorer`,
-  `drivers::snowflake_external::special_snowflake_tables_and_post_execution_query_profile_round_trip`,
-  `data_search`, `workspace_sql`, and `local_history` tests), plus `115/115`
-  non-socket integration tests (`43/43` `tests/snowflake_process.rs`, `33/33`
-  `tests/snowflake_external.rs` including real child-process
-  `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`, `11/11`
-  `tests/snowflake_profile.rs`, `9/9`
+  `cargo clippy --all-targets --all-features -- -D warnings` clean (`0` errors),
+  **`804/804` `--lib` unit tests passed** (`0` failed, `5` ignored — including all
+  loopback mock-socket, `snowflake_runtime` setuid/sticky-bit, `result_view`,
+  `safety`, `sql_refactor`, `snowflake_mutations`, `snowflake_explorer`,
+  `data_search`, `workspace_sql`, `local_history`, and
+  `datagrip_2026_3_profile_cleanup_and_sqlite_memory_explain_inspection_workflow`
+  tests), **`115/115` non-Docker integration tests passed** (`43/43`
+  `tests/snowflake_process.rs`, `33/33` `tests/snowflake_external.rs` including
+  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`,
+  `11/11` `tests/snowflake_profile.rs`, `9/9`
   `tests/snowflake_table_qualification_cli.rs`, `8/8`
   `tests/history_lifecycle.rs`, `4/4` end-to-end `tests/sqlite.rs` against a real
   embedded SQLite 3 database, `2/2` `tests/groups.rs`, `2/2`
   `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, and `1/1`
-  `tests/recovery.rs`) passed.
-- Node & Python verification suites: `137/137` non-loopback `snowflake-helper`
-  unit tests (`9` suites), `136/136` `pnpm test:snowflake:qualification`, `59/59`
+  `tests/recovery.rs`), plus live disposable Docker PostgreSQL 17
+  `datagrip_2026_3_data_search_virtual_fks_workspace_sql_and_local_history`
+  passed.
+- Node, Python, Native macOS WebView & Playwright E2E suites: **`443/443`**
+  `snowflake-helper` tests passed (`0` failed, including loopback HTTP/TLS
+  redirect-guard suites), `136/136` `pnpm test:snowflake:qualification`, `59/59`
   `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
   `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
   `pnpm test:native:recovery:runner`, `11/11`
-  `pnpm test:native:encrypted-recovery:runner`, and
+  `pnpm test:native:encrypted-recovery:runner`,
   `verify-snowflake-package.mjs` (`passed: true`, `entryCount: 15111`,
-  `symlinkCount: 5`) passed.
-- Sandbox-blocked checks (not executed inside the offline socket-restricted
-  agent sandbox; require host CI / non-sandboxed execution before shipping):
-  `127.0.0.1` loopback TCP listener tests (Playwright E2E `test-harness` browser
-  suite including `tests/e2e/datagrip-2026-3-workflows.spec.ts`, `47` Rust
-  loopback mock-socket `--lib` tests, and `11` loopback HTTP/TLS `snowflake-helper`
-  redirect-guard tests), `1` sticky-bit/setuid `chmod` test
-  (`snowflake_runtime::tests::unsafe_modes_and_non_executable_node_are_rejected`),
-  Docker `/var/run/docker.sock` disposable PG/MySQL/MariaDB/Redis container
-  integration fixtures (`#[ignore]`, including `tests/postgres.rs` and
-  `tests/mysql.rs`), and hidden native macOS WebView
-  smoke (`pnpm test:native` / `pnpm test:native:encrypted-recovery`).
+  `symlinkCount: 5`), native macOS WKWebView smoke (`scripts/native-smoke.py`:
+  **`3/3` passed**, `30` cleanup cycles, `~110 MiB` peak RSS), native encrypted
+  metadata recovery (`scripts/native-encrypted-recovery.py`: **`errors: []`**),
+  and Playwright E2E (`tests/e2e/datagrip-2026-3-workflows.spec.ts` +
+  `tests/e2e/snowflake-datagrip-workflows.spec.ts`: **`5/5` passed**, verifying
+  responsive `.results-header` / `.table-view-actions` wrapping without pointer
+  interception, profile draft cleanup isolation across specs, PostgreSQL
+  Transpose/Record/Pinned/Detached/Workspace SQL/Data Search/Virtual FK/Local
+  History workflows, embedded SQLite `:memory:` `EXPLAIN QUERY PLAN` + `Extract
+  CTE` / `Inline CTE` + `Database output` + column typo quick-fix workflows, and
+  Snowflake E2E workflows).
 
 External replacement gates remain explicitly open: zero live Snowflake account
 queries have been executed pending owner approval of
