@@ -11,6 +11,7 @@ use crate::{
         postgres::{Postgres, mutation_sql},
         redis::Redis,
         snowflake::Snowflake,
+        sqlite::Sqlite,
     },
     export::{ExportFileSession, ExportWriterOptions, resolve_export_columns},
     file_capability::{DisabledFileDialog, FileCapabilities, FileDialogProvider},
@@ -436,6 +437,18 @@ impl Studio {
         }))
     }
 
+    fn protected_sqlite_roots(&self) -> Vec<std::path::PathBuf> {
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut roots = vec![self.persistence.root().to_path_buf()];
+        #[cfg(unix)]
+        if let Some(runtime) = &self.snowflake_runtime {
+            for r in runtime.protected_roots() {
+                roots.push(r.to_path_buf());
+            }
+        }
+        roots
+    }
+
     pub fn bootstrap(&self) -> AppResult<Bootstrap> {
         Ok(Bootstrap {
             profiles: self.persistence.profiles()?,
@@ -447,8 +460,9 @@ impl Studio {
                 == Some("true"),
             supported_engines: vec![
                 EngineKind::Postgres,
-                EngineKind::Redis,
                 EngineKind::Mysql,
+                EngineKind::Sqlite,
+                EngineKind::Redis,
                 EngineKind::Snowflake,
             ],
             result_budget_bytes: RESULT_BUDGET,
@@ -459,6 +473,7 @@ impl Studio {
             bookmarks: self.persistence.bookmarks()?,
             sql_format_settings: self.persistence.sql_format_settings()?,
             sql_snippets: self.persistence.sql_snippets()?,
+            virtual_foreign_keys: self.persistence.virtual_foreign_keys()?,
         })
     }
 
@@ -488,6 +503,45 @@ impl Studio {
     pub fn delete_sql_snippet(&self, id: &str) -> AppResult<()> {
         let _configuration = self.configuration_mutation_guard()?;
         self.persistence.delete_sql_snippet(id)
+    }
+
+    pub fn save_virtual_foreign_key(
+        &self,
+        input: VirtualForeignKeyInput,
+    ) -> AppResult<VirtualForeignKey> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.save_virtual_foreign_key(input)
+    }
+
+    pub fn delete_virtual_foreign_key(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.delete_virtual_foreign_key(id).map(|_| ())
+    }
+
+    pub fn local_history_entries(
+        &self,
+        tab_key: Option<&str>,
+    ) -> AppResult<Vec<LocalHistoryEntry>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        self.persistence.local_history_entries(tab_key)
+    }
+
+    pub fn record_local_history(
+        &self,
+        input: LocalHistoryInput,
+    ) -> AppResult<Option<LocalHistoryEntry>> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.record_local_history(input)
+    }
+
+    pub fn delete_local_history_entry(&self, id: &str) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.delete_local_history_entry(id)
+    }
+
+    pub fn clear_local_history(&self, tab_key: Option<&str>) -> AppResult<()> {
+        let _configuration = self.configuration_mutation_guard()?;
+        self.persistence.clear_local_history(tab_key)
     }
 
     pub fn save_saved_query(&self, input: SavedQueryInput) -> AppResult<SavedQuery> {
@@ -602,6 +656,24 @@ impl Studio {
         }
         uuid::Uuid::parse_str(&profile.id)
             .map_err(|_| AppError::invalid("Invalid connection identifier"))?;
+        if profile.engine == EngineKind::Sqlite {
+            if profile.host.trim().is_empty() {
+                profile.host = "local".into();
+            }
+            if profile.port == 0 {
+                profile.port = 1;
+            }
+            if profile.username.trim().is_empty() {
+                profile.username = "local".into();
+            }
+            profile.ssh = None;
+            profile.snowflake = None;
+        }
+        let max_db_len = if profile.engine == EngineKind::Sqlite {
+            4096
+        } else {
+            1024
+        };
         if profile.name.trim().is_empty()
             || profile.name.len() > 100
             || profile.host.trim().is_empty()
@@ -610,7 +682,7 @@ impl Studio {
             || profile.username.is_empty()
             || profile.username.len() > 1024
             || profile.database.is_empty()
-            || profile.database.len() > 1024
+            || profile.database.len() > max_db_len
             || profile
                 .ca_cert_path
                 .as_ref()
@@ -658,6 +730,10 @@ impl Studio {
         }
         if profile.engine == EngineKind::Redis {
             Redis::validate_profile(&profile)?;
+        }
+        if profile.engine == EngineKind::Sqlite {
+            Sqlite::validate_profile(&profile)?;
+            Sqlite::validate_target_path(&profile.database, &self.protected_sqlite_roots())?;
         }
         if profile.engine == EngineKind::Snowflake {
             Snowflake::validate_profile(&profile)?;
@@ -1048,6 +1124,9 @@ impl Studio {
                     )
                     .await?;
                     (driver, info)
+                }
+                EngineKind::Sqlite => {
+                    Sqlite::open(&profile, &session_id, self.protected_sqlite_roots()).await?
                 }
                 EngineKind::Mysql => {
                     let (driver, info) = Mysql::open_with_guard_policy(
@@ -3053,7 +3132,7 @@ impl Studio {
                 "The table is not visible in this completion context",
             ));
         }
-        let schema = if require_complete {
+        let mut schema = if require_complete {
             session.driver.inspection_schema(table).await
         } else {
             session.driver.completion_schema(table).await
@@ -3080,6 +3159,9 @@ impl Studio {
                 "Completion context changed; refresh suggestions",
             )
             .with_completion_invalidated());
+        }
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
         }
         if schema.columns.len() > 4096
             || serde_json::to_vec(&schema)
@@ -3314,7 +3396,11 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        self.schema_for_session(&session, table).await
+        let mut schema = self.schema_for_session(&session, table).await?;
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(&mut schema, &vfks, &session.profile.id, true);
+        }
+        Ok(schema)
     }
     async fn resolve_statement_provenance(
         &self,
@@ -3323,7 +3409,7 @@ impl Studio {
     ) -> StatementProvenance {
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) || !session.info.capabilities.table_editing
         {
             return StatementProvenance::None;
@@ -3385,7 +3471,11 @@ impl Studio {
         let session = self.session(session_id)?;
         #[cfg(unix)]
         self.snowflake_grid.require_ordinary_session(session_id)?;
-        session.driver.referencing_keys(table).await
+        let mut keys = session.driver.referencing_keys(table).await?;
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_inbound(&mut keys, &vfks, &session.profile.id, table);
+        }
+        Ok(keys)
     }
     pub async fn schema_diagram(&self, session_id: &str, schema: &str) -> AppResult<SchemaDiagram> {
         let _recovery_activity = self.begin_recovery_activity()?;
@@ -3410,11 +3500,15 @@ impl Studio {
             None
         };
         let result = session.driver.schema_diagram(schema).await;
-        if snowflake_dml::sdk_profile(&session.profile) {
-            Self::publish_relation(&session, result)
+        let mut diagram = if snowflake_dml::sdk_profile(&session.profile) {
+            Self::publish_relation(&session, result)?
         } else {
-            result
+            result?
+        };
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_diagram(&mut diagram, &vfks, &session.profile.id);
         }
+        Ok(diagram)
     }
     pub async fn schema_snapshot(
         &self,
@@ -3650,13 +3744,13 @@ impl Studio {
         let session = self.session(session_id)?;
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) || !session.info.capabilities.ddl_editing
             || !session.info.capabilities.schema_diff
         {
             return Err(AppError::new(
                 ErrorCode::Unsupported,
-                "Schema migration execution is available for PostgreSQL and MySQL/MariaDB",
+                "Schema migration execution is available for PostgreSQL, MySQL/MariaDB, and SQLite",
             ));
         }
         if session.profile.engine != expected_snapshot.engine {
@@ -3743,6 +3837,12 @@ impl Studio {
             }
             EngineKind::Postgres => {
                 let warning = "Migration DDL on PostgreSQL acquires ACCESS EXCLUSIVE locks on altered or dropped objects and may block concurrent queries until completion.".to_string();
+                if !plan.warnings.contains(&warning) {
+                    plan.warnings.push(warning);
+                }
+            }
+            EngineKind::Sqlite => {
+                let warning = "Migration DDL on SQLite acquires an exclusive write lock on the database file while schema changes execute.".to_string();
                 if !plan.warnings.contains(&warning) {
                     plan.warnings.push(warning);
                 }
@@ -3998,10 +4098,19 @@ impl Studio {
             page.has_more = false;
             page.next_key = None;
         }
+        let mut display_schema = target.schema.clone();
+        if let Ok(vfks) = self.persistence.virtual_foreign_keys() {
+            merge_virtual_fks_into_table_schema(
+                &mut display_schema,
+                &vfks,
+                &session.profile.id,
+                false,
+            );
+        }
         let result = self.results.create(
             &format!("table:{session_id}"),
             0,
-            target.schema.columns.clone(),
+            display_schema.columns,
             Some(target.schema),
         )?;
         self.results
@@ -4340,6 +4449,8 @@ impl Studio {
             .map(|m| {
                 if session.profile.engine == EngineKind::Mysql {
                     crate::drivers::mysql::mutation_sql(&schema, m)
+                } else if session.profile.engine == EngineKind::Sqlite {
+                    crate::drivers::sqlite::mutation_sql(&schema, m)
                 } else {
                     mutation_sql(&schema, m)
                 }
@@ -4982,11 +5093,11 @@ impl Studio {
         }
         if !matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) {
             return Err(AppError::new(
                 ErrorCode::PolicyBlocked,
-                "CSV import is only available for writable PostgreSQL and MySQL/MariaDB tables",
+                "CSV import is only available for writable PostgreSQL, MySQL/MariaDB, and SQLite tables",
             ));
         }
         let schema = self.schema_for_session(&session, table).await?;
@@ -5030,7 +5141,7 @@ impl Studio {
         let config_digest = import_config_digest(table, &preview_options, &preview.mappings)?;
         let mut targets = self.import_targets.lock();
         targets.retain(|_, entry| entry.created.elapsed() < Duration::from_secs(300));
-        if target.identity.is_some() {
+        if target.identity.is_some() || engine == EngineKind::Sqlite {
             if session.closed.load(Ordering::Acquire) {
                 return Err(AppError::new(
                     ErrorCode::ConnectionClosed,
@@ -5099,7 +5210,7 @@ impl Studio {
         let (session, mut schema) = self.verify_import_target(session_id, table).await?;
         let (identity, import_preview_key) = if matches!(
             session.profile.engine,
-            EngineKind::Postgres | EngineKind::Mysql
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
         ) {
             let config_digest = import_config_digest(table, &options, &mappings)?;
             let targets = self.import_targets.lock();
@@ -5146,12 +5257,10 @@ impl Studio {
         let generated = prepared
             .mutations
             .iter()
-            .map(|m| {
-                if engine == EngineKind::Mysql {
-                    crate::drivers::mysql::mutation_sql(&schema, m)
-                } else {
-                    mutation_sql(&schema, m)
-                }
+            .map(|m| match engine {
+                EngineKind::Mysql => crate::drivers::mysql::mutation_sql(&schema, m),
+                EngineKind::Sqlite => crate::drivers::sqlite::mutation_sql(&schema, m),
+                _ => mutation_sql(&schema, m),
             })
             .collect::<AppResult<Vec<_>>>()?;
         let sql = generated
@@ -5290,11 +5399,11 @@ impl Studio {
                 let session = self.session(&session_id)?;
                 if !matches!(
                     session.profile.engine,
-                    EngineKind::Postgres | EngineKind::Mysql
+                    EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
                 ) {
                     return Err(AppError::new(
                         ErrorCode::Unsupported,
-                        "Live table comparison is available for PostgreSQL and MySQL/MariaDB. Compare retained query or preview snapshots for other engines.",
+                        "Live table comparison is available for PostgreSQL, MySQL/MariaDB, and SQLite. Compare retained query or preview snapshots for other engines.",
                     ));
                 }
                 let schema = {
@@ -5521,6 +5630,209 @@ impl Studio {
         .map_err(|_| AppError::internal("Data comparison task could not complete"))?
     }
 
+    pub async fn run_workspace_sql(
+        &self,
+        request: WorkspaceSqlRequest,
+    ) -> AppResult<WorkspaceSqlResponse> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let snapshots =
+            crate::workspace_sql::materialize_mounts(&self.results, &request.mounts, |rid| {
+                self.console.owns_result(rid)
+            })?;
+        let sql = request.sql;
+        let out = tokio::task::spawn_blocking(move || {
+            crate::workspace_sql::execute_workspace_query(snapshots, &sql)
+        })
+        .await
+        .map_err(|_| AppError::internal("Workspace SQL task could not complete"))??;
+
+        let created = self.results.create_with_editability(
+            &format!("workspace-sql-{}", new_id()),
+            0,
+            out.columns,
+            None,
+            Some(ResultEditability::ReadOnly {
+                reason: "Cross-source workspace query result".into(),
+            }),
+        )?;
+        let mut truncated = out.truncated;
+        for chunk in out.rows.chunks(512) {
+            match self.results.append(&created.id, chunk.to_vec()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    truncated = true;
+                    break;
+                }
+                Err(err) => {
+                    self.results.release(&created.id);
+                    return Err(err);
+                }
+            }
+        }
+        let finished = match self.results.finish(&created.id, truncated) {
+            Ok(info) => info,
+            Err(err) => {
+                self.results.release(&created.id);
+                return Err(err);
+            }
+        };
+        Ok(WorkspaceSqlResponse {
+            result: finished,
+            elapsed_ms: out.elapsed_ms,
+            mounted_rows: out.mounted_rows,
+            truncated,
+        })
+    }
+
+    pub async fn search_database_data(
+        &self,
+        request: DataSearchRequest,
+    ) -> AppResult<DataSearchReport> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        crate::data_search::validate_search_request(&request)?;
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Full-text data search is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        if snowflake_dml::sdk_profile(&session.profile) {
+            let _lane = Self::relation_lane(&session).await?;
+            let result = session.driver.search_data(&request).await;
+            Self::publish_relation(&session, result)
+        } else {
+            let _lane = tokio::time::timeout(Duration::from_secs(3), session.lane.lock())
+                .await
+                .map_err(|_| AppError::new(ErrorCode::Conflict, "The database session is busy"))?;
+            if session.closed.load(Ordering::Acquire) || session.driver.is_closed() {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionClosed,
+                    "This database session is disconnected",
+                ));
+            }
+            if session.active_run.lock().is_some() {
+                return Err(AppError::new(
+                    ErrorCode::Conflict,
+                    "Wait for the running query to finish first",
+                ));
+            }
+            session.metadata_gate.lock().check(None, false)?;
+            session.driver.search_data(&request).await
+        }
+    }
+
+    pub async fn snowflake_query_history(
+        &self,
+        request: SnowflakeQueryHistoryRequest,
+    ) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let limit = request.limit.unwrap_or(25);
+        if !(1..=100).contains(&limit) {
+            return Err(AppError::invalid(
+                "Snowflake query history limit must be between 1 and 100",
+            ));
+        }
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Post-execution query history is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        let redact_sql = !session.profile.store_query_text;
+        let _lane = Self::relation_lane(&session).await?;
+        let result = session
+            .driver
+            .snowflake_query_history(limit, redact_sql)
+            .await;
+        Self::publish_relation(&session, result)
+    }
+
+    pub async fn snowflake_query_operator_profile(
+        &self,
+        request: SnowflakeOperatorProfileRequest,
+    ) -> AppResult<SnowflakeOperatorProfile> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        let query_id = request.query_id.trim();
+        if !(8..=64).contains(&query_id.len())
+            || !query_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            return Err(AppError::invalid("Provide a valid Snowflake query ID"));
+        }
+        let session = self.session(&request.session_id)?;
+        if session.info.console_mode {
+            return Err(AppError::new(
+                ErrorCode::PolicyBlocked,
+                "Post-execution operator profile inspection is disabled on reviewed console sessions",
+            ));
+        }
+        #[cfg(unix)]
+        self.snowflake_grid
+            .require_ordinary_session(&request.session_id)?;
+        let _lane = Self::relation_lane(&session).await?;
+        let result = session
+            .driver
+            .snowflake_query_operator_profile(query_id)
+            .await;
+        Self::publish_relation(&session, result)
+    }
+
+    pub fn find_sql_usages(
+        &self,
+        mut request: SqlFindUsagesRequest,
+    ) -> AppResult<SqlFindUsagesReport> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        if request.include_saved_queries {
+            let profile_engines: std::collections::HashMap<String, EngineKind> = self
+                .persistence
+                .profiles()?
+                .into_iter()
+                .map(|p| (p.id, p.engine))
+                .collect();
+            let existing_saved_ids: std::collections::HashSet<String> = request
+                .documents
+                .iter()
+                .filter_map(|doc| doc.saved_query_id.clone())
+                .collect();
+            for sq in self.persistence.saved_queries()? {
+                if existing_saved_ids.contains(&sq.id) {
+                    continue;
+                }
+                let matches_conn = match (&request.connection_id, &sq.connection_id) {
+                    (Some(req_cid), Some(sq_cid)) => req_cid == sq_cid,
+                    (Some(_), None) | (None, None) => true,
+                    (None, Some(sq_cid)) => profile_engines
+                        .get(sq_cid)
+                        .is_none_or(|engine| *engine == request.engine),
+                };
+                if matches_conn {
+                    request.documents.push(SqlUsageDocument {
+                        id: sq.id.clone(),
+                        title: sq.title,
+                        source_kind: SqlUsageSourceKind::SavedQuery,
+                        saved_query_id: Some(sq.id),
+                        sql: sq.sql,
+                    });
+                }
+            }
+        }
+        crate::sql_refactor::find_sql_usages(&request)
+    }
+
+    pub fn query_result_view(&self, request: ResultViewRequest) -> AppResult<ResultViewResponse> {
+        let _recovery_activity = self.begin_recovery_activity()?;
+        crate::result_view::compute_result_view(&self.results, &request)
+    }
+
     pub fn usage(&self) -> ResourceUsage {
         let (retained_bytes, result_count) = self.results.usage();
         let grid_runs = {
@@ -5561,6 +5873,11 @@ impl Studio {
             for id in ids {
                 self.disconnect(&id);
             }
+            for result_id in self.results.retained_ids() {
+                if !self.console.owns_result(&result_id) {
+                    self.release_result(&result_id);
+                }
+            }
             #[cfg(unix)]
             {
                 self.snowflake_grid.close_all_helpers();
@@ -5594,6 +5911,11 @@ impl Studio {
         let ids = self.sessions.lock().keys().cloned().collect::<Vec<_>>();
         for id in ids {
             self.disconnect(&id);
+        }
+        for result_id in self.results.retained_ids() {
+            if !self.console.owns_result(&result_id) {
+                self.release_result(&result_id);
+            }
         }
         #[cfg(unix)]
         self.snowflake_grid.close_all_helpers();
@@ -5678,6 +6000,9 @@ fn browse_sql_for_engine(
         }
         EngineKind::Mysql => {
             crate::drivers::mysql::browse_sql(schema, query, after).map(|(sql, _)| sql)
+        }
+        EngineKind::Sqlite => {
+            crate::drivers::sqlite::browse_sql(schema, query, after).map(|(sql, _)| sql)
         }
         EngineKind::Snowflake | EngineKind::Redis => Err(AppError::new(
             ErrorCode::Unsupported,
@@ -5974,6 +6299,152 @@ impl Output<'_> {
     }
 }
 
+fn merge_virtual_fks_into_table_schema(
+    schema: &mut TableSchema,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+    include_inbound: bool,
+) {
+    let col_names: std::collections::HashSet<&str> =
+        schema.columns.iter().map(|c| c.name.as_str()).collect();
+    let mut newly_fk_columns: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for vfk in vfks {
+        if vfk.connection_id != connection_id {
+            continue;
+        }
+        if vfk.source == schema.table && vfk.columns.iter().all(|c| col_names.contains(c.as_str()))
+        {
+            let duplicate = schema.foreign_keys.iter().any(|fk| {
+                fk.target == vfk.target
+                    && fk.columns == vfk.columns
+                    && fk.target_columns == vfk.target_columns
+            });
+            if !duplicate {
+                for col in &vfk.columns {
+                    newly_fk_columns.insert(col.clone());
+                }
+                schema.foreign_keys.push(ForeignKey {
+                    name: vfk.name.clone(),
+                    columns: vfk.columns.clone(),
+                    target: vfk.target.clone(),
+                    target_columns: vfk.target_columns.clone(),
+                    virtual_relationship: true,
+                });
+            }
+        }
+        if include_inbound
+            && vfk.target == schema.table
+            && vfk
+                .target_columns
+                .iter()
+                .all(|c| col_names.contains(c.as_str()))
+        {
+            let duplicate = schema.inbound_foreign_keys.iter().any(|ifk| {
+                ifk.source == vfk.source
+                    && ifk.columns == vfk.columns
+                    && ifk.target_columns == vfk.target_columns
+            });
+            if !duplicate {
+                schema.inbound_foreign_keys.push(InboundForeignKey {
+                    name: vfk.name.clone(),
+                    source: vfk.source.clone(),
+                    columns: vfk.columns.clone(),
+                    target_columns: vfk.target_columns.clone(),
+                    virtual_relationship: true,
+                });
+            }
+        }
+    }
+    if !newly_fk_columns.is_empty() {
+        for col in &mut schema.columns {
+            if newly_fk_columns.contains(&col.name) {
+                col.foreign_key = true;
+            }
+        }
+    }
+}
+
+fn merge_virtual_fks_into_inbound(
+    keys: &mut Vec<InboundForeignKey>,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+    table: &TableRef,
+) {
+    for vfk in vfks {
+        if vfk.connection_id != connection_id || &vfk.target != table {
+            continue;
+        }
+        let duplicate = keys.iter().any(|ifk| {
+            ifk.source == vfk.source
+                && ifk.columns == vfk.columns
+                && ifk.target_columns == vfk.target_columns
+        });
+        if !duplicate {
+            keys.push(InboundForeignKey {
+                name: vfk.name.clone(),
+                source: vfk.source.clone(),
+                columns: vfk.columns.clone(),
+                target_columns: vfk.target_columns.clone(),
+                virtual_relationship: true,
+            });
+        }
+    }
+}
+
+fn merge_virtual_fks_into_diagram(
+    diagram: &mut SchemaDiagram,
+    vfks: &[VirtualForeignKey],
+    connection_id: &str,
+) {
+    let mut table_columns: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::with_capacity(diagram.tables.len());
+    for node in &diagram.tables {
+        table_columns.insert(
+            node.table.name.as_str(),
+            node.columns.iter().map(|c| c.name.as_str()).collect(),
+        );
+    }
+    for vfk in vfks {
+        if vfk.connection_id != connection_id || vfk.source.schema != diagram.schema {
+            continue;
+        }
+        let Some(src_cols) = table_columns.get(vfk.source.name.as_str()) else {
+            continue;
+        };
+        if !vfk.columns.iter().all(|c| src_cols.contains(c.as_str())) {
+            continue;
+        }
+        if vfk.target.schema == diagram.schema {
+            let Some(dst_cols) = table_columns.get(vfk.target.name.as_str()) else {
+                continue;
+            };
+            if !vfk
+                .target_columns
+                .iter()
+                .all(|c| dst_cols.contains(c.as_str()))
+            {
+                continue;
+            }
+        }
+        let duplicate = diagram.foreign_keys.iter().any(|fk| {
+            fk.source == vfk.source
+                && fk.target == vfk.target
+                && fk.columns == vfk.columns
+                && fk.target_columns == vfk.target_columns
+        });
+        if !duplicate {
+            diagram.foreign_keys.push(DiagramForeignKey {
+                name: vfk.name.clone(),
+                source: vfk.source.clone(),
+                columns: vfk.columns.clone(),
+                target: vfk.target.clone(),
+                target_columns: vfk.target_columns.clone(),
+                virtual_relationship: true,
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod browse_classification_tests {
     use super::*;
@@ -6068,10 +6539,10 @@ mod browse_classification_tests {
         };
         TableSchema {
             table: TableRef {
-                schema: if engine == EngineKind::Mysql {
-                    "joinery".into()
-                } else {
-                    "public".into()
+                schema: match engine {
+                    EngineKind::Mysql => "joinery".into(),
+                    EngineKind::Sqlite => "main".into(),
+                    _ => "public".into(),
                 },
                 name: "orders".into(),
             },
@@ -6122,7 +6593,7 @@ mod browse_classification_tests {
 
     #[test]
     fn pure_read_raw_clauses_with_typed_filters_need_no_approval_on_pg_and_mysql() {
-        for engine in [EngineKind::Postgres, EngineKind::Mysql] {
+        for engine in [EngineKind::Postgres, EngineKind::Mysql, EngineKind::Sqlite] {
             let schema = schema(engine);
             let query = BrowseQuery {
                 sort: vec![SortKey {
@@ -6160,6 +6631,38 @@ mod browse_classification_tests {
             let (_, needs_review) =
                 classify_browse_sql("s", &profile(engine, SafeMode::ReadOnly), &sql).unwrap();
             assert!(!needs_review, "{engine:?} custom order: {sql}");
+
+            let data_search_clauses = match engine {
+                EngineKind::Postgres => vec![
+                    "(CAST(\"label\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!' OR CAST(\"bucket\" AS TEXT) ILIKE '%ada!%@%' ESCAPE '!')",
+                    "CAST(\"label\" AS TEXT) LIKE '%Ada%' ESCAPE '!'",
+                ],
+                EngineKind::Mysql => vec![
+                    "(LOWER(CAST(`label` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!' OR LOWER(CAST(`bucket` AS CHAR)) LIKE LOWER('%ada!%@%') ESCAPE '!')",
+                    "CAST(`label` AS CHAR) COLLATE utf8mb4_bin LIKE '%Ada%' ESCAPE '!'",
+                ],
+                EngineKind::Sqlite => vec![
+                    "(LOWER(CAST(\"label\" AS TEXT)) LIKE LOWER('%ada!%@%') ESCAPE '!' OR LOWER(CAST(\"bucket\" AS TEXT)) LIKE LOWER('%ada!%@%') ESCAPE '!')",
+                    "INSTR(CAST(\"label\" AS TEXT), 'Ada') > 0",
+                    "SUBSTR(CAST(\"label\" AS TEXT), 1, LENGTH('Ada')) = 'Ada'",
+                ],
+                _ => unreachable!(),
+            };
+            for clause in data_search_clauses {
+                let multi_col = BrowseQuery {
+                    where_clause: Some(clause.into()),
+                    ..Default::default()
+                };
+                let multi_sql = browse_sql_for_engine(engine, &schema, &multi_col, None).unwrap();
+                for mode in [SafeMode::ReadOnly, SafeMode::Confirm, SafeMode::Silent] {
+                    let (_, needs_review) =
+                        classify_browse_sql("s", &profile(engine, mode), &multi_sql).unwrap();
+                    assert!(
+                        !needs_review,
+                        "{engine:?} {mode:?} data search clause: {multi_sql}"
+                    );
+                }
+            }
         }
     }
 
@@ -8001,5 +8504,397 @@ mod browse_classification_tests {
             .prepare_explain(&session_id, "SELECT 1", true)
             .expect_err("prepare_explain(analyze=true) should be rejected when explain_analyze capability is false");
         assert_eq!(analyze_err.code, ErrorCode::Unsupported);
+    }
+
+    #[test]
+    fn virtual_foreign_keys_merge_into_schemas_inbound_and_diagrams_without_duplicates() {
+        let conn_id = new_id();
+        let orders = TableRef {
+            schema: "public".into(),
+            name: "orders".into(),
+        };
+        let customers = TableRef {
+            schema: "public".into(),
+            name: "customers".into(),
+        };
+        let audit_events = TableRef {
+            schema: "audit".into(),
+            name: "events".into(),
+        };
+        let vfks = vec![
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_orders_customer".into(),
+                source: orders.clone(),
+                columns: vec!["customer_id".into()],
+                target: customers.clone(),
+                target_columns: vec!["id".into()],
+                updated_at_ms: 1,
+            },
+            // Nonexistent columns should be ignored on schema/diagram merge.
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_missing_col".into(),
+                source: orders.clone(),
+                columns: vec!["ghost_id".into()],
+                target: customers.clone(),
+                target_columns: vec!["ghost_target_id".into()],
+                updated_at_ms: 2,
+            },
+            // Cross-schema target in diagram should be included.
+            VirtualForeignKey {
+                id: new_id(),
+                connection_id: conn_id.clone(),
+                name: "vfk_orders_audit".into(),
+                source: orders.clone(),
+                columns: vec!["id".into()],
+                target: audit_events.clone(),
+                target_columns: vec!["entity_id".into()],
+                updated_at_ms: 3,
+            },
+        ];
+
+        let mut orders_schema = TableSchema {
+            table: orders.clone(),
+            columns: vec![
+                ColumnInfo {
+                    id: "id".into(),
+                    name: "id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: true,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+                ColumnInfo {
+                    id: "customer_id".into(),
+                    name: "customer_id".into(),
+                    database_type: "bigint".into(),
+                    kind: ColumnKind::Integer,
+                    nullable: false,
+                    primary_key: false,
+                    foreign_key: false,
+                    editable: true,
+                    insertable: true,
+                    has_default: false,
+                },
+            ],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![],
+            inbound_foreign_keys: vec![],
+            editable: true,
+        };
+        merge_virtual_fks_into_table_schema(&mut orders_schema, &vfks, &conn_id, true);
+        assert_eq!(orders_schema.foreign_keys.len(), 2);
+        assert!(
+            orders_schema
+                .foreign_keys
+                .iter()
+                .all(|fk| fk.virtual_relationship)
+        );
+        assert!(
+            orders_schema
+                .columns
+                .iter()
+                .find(|c| c.name == "customer_id")
+                .unwrap()
+                .foreign_key
+        );
+        // Re-merging is idempotent (deduplicates).
+        merge_virtual_fks_into_table_schema(&mut orders_schema, &vfks, &conn_id, true);
+        assert_eq!(orders_schema.foreign_keys.len(), 2);
+
+        let mut customers_schema = TableSchema {
+            table: customers.clone(),
+            columns: vec![ColumnInfo {
+                id: "id".into(),
+                name: "id".into(),
+                database_type: "bigint".into(),
+                kind: ColumnKind::Integer,
+                nullable: false,
+                primary_key: true,
+                foreign_key: false,
+                editable: true,
+                insertable: true,
+                has_default: false,
+            }],
+            primary_key: vec!["id".into()],
+            foreign_keys: vec![],
+            inbound_foreign_keys: vec![],
+            editable: true,
+        };
+        merge_virtual_fks_into_table_schema(&mut customers_schema, &vfks, &conn_id, true);
+        assert_eq!(customers_schema.inbound_foreign_keys.len(), 1);
+        assert!(customers_schema.inbound_foreign_keys[0].virtual_relationship);
+        assert_eq!(customers_schema.inbound_foreign_keys[0].source, orders);
+
+        let mut inbound = Vec::new();
+        merge_virtual_fks_into_inbound(&mut inbound, &vfks, &conn_id, &customers);
+        assert_eq!(inbound.len(), 2);
+        assert!(inbound.iter().all(|k| k.virtual_relationship));
+
+        let mut diagram = SchemaDiagram {
+            schema: "public".into(),
+            tables: vec![
+                DiagramTable {
+                    table: orders.clone(),
+                    kind: "r".into(),
+                    columns: vec![
+                        DiagramColumn {
+                            name: "id".into(),
+                            database_type: "bigint".into(),
+                            nullable: false,
+                            primary_key: true,
+                        },
+                        DiagramColumn {
+                            name: "customer_id".into(),
+                            database_type: "bigint".into(),
+                            nullable: false,
+                            primary_key: false,
+                        },
+                    ],
+                },
+                DiagramTable {
+                    table: customers.clone(),
+                    kind: "r".into(),
+                    columns: vec![DiagramColumn {
+                        name: "id".into(),
+                        database_type: "bigint".into(),
+                        nullable: false,
+                        primary_key: true,
+                    }],
+                },
+            ],
+            foreign_keys: vec![],
+            truncated: false,
+            restricted: false,
+        };
+        merge_virtual_fks_into_diagram(&mut diagram, &vfks, &conn_id);
+        assert_eq!(diagram.foreign_keys.len(), 2);
+        assert!(
+            diagram
+                .foreign_keys
+                .iter()
+                .all(|fk| fk.virtual_relationship)
+        );
+    }
+
+    #[tokio::test]
+    async fn datagrip_2026_3_profile_cleanup_and_sqlite_memory_explain_inspection_workflow() {
+        let root = tempfile::tempdir().unwrap();
+        let studio = Studio::with_secrets(
+            root.path(),
+            Arc::new(crate::secrets::MemorySecrets::default()),
+        )
+        .unwrap();
+
+        // 1. Simulate Test 1 profile with store_drafts=true, store_query_text=true, saved draft,
+        //    local history, and virtual FK, then verify delete_profile + clear_local_history
+        //    leaves zero leaked drafts/profiles for subsequent E2E specs.
+        let mut pg_profile = profile(EngineKind::Postgres, SafeMode::Silent);
+        pg_profile.name = "DG 2026.3 Studio".into();
+        pg_profile.store_drafts = true;
+        pg_profile.store_query_text = true;
+        let saved_pg = studio.save_profile(pg_profile, None).unwrap();
+
+        let draft_id = new_id();
+        studio
+            .save_workspace(SavedWorkspace {
+                theme: "dark".into(),
+                density: "comfortable".into(),
+                sidebar_visible: true,
+                sidebar_collapsed: false,
+                inspector_visible: false,
+                active_draft_id: Some(draft_id.clone()),
+                drafts: vec![QueryDraft {
+                    id: draft_id.clone(),
+                    connection_id: saved_pg.id.clone(),
+                    title: "Query 1".into(),
+                    sql: "SELECT 101 AS account_id;".into(),
+                    pinned: false,
+                }],
+                table_layouts: Vec::new(),
+                shortcuts: Default::default(),
+            })
+            .unwrap();
+        studio
+            .record_local_history(LocalHistoryInput {
+                tab_key: draft_id,
+                title: "Query 1".into(),
+                connection_id: Some(saved_pg.id.clone()),
+                trigger: LocalHistoryTrigger::Snapshot,
+                sql: "SELECT 101 AS account_id;".into(),
+            })
+            .unwrap();
+        studio
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: saved_pg.id.clone(),
+                name: "vfk_browse_sort_customers".into(),
+                source: TableRef {
+                    schema: "public".into(),
+                    name: "browse_sort".into(),
+                },
+                columns: vec!["id".into()],
+                target: TableRef {
+                    schema: "public".into(),
+                    name: "customers".into(),
+                },
+                target_columns: vec!["id".into()],
+            })
+            .unwrap();
+
+        assert_eq!(
+            studio.bootstrap().unwrap().workspace.unwrap().drafts.len(),
+            1
+        );
+
+        studio.clear_local_history(None).unwrap();
+        studio.delete_profile(&saved_pg.id).unwrap();
+
+        let after_pg_cleanup = studio.bootstrap().unwrap();
+        assert!(after_pg_cleanup.profiles.is_empty());
+        assert!(after_pg_cleanup.virtual_foreign_keys.is_empty());
+        assert!(
+            after_pg_cleanup
+                .workspace
+                .as_ref()
+                .is_none_or(|ws| ws.drafts.is_empty() && ws.active_draft_id.is_none())
+        );
+        assert!(studio.local_history_entries(None).unwrap().is_empty());
+
+        // 2. Simulate Test 2 SQLite (:memory:) connection, EXPLAIN QUERY PLAN, CREATE TABLE,
+        //    completion_catalog + inspection_schema, and final profile cleanup.
+        let mut sqlite_profile = profile(EngineKind::Sqlite, SafeMode::Silent);
+        sqlite_profile.name = "SQLite Memory Scratch".into();
+        sqlite_profile.host = "local".into();
+        sqlite_profile.port = 1;
+        sqlite_profile.database = ":memory:".into();
+        sqlite_profile.username = "local".into();
+        let saved_sqlite = studio.save_profile(sqlite_profile, None).unwrap();
+
+        let attempt_id = studio.prepare_connection(&saved_sqlite.id).unwrap();
+        let session = studio
+            .connect_prepared(
+                &attempt_id,
+                ConnectionSecrets {
+                    password: None,
+                    ssh_password: None,
+                    key_passphrase: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let explain_plan = studio
+            .prepare_explain(
+                &session.id,
+                "SELECT sub.v FROM (SELECT sqlite_version() AS v) AS sub;",
+                false,
+            )
+            .unwrap();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let done_tx = Arc::new(Mutex::new(Some(done_tx)));
+        let results = Arc::new(Mutex::new(Vec::<ResultInfo>::new()));
+        let results_ref = results.clone();
+        let done_ref = done_tx.clone();
+        studio
+            .execute(
+                &explain_plan.id,
+                None,
+                Arc::new(move |event| {
+                    if let QueryEvent::Result { result } = &event {
+                        results_ref.lock().push(result.clone());
+                    }
+                    if let QueryEvent::Finished { status, .. } = event
+                        && let Some(tx) = done_ref.lock().take()
+                    {
+                        let _ = tx.send(status);
+                    }
+                    true
+                }),
+            )
+            .unwrap();
+        assert_eq!(done_rx.await.unwrap(), RunStatus::Completed);
+        let explain_results = results.lock().clone();
+        let final_explain = explain_results.last().expect("explain result event");
+        assert_eq!(final_explain.columns[0].name, "QUERY PLAN");
+        assert_eq!(final_explain.retained_rows, 1);
+
+        let wsql = studio
+            .run_workspace_sql(WorkspaceSqlRequest {
+                mounts: vec![WorkspaceResultMount {
+                    alias: "plan_rows".into(),
+                    result_ids: vec![final_explain.id.clone()],
+                    label: Some("SQLite plan".into()),
+                }],
+                sql: "SELECT * FROM plan_rows;".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(wsql.result.retained_rows, 1);
+        assert!(studio.usage().result_count >= 2);
+
+        let ddl_plan = studio
+            .prepare_execution(
+                &session.id,
+                "CREATE TABLE demo_users (id INTEGER PRIMARY KEY, customer_email TEXT);",
+            )
+            .unwrap();
+        let (ddl_tx, ddl_rx) = tokio::sync::oneshot::channel();
+        let ddl_tx = Arc::new(Mutex::new(Some(ddl_tx)));
+        studio
+            .execute(
+                &ddl_plan.id,
+                None,
+                Arc::new(move |event| {
+                    if let QueryEvent::Finished { status, .. } = event
+                        && let Some(tx) = ddl_tx.lock().take()
+                    {
+                        let _ = tx.send(status);
+                    }
+                    true
+                }),
+            )
+            .unwrap();
+        assert_eq!(ddl_rx.await.unwrap(), RunStatus::Completed);
+
+        let catalog = studio.completion_catalog(&session.id).await.unwrap();
+        assert!(
+            catalog
+                .tables
+                .iter()
+                .any(|t| t.table.schema == "main" && t.table.name == "demo_users")
+        );
+        let inspected = studio
+            .inspection_schema(
+                &session.id,
+                &catalog.revision,
+                &TableRef {
+                    schema: "main".into(),
+                    name: "demo_users".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            inspected
+                .columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "customer_email"]
+        );
+
+        studio.reset_fixtures().await.unwrap();
+        studio.delete_profile(&saved_sqlite.id).unwrap();
+        assert!(studio.sessions.lock().is_empty());
+        assert_eq!(studio.usage().result_count, 0);
+        assert!(studio.bootstrap().unwrap().profiles.is_empty());
     }
 }

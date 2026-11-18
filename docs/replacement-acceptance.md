@@ -6,15 +6,27 @@ Schema-8 source (`682b1ed..HEAD`) and the local uninstalled schema-8 macOS
 `Joinery.app` bundle implement and locally verify editable Snowflake relation
 grids across lossless scalar/temporal/binary/JSON types up to `1,000` columns,
 `<ReviewDialog>` cancel recovery, server-paged/sorted/filtered relation
-browsing, multi-batch RFC-4180 CSV imports up to `100,000` rows, guarded `ROLE`/
-`WAREHOUSE`/`DATABASE`/`SCHEMA` context switching, observed `EXPLAIN USING JSON`
-plan snapshot diffing, `ObjectExplorer` / `ObjectInspector`, bounded Snowflake
-`SchemaDiagram` ER graphs, Snowflake `SchemaDiffView` live/snapshot comparison
-and dialect-accurate migration DDL generation (`CREATE`/`ALTER`/`DROP` across
-tables, views, sequences, and routines with `Open in SQL editor` handoff), rich
-cell value inspection (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree + lossless JSON
-formatter, raw-hex `BINARY` Hex/ASCII dump, and `GEOGRAPHY`/`GEOMETRY` 2D SVG
-plot), 8 reviewed DDL actions, and Snowflake SQL completion/diagnostics.
+browsing, DataGrip 2026.3 column pinning/freezing + `Transpose`/`Record` views +
+row `Clone` + detached `"result"` tabs + pinned console result subtabs +
+Rust-backed local query-result quick-filter & multi-column sort + 9-format data
+extractors + lossless selection stats + Data Compare synchronization SQL,
+multi-batch RFC-4180 CSV imports up to
+`100,000` rows, guarded `ROLE`/`WAREHOUSE`/`DATABASE`/`SCHEMA` context switching,
+observed `EXPLAIN USING JSON` plan snapshot diffing and post-execution
+`QUERY_HISTORY_BY_SESSION` + `GET_QUERY_OPERATOR_STATS` profiling, `ObjectExplorer` /
+`ObjectInspector` (including special-table subtypes and SQL codegen), user-defined
+Virtual Foreign Keys across ER diagrams, SQL
+`JOIN` completion, and row navigation, bounded Snowflake `SchemaDiagram` ER
+graphs, Snowflake `SchemaDiffView` live/snapshot comparison and dialect-accurate
+migration DDL generation (`CREATE`/`ALTER`/`DROP` across tables, views,
+sequences, and routines with `Open in SQL editor` handoff), cross-source
+Workspace SQL (`workspace_sql.rs`), bounded parameterized full-text data search
+(`data_search.rs`), privacy-safe SQL Local History (`local_history.rs` with diff
+& restore), AST-aware SQL `Find Usages` / `Extract CTE` / `Inline CTE` /
+`Expand Wildcard`, rich cell value inspection (`VARIANT`/`OBJECT`/`ARRAY` `:path` tree +
+lossless JSON formatter, raw-hex `BINARY` Hex/ASCII dump, and writable
+`GEOGRAPHY`/`GEOMETRY` 2D SVG plot), 8 reviewed DDL actions, and Snowflake SQL
+completion/diagnostics with typo quick-fixes.
 
 Zero live Snowflake queries have been executed for this increment. Before
 executing any billable or live-account acceptance steps, review and explicitly

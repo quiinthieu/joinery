@@ -23,6 +23,7 @@ import {
   Gauge,
   History,
   Keyboard,
+  Layers,
   LockKeyhole,
   Network,
   PanelLeftClose,
@@ -53,6 +54,8 @@ import { MetadataRecovery } from "../features/studio/MetadataRecovery";
 import { HistoryView, ProcessesView } from "../features/studio/UtilityViews";
 import { DiagramView } from "../features/diagram/DiagramView";
 import { SchemaDiffView } from "../features/schema-diff/SchemaDiffView";
+import { WorkspaceSqlView } from "../features/studio/WorkspaceSqlView";
+import { DataSearchView } from "../features/studio/DataSearchView";
 import { ReviewDialog } from "../features/safety/ReviewDialog";
 import { SnowflakeConsoleReview } from "../features/studio/SnowflakeConsoleReview";
 import { SnowflakeConsoleReceipts } from "../features/studio/SnowflakeConsoleReceipts";
@@ -145,6 +148,7 @@ import {
 import { SearchEverywhere } from "../features/studio/SearchEverywhere";
 import type { SearchScope } from "../features/studio/search-everywhere";
 import { LibraryModal, SaveQueryDialog, type LibraryTab } from "../features/studio/LibraryModal";
+import { LocalHistoryModal, localHistoryTabKey } from "../features/studio/LocalHistoryModal";
 import { Workbench, Welcome } from "./Workbench";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -181,6 +185,7 @@ type Dialog =
   | { kind: "compare"; tabId?: string }
   | { kind: "library"; tab: LibraryTab }
   | { kind: "saveQuery"; tabId: string }
+  | { kind: "localHistory"; tabId?: string }
   | {
       kind: "parameters";
       origin: SqlExecutionOrigin;
@@ -386,17 +391,23 @@ export function App() {
         ]
       : [];
   const activeQueryResult =
-    current?.kind === "query"
+    current?.kind === "query" || current?.kind === "result" || current?.kind === "workspaceSql"
       ? (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0])
       : undefined;
   const hasCopyableGrid =
-    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    ((current?.kind === "query" || current?.kind === "result") &&
+      !!activeQueryResult &&
+      activeQueryResult.columns.length > 0) ||
     (current?.kind === "table" &&
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0) ||
     current?.kind === "benchmark";
   const hasExportableData =
-    (current?.kind === "query" && !!activeQueryResult && activeQueryResult.columns.length > 0) ||
+    ((current?.kind === "query" ||
+      current?.kind === "result" ||
+      current?.kind === "workspaceSql") &&
+      !!activeQueryResult &&
+      activeQueryResult.columns.length > 0) ||
     (current?.kind === "table" &&
       current.view === "data" &&
       (current.schema?.columns.length ?? 0) > 0);
@@ -409,15 +420,18 @@ export function App() {
     !!session &&
     current.dataSessionId === session.id &&
     profile?.safeMode !== "readOnly" &&
-    (profile?.engine === "postgres" || profile?.engine === "mysql");
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const hasComparableSources =
     (state.bootstrap?.profiles.some(
-      (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(state.sessions[p.id]),
+      (p) =>
+        (p.engine === "postgres" || p.engine === "mysql" || p.engine === "sqlite") &&
+        Boolean(state.sessions[p.id]),
     ) ??
       false) ||
     state.tabs.some(
       (t) =>
-        (t.kind === "query" && t.results.some((r) => r.columns.length > 0)) ||
+        ((t.kind === "query" || t.kind === "result" || t.kind === "workspaceSql") &&
+          t.results.some((r) => r.columns.length > 0)) ||
         (t.kind === "table" && t.pages.length > 0),
     );
   const copyCommands = [
@@ -725,17 +739,33 @@ export function App() {
       return;
     }
     if (active.kind === "query" && !preserveResults) {
-      for (const previous of active.results) {
-        resultCache.release(previous.id);
-        dirtyStore.clearTab(previous.id, [previous.id]);
-        if (!isConsoleOwnedResult(previous))
-          await client.call("release_result", { resultId: previous.id });
-      }
-      state.updateTab(tabId, { results: [], activeResultId: null });
+      await state.prepareQueryRunResults(tabId);
     }
     const revision = active.revision + 1;
     const executionState = useStudio.getState();
     const executionSession = querySessionForTab(active, executionState.sessions);
+    if (
+      active.kind === "query" &&
+      active.sql.trim() &&
+      !(executionSession && isSnowflakeConsoleSession(executionState, executionSession.id))
+    ) {
+      const ownerProfile = active.connectionId
+        ? executionState.bootstrap?.profiles.find((p) => p.id === active.connectionId)
+        : undefined;
+      if (ownerProfile && !ownerProfile.snowflake?.reviewedConsole && ownerProfile.storeQueryText) {
+        void Promise.resolve(
+          client.call("record_local_history", {
+            input: {
+              tabKey: localHistoryTabKey(active),
+              title: active.title,
+              connectionId: active.connectionId,
+              trigger: "executed",
+              sql: active.sql,
+            },
+          }),
+        ).catch(() => {});
+      }
+    }
     state.updateTab(tabId, {
       status: "queued",
       error: null,
@@ -1460,7 +1490,7 @@ export function App() {
               >
                 {tab.kind === "query" ? (
                   <FileCode2 size={13} />
-                ) : tab.kind === "table" ? (
+                ) : tab.kind === "table" || tab.kind === "result" ? (
                   <Database size={13} />
                 ) : tab.kind === "object" ? (
                   <Code2 size={13} />
@@ -1472,6 +1502,10 @@ export function App() {
                   <Network size={13} />
                 ) : tab.kind === "schemaDiff" ? (
                   <ArrowLeftRight size={13} />
+                ) : tab.kind === "workspaceSql" ? (
+                  <Layers size={13} />
+                ) : tab.kind === "dataSearch" ? (
+                  <Search size={13} />
                 ) : (
                   <Gauge size={13} />
                 )}
@@ -1550,14 +1584,20 @@ export function App() {
               />
             ) : current.kind === "history" ? (
               <HistoryView />
+            ) : current.kind === "workspaceSql" ? (
+              <WorkspaceSqlView tab={current} />
             ) : session &&
               isSnowflakeConsoleSession(state, session.id) &&
-              current.kind !== "query" ? (
+              current.kind !== "query" &&
+              current.kind !== "result" &&
+              current.kind !== "benchmark" ? (
               <p role="status">
                 Metadata, monitoring and generated operations are disabled on this reviewed console
                 connection. Open a separate profile with reviewed console off; temporary objects and
                 transactions are not shared.
               </p>
+            ) : current.kind === "dataSearch" ? (
+              <DataSearchView tab={current} />
             ) : current.kind === "processes" ? (
               <ProcessesView tab={current} onCancel={(process) => void cancelProcess(process)} />
             ) : current.kind === "diagram" ? (
@@ -1643,6 +1683,7 @@ export function App() {
                 onOpenSqlFile={handleOpenSqlFile}
                 onSaveSqlFile={(saveAs) => handleSaveSqlFile(current.id, Boolean(saveAs))}
                 onSaveToLibrary={() => setDialog({ kind: "saveQuery", tabId: current.id })}
+                onOpenLocalHistory={() => setDialog({ kind: "localHistory", tabId: current.id })}
                 onToggleBookmark={() => handleToggleBookmark(current)}
                 onQueryChange={(query, options) => void applyTableQuery(current.id, query, options)}
               />
@@ -1900,19 +1941,51 @@ export function App() {
       {dialog?.kind === "columns" &&
         (() => {
           const targetTab = state.tabs.find((t) => t.id === dialog.tabId);
-          if (!targetTab?.connectionId || !targetTab.table || !targetTab.schema) return null;
-          return (
-            <TableColumnsDialog
-              connectionId={targetTab.connectionId}
-              table={targetTab.table}
-              columns={targetTab.schema.columns}
-              layout={findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table)}
-              onChange={(next) =>
-                state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
-              }
-              onClose={() => setDialog(null)}
-            />
-          );
+          if (!targetTab) return null;
+          if (targetTab.kind === "table") {
+            if (!targetTab.connectionId || !targetTab.table || !targetTab.schema) return null;
+            return (
+              <TableColumnsDialog
+                connectionId={targetTab.connectionId}
+                table={targetTab.table}
+                columns={targetTab.schema.columns}
+                layout={findTableLayout(
+                  state.tableLayouts,
+                  targetTab.connectionId,
+                  targetTab.table,
+                )}
+                onChange={(next) =>
+                  state.setTableLayout(targetTab.connectionId!, targetTab.table!, next)
+                }
+                onClose={() => setDialog(null)}
+              />
+            );
+          }
+          if (targetTab.kind === "query" || targetTab.kind === "result") {
+            const activeResult =
+              targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
+              targetTab.results[0];
+            if (!activeResult || activeResult.columns.length === 0) return null;
+            return (
+              <TableColumnsDialog
+                connectionId={targetTab.connectionId ?? "00000000-0000-4000-8000-000000000000"}
+                table={{ schema: "_result", name: activeResult.id }}
+                subtitleLabel={
+                  targetTab.kind === "result"
+                    ? targetTab.title
+                    : `${targetTab.title} · ${
+                        targetTab.pinnedResultLabels?.[activeResult.id] ??
+                        `Query ${activeResult.statementIndex + 1}`
+                      }`
+                }
+                columns={activeResult.columns}
+                layout={targetTab.resultLayouts?.[activeResult.id] ?? null}
+                onChange={(next) => state.setResultLayout(targetTab.id, activeResult.id, next)}
+                onClose={() => setDialog(null)}
+              />
+            );
+          }
+          return null;
         })()}
       {dialog?.kind === "export" &&
         (() => {
@@ -1928,7 +2001,9 @@ export function App() {
                 ? state.sessions[targetProfile.id]
                 : undefined;
           const targetResult =
-            targetTab.kind === "query"
+            targetTab.kind === "query" ||
+            targetTab.kind === "result" ||
+            targetTab.kind === "workspaceSql"
               ? (targetTab.results.find((r) => r.id === targetTab.activeResultId) ??
                 targetTab.results[0])
               : undefined;
@@ -1942,7 +2017,12 @@ export function App() {
                   targetTab.schema.columns,
                   findTableLayout(state.tableLayouts, targetTab.connectionId, targetTab.table),
                 ).visibleColumns
-              : allCols;
+              : targetResult
+                ? resolveTableLayout(
+                    targetResult.columns,
+                    targetTab.resultLayouts?.[targetResult.id] ?? null,
+                  ).visibleColumns
+                : allCols;
           return (
             <ExportDialog
               tab={targetTab}
@@ -2088,6 +2168,16 @@ export function App() {
           </div>
         </Modal>
       )}
+      {dialog?.kind === "localHistory" && (
+        <LocalHistoryModal
+          tab={
+            dialog.tabId
+              ? (state.tabs.find((t) => t.id === dialog.tabId) ?? null)
+              : (current ?? null)
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
       {dialog?.kind === "palette" && (
         <SearchEverywhere
           initialScope={dialog.initialScope ?? "all"}
@@ -2159,6 +2249,42 @@ export function App() {
                     contextBadge: "Active tab",
                     icon: BookmarkPlus,
                     action: () => setDialog({ kind: "saveQuery", tabId: current.id }),
+                  },
+                  {
+                    label: (() => {
+                      const activeResId = current.activeResultId ?? current.results[0]?.id;
+                      const isResPinned = Boolean(
+                        activeResId && current.pinnedResultIds?.includes(activeResId),
+                      );
+                      return isResPinned ? "Unpin active query result" : "Pin active query result";
+                    })(),
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: !current.results.length
+                      ? "Run a query first to pin its result across console runs."
+                      : ["queued", "running"].includes(current.status)
+                        ? "Wait for the query to finish running first."
+                        : null,
+                    icon: current.pinnedResultIds?.includes(
+                      current.activeResultId ?? current.results[0]?.id ?? "",
+                    )
+                      ? PinOff
+                      : Pin,
+                    action: () => {
+                      state.togglePinResult(current.id);
+                    },
+                  },
+                  {
+                    label: "Open active result in tab",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason: !current.results.length
+                      ? "Run a query first to open its result in a dedicated tab."
+                      : ["queued", "running"].includes(current.status)
+                        ? "Wait for the query to finish running first."
+                        : null,
+                    icon: ArrowUpRight,
+                    action: () => state.detachResultToTab(current.id),
                   },
                   ...(profile?.engine !== "redis"
                     ? [
@@ -2242,6 +2368,56 @@ export function App() {
                           : []),
                       ]
                     : []),
+                ]
+              : []),
+            ...(current?.kind === "result" && current.originSql != null
+              ? [
+                  {
+                    label: "Open originating SQL",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    icon: Code2,
+                    action: () => state.openOriginatingSql(current.id),
+                  },
+                ]
+              : []),
+            ...(current &&
+            (current.kind === "table" || current.kind === "query" || current.kind === "result")
+              ? [
+                  {
+                    label: "Manage columns…",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    icon: Columns3,
+                    action: () => setDialog({ kind: "columns", tabId: current.id }),
+                  },
+                  {
+                    label: "Switch data display to Transpose",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      current.gridMode === "transpose" ? "Already in Transpose view." : null,
+                    icon: ArrowUpDown,
+                    action: () => state.updateTab(current.id, { gridMode: "transpose" }),
+                  },
+                  {
+                    label: "Switch data display to Record",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      current.gridMode === "record" ? "Already in Record view." : null,
+                    icon: Columns3,
+                    action: () => state.updateTab(current.id, { gridMode: "record" }),
+                  },
+                  {
+                    label: "Switch data display to Grid",
+                    shortcut: "",
+                    contextBadge: "Active tab",
+                    disabledReason:
+                      (current.gridMode ?? "grid") === "grid" ? "Already in Grid view." : null,
+                    icon: Database,
+                    action: () => state.updateTab(current.id, { gridMode: "grid" }),
+                  },
                 ]
               : []),
             ...(current?.kind === "table"
@@ -2383,6 +2559,27 @@ export function App() {
               action: () => state.openUtility("history"),
             },
             {
+              label: "SQL Local History: Revisions & diff…",
+              shortcut: "",
+              contextBadge: "SQL & Files",
+              icon: History,
+              action: () => setDialog({ kind: "localHistory", tabId: current?.id }),
+            },
+            {
+              label: "Workspace SQL: Query across retained results",
+              shortcut: "",
+              contextBadge: "Workspace",
+              icon: Layers,
+              action: () => state.openUtility("workspaceSql"),
+            },
+            {
+              label: "Full-text data search across tables",
+              shortcut: "",
+              contextBadge: "Navigation",
+              icon: Search,
+              action: () => state.openUtility("dataSearch"),
+            },
+            {
               label: "Grid benchmark",
               shortcut: "1M rows",
               contextBadge: "Workspace",
@@ -2395,10 +2592,10 @@ export function App() {
               if (!connectionId || !sess) return [];
               const canDiagram =
                 sess.capabilities.schemaDiagram ??
-                (sess.engine === "postgres" || sess.engine === "mysql");
+                (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite");
               const canDiff =
                 sess.capabilities.schemaDiff ??
-                (sess.engine === "postgres" || sess.engine === "mysql");
+                (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite");
               if (!canDiagram && !canDiff) return [];
               const connProfile = state.bootstrap?.profiles.find((p) => p.id === connectionId);
               const schemaSet = new Set<string>([
@@ -2407,6 +2604,8 @@ export function App() {
               ]);
               if (schemaSet.size === 0 && sess.engine === "snowflake") {
                 schemaSet.add(connProfile?.snowflake?.schema || "PUBLIC");
+              } else if (schemaSet.size === 0 && sess.engine === "sqlite") {
+                schemaSet.add("main");
               }
               const schemas = [...schemaSet];
               const preferred =

@@ -346,12 +346,16 @@ async fn rpc(
                     && profile.ssh.is_none() && profile.environment == Environment::Local
                     && profile.safe_mode == SafeMode::ReadOnly
                     && !profile.remember_password;
+                let sqlite_memory = profile.engine == EngineKind::Sqlite
+                    && profile.database.trim() == ":memory:"
+                    && profile.ssh.is_none()
+                    && profile.environment == Environment::Local;
                 #[cfg(unix)]
                 let synthetic_console = state.synthetic_snowflake.is_some()
                     && matches_synthetic_console_profile(&profile);
                 #[cfg(not(unix))]
                 let synthetic_console = false;
-                if !offline_snowflake && !synthetic_console && (profile.host != "127.0.0.1"
+                if !offline_snowflake && !sqlite_memory && !synthetic_console && (profile.host != "127.0.0.1"
                     || !allowed_fixture
                     || (profile.engine!=EngineKind::Redis && (profile.database!="joinery"||profile.username!="joinery"))
                     || (profile.engine==EngineKind::Redis && (profile.database!="0"||profile.username!="default"))
@@ -864,6 +868,41 @@ async fn rpc(
             "save_sql_snippet" => json!(studio.save_sql_snippet(arg(&args, "input")?)?),
             "delete_sql_snippet" => {
                 studio.delete_sql_snippet(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "save_virtual_foreign_key" => {
+                json!(studio.save_virtual_foreign_key(arg(&args, "input")?)?)
+            }
+            "delete_virtual_foreign_key" => {
+                studio.delete_virtual_foreign_key(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "run_workspace_sql" => json!(studio.run_workspace_sql(arg(&args, "request")?).await?),
+            "search_database_data" => {
+                json!(studio.search_database_data(arg(&args, "request")?).await?)
+            }
+            "snowflake_query_history" => {
+                json!(studio.snowflake_query_history(arg(&args, "request")?).await?)
+            }
+            "snowflake_query_operator_profile" => {
+                json!(
+                    studio
+                        .snowflake_query_operator_profile(arg(&args, "request")?)
+                        .await?
+                )
+            }
+            "find_sql_usages" => json!(studio.find_sql_usages(arg(&args, "request")?)?),
+            "query_result_view" => json!(studio.query_result_view(arg(&args, "request")?)?),
+            "local_history_entries" => json!(studio.local_history_entries(
+                arg::<Option<String>>(&args, "tabKey")?.as_deref()
+            )?),
+            "record_local_history" => json!(studio.record_local_history(arg(&args, "input")?)?),
+            "delete_local_history_entry" => {
+                studio.delete_local_history_entry(&arg::<String>(&args, "id")?)?;
+                Value::Null
+            }
+            "clear_local_history" => {
+                studio.clear_local_history(arg::<Option<String>>(&args, "tabKey")?.as_deref())?;
                 Value::Null
             }
             // Test-only confined sandbox helpers for browser E2E file verification; never in desktop IPC.

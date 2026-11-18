@@ -88,13 +88,16 @@ export function tableLookup(
     resolve(parts: Identifier[]) {
       const names = parts.map((p) => identifierValue(p, engine));
       let candidates = exact.get(JSON.stringify(names)) ?? [];
-      if (engine === "mysql" && caseSensitiveTableNames === false)
+      if ((engine === "mysql" && caseSensitiveTableNames === false) || engine === "sqlite")
         candidates = folded.get(JSON.stringify(names.map((p) => p.toLowerCase()))) ?? [];
-      if (parts.length === 1 && unqualified) {
+      if (parts.length === 1 && candidates.length && unqualified) {
         candidates = candidates.filter((table) =>
           unqualified.has(JSON.stringify([table.schema, table.name])),
         );
         return candidates.length === 1 ? candidates[0] : undefined;
+      }
+      if (parts.length === 1 && unqualified) {
+        return undefined;
       }
       if (parts.length === 1 && searchPath) {
         for (const schema of searchPath) {
@@ -105,10 +108,16 @@ export function tableLookup(
       }
       // lower_case_table_names varies by MySQL server/platform. Never collapse
       // case twins; prefer exact spelling, then a unique folded candidate.
-      if (!candidates.length && engine === "mysql" && caseSensitiveTableNames === undefined)
+      if (
+        !candidates.length &&
+        (engine === "mysql" || engine === "sqlite") &&
+        caseSensitiveTableNames === undefined
+      )
         candidates = folded.get(JSON.stringify(names.map((p) => p.toLowerCase()))) ?? [];
       if (parts.length === 1 && candidates.length > 1) {
-        const schema = defaultSchema ?? (engine === "postgres" ? "public" : undefined);
+        const schema =
+          defaultSchema ??
+          (engine === "postgres" ? "public" : engine === "sqlite" ? "main" : undefined);
         if (schema) {
           const preferred = candidates.filter((t) => t.schema === schema);
           if (preferred.length === 1) return preferred[0];
@@ -710,7 +719,7 @@ function partMatchesPrefix(candidate: string, part: Identifier): boolean {
 }
 
 function partMatchesExact(candidate: string, part: Identifier, engine: EngineKind): boolean {
-  return engine === "mysql" && !part.quoted
+  return (engine === "mysql" && !part.quoted) || engine === "sqlite"
     ? candidate.toLowerCase() === part.value.toLowerCase()
     : candidate === identifierValue(part, engine);
 }
@@ -784,7 +793,7 @@ function qualifierForBinding(
 ): { value: string; sql: string; schemaQualified: boolean } | null {
   if (!binding.table) return null;
   const { engine } = lookup;
-  const fold = (s: string) => (engine === "mysql" ? s.toLowerCase() : s);
+  const fold = (s: string) => (engine === "mysql" || engine === "sqlite" ? s.toLowerCase() : s);
   const sameNameCount = allBindings.filter((b) => fold(b.name) === fold(binding.name)).length;
   if (binding.alias && binding.aliasSql) {
     if (sameNameCount !== 1) return null;

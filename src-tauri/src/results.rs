@@ -586,6 +586,10 @@ impl ResultStore {
         (state.bytes, state.results.len())
     }
 
+    pub fn retained_ids(&self) -> Vec<String> {
+        self.state.lock().results.keys().cloned().collect()
+    }
+
     /// Keep the query's original bounded snapshot after a successful commit.
     /// Defaults, triggers, coercions, and query membership cannot be reconstructed
     /// from submitted mutations. Re-running SQL is the explicit refresh boundary.

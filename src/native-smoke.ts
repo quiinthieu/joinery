@@ -634,6 +634,54 @@ export async function runNativeSmoke() {
           }),
       ],
       [
+        "snowflake_query_history",
+        "invalidInput",
+        () =>
+          client.call("snowflake_query_history", {
+            request: { sessionId: "missing-native-fixture", limit: 0 },
+          }),
+      ],
+      [
+        "snowflake_query_operator_profile",
+        "invalidInput",
+        () =>
+          client.call("snowflake_query_operator_profile", {
+            request: { sessionId: "missing-native-fixture", queryId: "bad" },
+          }),
+      ],
+      [
+        "find_sql_usages",
+        "invalidInput",
+        () =>
+          client.call("find_sql_usages", {
+            request: {
+              engine: "postgres",
+              connectionId: null,
+              database: null,
+              defaultSchema: null,
+              schema: "public",
+              objectName: "   ",
+              columnName: null,
+              includeSavedQueries: false,
+              documents: [],
+            },
+          }),
+      ],
+      [
+        "query_result_view",
+        "invalidInput",
+        () =>
+          client.call("query_result_view", {
+            request: {
+              resultId: "   ",
+              filterText: null,
+              filterColumnId: null,
+              caseSensitive: false,
+              sort: [],
+            },
+          }),
+      ],
+      [
         "delete_sql_snippet",
         "notFound",
         () => client.call("delete_sql_snippet", { id: "missing-native-smoke-snippet" }),

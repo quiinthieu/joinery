@@ -1,7 +1,8 @@
 import type { ColumnInfo, EngineKind, TableRef } from "../../ipc/generated";
 import { formatJsonLossless, isJsonColumn } from "./value-format";
 
-export type CopyFormat = "csv" | "tsv" | "json" | "sqlInsert" | "markdown";
+export type CopyFormat =
+  "csv" | "tsv" | "json" | "ndjson" | "sqlInsert" | "sqlUpdate" | "sqlIn" | "markdown" | "html";
 
 export type CopyCell = string | null | { readonly kind: "default" };
 
@@ -17,8 +18,12 @@ export const COPY_FORMATS: readonly {
   { id: "csv", label: "CSV", hint: "RFC 4180" },
   { id: "tsv", label: "TSV", hint: "Tab-separated" },
   { id: "json", label: "JSON", hint: "Exact numbers" },
+  { id: "ndjson", label: "NDJSON", hint: "1 JSON/line" },
   { id: "sqlInsert", label: "SQL INSERT", hint: "Dialect-quoted" },
+  { id: "sqlUpdate", label: "SQL UPDATE", hint: "PK WHERE" },
+  { id: "sqlIn", label: "SQL IN (...)", hint: "WHERE list" },
   { id: "markdown", label: "Markdown", hint: "GFM table" },
+  { id: "html", label: "HTML table", hint: "<table>" },
 ];
 
 export function copyFormatLabel(format: CopyFormat): string {
@@ -183,7 +188,7 @@ function quoteSqlString(raw: string, engine?: EngineKind): string {
   return `'${raw.replace(/'/g, "''")}'`;
 }
 
-function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind): string {
+export function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind): string {
   if (isDefaultCell(cell)) return "DEFAULT";
   if (cell === null) return "NULL";
   if (column.kind === "integer") {
@@ -204,7 +209,7 @@ function formatSqlCell(cell: CopyCell, column: ColumnInfo, engine?: EngineKind):
     const hexMatch = HEX_BINARY_PATTERN.exec(cell.trim());
     if (hexMatch && hexMatch[1].length % 2 === 0) {
       const hex = hexMatch[1];
-      if (engine === "mysql" || engine === "snowflake") {
+      if (engine === "mysql" || engine === "snowflake" || engine === "sqlite") {
         return `X'${hex}'`;
       }
       return `'\\x${hex}'::bytea`;
@@ -225,6 +230,47 @@ function formatMarkdownCell(cell: CopyCell): string {
   if (cell === null) return "NULL";
   if (isDefaultCell(cell)) return "<default>";
   return escapeMarkdownText(cell);
+}
+
+function formatJsonCellCompact(cell: CopyCell, column: ColumnInfo): string {
+  if (cell === null || isDefaultCell(cell)) return "null";
+  if (column.kind === "integer" || column.kind === "decimal") {
+    const trimmed = cell.trim();
+    return RFC8259_NUMBER_PATTERN.test(trimmed) ? trimmed : JSON.stringify(cell);
+  }
+  if (column.kind === "boolean") {
+    const lower = cell.trim().toLowerCase();
+    if (lower === "true" || lower === "t" || lower === "1") return "true";
+    if (lower === "false" || lower === "f" || lower === "0") return "false";
+    return JSON.stringify(cell);
+  }
+  if (isJsonColumn(column)) {
+    const formatted = formatJsonLossless(cell);
+    if (formatted.ok) {
+      // Collapse multi-line formatted JSON into a single line for NDJSON while preserving exact big integers
+      return formatted.formatted
+        .split("\n")
+        .map((line) => line.trim())
+        .join(" ");
+    }
+    return JSON.stringify(cell);
+  }
+  return JSON.stringify(cell);
+}
+
+function escapeHtmlText(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatHtmlCell(cell: CopyCell): string {
+  if (cell === null) return "NULL";
+  if (isDefaultCell(cell)) return "&lt;default&gt;";
+  return escapeHtmlText(cell);
 }
 
 const BYTE_LIMIT_ERROR = "Copy is limited to 8 MiB. Select fewer cells or use Export.";
@@ -298,6 +344,19 @@ export function formatGridCells(options: FormatGridOptions): FormatGridResult {
       }
       if (!builder.append("]")) return { ok: false, error: BYTE_LIMIT_ERROR };
     }
+  } else if (format === "ndjson") {
+    const encodedKeys = columns.map((col) => JSON.stringify(col.name));
+    for (let r = 0; r < rows.length; r++) {
+      if (r > 0 && !builder.append("\n")) return { ok: false, error: BYTE_LIMIT_ERROR };
+      if (!builder.append("{")) return { ok: false, error: BYTE_LIMIT_ERROR };
+      const row = rows[r];
+      for (let c = 0; c < columns.length; c++) {
+        const prefix = c > 0 ? ", " : "";
+        const entry = `${prefix}${encodedKeys[c]}: ${formatJsonCellCompact(row[c], columns[c])}`;
+        if (!builder.append(entry)) return { ok: false, error: BYTE_LIMIT_ERROR };
+      }
+      if (!builder.append("}")) return { ok: false, error: BYTE_LIMIT_ERROR };
+    }
   } else if (format === "sqlInsert") {
     if (rows.length > 0) {
       const targetTable = formatSqlTableName(table, engine);
@@ -322,6 +381,70 @@ export function formatGridCells(options: FormatGridOptions): FormatGridResult {
         }
       }
     }
+  } else if (format === "sqlUpdate") {
+    const pkIndices: number[] = [];
+    const nonPkIndices: number[] = [];
+    for (let c = 0; c < columns.length; c++) {
+      if (columns[c].primaryKey) pkIndices.push(c);
+      else nonPkIndices.push(c);
+    }
+    if (pkIndices.length === 0) {
+      return {
+        ok: false,
+        error: "Include at least one primary key column in the selection to copy as SQL UPDATE.",
+      };
+    }
+    const setIndices = nonPkIndices.length > 0 ? nonPkIndices : pkIndices;
+    if (rows.length > 0) {
+      const targetTable = formatSqlTableName(table, engine);
+      const quotedCols = columns.map((col) => quoteSqlIdentifier(col.name, engine));
+      for (let r = 0; r < rows.length; r++) {
+        if (r > 0 && !builder.append("\n")) return { ok: false, error: BYTE_LIMIT_ERROR };
+        const row = rows[r];
+        const setParts = setIndices
+          .map((idx) => `${quotedCols[idx]} = ${formatSqlCell(row[idx], columns[idx], engine)}`)
+          .join(", ");
+        const whereParts = pkIndices
+          .map((idx) => {
+            const cell = row[idx];
+            if (cell === null) return `${quotedCols[idx]} IS NULL`;
+            return `${quotedCols[idx]} = ${formatSqlCell(cell, columns[idx], engine)}`;
+          })
+          .join(" AND ");
+        if (!builder.append(`UPDATE ${targetTable} SET ${setParts} WHERE ${whereParts};`)) {
+          return { ok: false, error: BYTE_LIMIT_ERROR };
+        }
+      }
+    }
+  } else if (format === "sqlIn") {
+    if (columns.length === 1) {
+      const seen = new Set<string>();
+      const literals: string[] = [];
+      for (const row of rows) {
+        const cell = row[0];
+        if (cell === null || isDefaultCell(cell)) continue;
+        const lit = formatSqlCell(cell, columns[0], engine);
+        if (!seen.has(lit)) {
+          seen.add(lit);
+          literals.push(lit);
+        }
+      }
+      const payload = literals.length > 0 ? `(${literals.join(", ")})` : "(NULL)";
+      if (!builder.append(payload)) return { ok: false, error: BYTE_LIMIT_ERROR };
+    } else {
+      if (rows.length === 0) {
+        if (!builder.append("(NULL)")) return { ok: false, error: BYTE_LIMIT_ERROR };
+      } else {
+        if (!builder.append("(")) return { ok: false, error: BYTE_LIMIT_ERROR };
+        for (let r = 0; r < rows.length; r++) {
+          if (r > 0 && !builder.append(", ")) return { ok: false, error: BYTE_LIMIT_ERROR };
+          const row = rows[r];
+          const tuple = row.map((cell, c) => formatSqlCell(cell, columns[c], engine)).join(", ");
+          if (!builder.append(`(${tuple})`)) return { ok: false, error: BYTE_LIMIT_ERROR };
+        }
+        if (!builder.append(")")) return { ok: false, error: BYTE_LIMIT_ERROR };
+      }
+    }
   } else if (format === "markdown") {
     const header = `| ${columns.map((col) => escapeMarkdownText(col.name)).join(" | ")} |`;
     const separator = `| ${columns
@@ -340,6 +463,25 @@ export function formatGridCells(options: FormatGridOptions): FormatGridResult {
       }
       if (!builder.append(" |")) return { ok: false, error: BYTE_LIMIT_ERROR };
     }
+  } else if (format === "html") {
+    if (!builder.append("<table>")) return { ok: false, error: BYTE_LIMIT_ERROR };
+    if (includeHeaders) {
+      const ths = columns.map((col) => `<th>${escapeHtmlText(col.name)}</th>`).join("");
+      if (!builder.append(`\n  <thead>\n    <tr>${ths}</tr>\n  </thead>`)) {
+        return { ok: false, error: BYTE_LIMIT_ERROR };
+      }
+    }
+    if (!builder.append("\n  <tbody>")) return { ok: false, error: BYTE_LIMIT_ERROR };
+    for (const row of rows) {
+      if (!builder.append("\n    <tr>")) return { ok: false, error: BYTE_LIMIT_ERROR };
+      for (let c = 0; c < columns.length; c++) {
+        if (!builder.append(`<td>${formatHtmlCell(row[c])}</td>`)) {
+          return { ok: false, error: BYTE_LIMIT_ERROR };
+        }
+      }
+      if (!builder.append("</tr>")) return { ok: false, error: BYTE_LIMIT_ERROR };
+    }
+    if (!builder.append("\n  </tbody>\n</table>")) return { ok: false, error: BYTE_LIMIT_ERROR };
   }
 
   return {

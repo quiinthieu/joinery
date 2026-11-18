@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ObjectDetails, SessionInfo, TableSchema } from "../../ipc/generated";
 import { client } from "../../ipc/client";
@@ -445,5 +445,120 @@ describe("StructureView, DdlPanel, and ObjectInspectorView", () => {
     expect(screen.queryByRole("button", { name: /Drop table/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Add constraint/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Create index/i })).toBeNull();
+  });
+
+  it("renders Snowflake Dynamic Table and External Table properties, columns, and upstream lineage", () => {
+    const sfSession: SessionInfo = {
+      ...makeSession(true),
+      engine: "snowflake",
+      serverVersion: "Snowflake 8.40",
+    };
+    const tab: StudioTab = {
+      id: "tab-dyn",
+      title: "DYN_ORDERS",
+      kind: "object",
+      connectionId: "conn-1",
+      sql: "",
+      table: null,
+      object: { schema: "PUBLIC", name: "DYN_ORDERS", kind: "table", identity: null },
+      schema: null,
+      view: "structure",
+      results: [],
+      activeResultId: null,
+      pages: [],
+      pageKeys: {},
+      query: { filters: [], sort: [], whereClause: null, orderClause: null },
+      loadedRows: 0,
+      nextKey: null,
+      hasMore: false,
+      loadingPage: false,
+      dataSessionId: null,
+      querySession: null,
+      querySessionClosed: false,
+      fileToken: null,
+      fileName: null,
+      savedSql: null,
+      savedQueryId: null,
+      runId: null,
+      status: "idle",
+      error: null,
+      metrics: {},
+      elapsedMs: 0,
+      revision: 0,
+    };
+
+    const dynDetails: ObjectDetails = {
+      object: { schema: "PUBLIC", name: "DYN_ORDERS", kind: "table", identity: null },
+      ownerTable: null,
+      comment: "Incremental order rollup",
+      ddl: {
+        status: "available",
+        ddl: 'CREATE DYNAMIC TABLE "DB"."PUBLIC"."DYN_ORDERS" TARGET_LAG = \'5 minutes\' WAREHOUSE = ETL_WH AS SELECT ID FROM "DB"."PUBLIC"."ORDERS";',
+        truncated: false,
+      },
+      constraints: [],
+      indexes: [],
+      triggers: [],
+      routine: null,
+      sequence: null,
+      snowflakeTable: {
+        subtype: "dynamic",
+        targetLag: "5 minutes",
+        warehouse: "ETL_WH",
+        refreshMode: "INCREMENTAL",
+        schedulingState: "ACTIVE",
+        columns: [
+          {
+            id: "ID",
+            name: "ID",
+            databaseType: "NUMBER(38,0)",
+            kind: "integer",
+            nullable: false,
+            primaryKey: false,
+            foreignKey: false,
+            editable: false,
+            insertable: false,
+            hasDefault: false,
+          },
+        ],
+      },
+      uses: [
+        {
+          object: { schema: "PUBLIC", name: "ORDERS", kind: "table", identity: null },
+          relation: "dynamic table source",
+        },
+      ],
+      usedBy: [],
+    };
+
+    const { container, rerender } = render(
+      <ObjectInspectorView tab={tab} session={sfSession} providedDetails={dynDetails} />,
+    );
+    const view = within(container);
+    expect(view.getByTestId("object-kind-badge").textContent).toBe("DYNAMIC TABLE");
+    expect(view.getByLabelText("Snowflake table properties")).toBeTruthy();
+    expect(view.getByText("5 minutes")).toBeTruthy();
+    expect(view.getByText("ETL_WH")).toBeTruthy();
+    expect(view.getByText("INCREMENTAL")).toBeTruthy();
+    expect(view.getByText("ACTIVE")).toBeTruthy();
+    expect(view.getByRole("table", { name: "Columns" })).toBeTruthy();
+    expect(view.getByText("NUMBER(38,0)")).toBeTruthy();
+    expect(view.getByText("dynamic table source")).toBeTruthy();
+
+    const extDetails: ObjectDetails = {
+      ...dynDetails,
+      object: { schema: "PUBLIC", name: "EXT_EVENTS", kind: "table", identity: null },
+      snowflakeTable: {
+        subtype: "external",
+        externalLocation: "@DB.PUBLIC.S3_STAGE/events/",
+        fileFormat: "PARQUET",
+        columns: [],
+      },
+      uses: [],
+    };
+    rerender(<ObjectInspectorView tab={tab} session={sfSession} providedDetails={extDetails} />);
+    expect(view.getByTestId("object-kind-badge").textContent).toBe("EXTERNAL TABLE");
+    expect(view.getByText("@DB.PUBLIC.S3_STAGE/events/")).toBeTruthy();
+    expect(view.getByText("PARQUET")).toBeTruthy();
   });
 });

@@ -1,5 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { EditorState, Compartment, RangeSet, StateEffect, StateField } from "@codemirror/state";
+import {
+  EditorState,
+  Compartment,
+  RangeSet,
+  StateEffect,
+  StateField,
+  type ChangeSpec,
+} from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
@@ -44,6 +51,8 @@ import type {
   EngineKind,
   ObjectDetails,
   QueryParamSlot,
+  SqlFindUsagesReport,
+  SqlUsageHit,
   TableInfo,
   TableRef,
   TableSchema,
@@ -78,6 +87,13 @@ import {
 import { SqlNavigationOverlay } from "./SqlNavigationOverlay";
 import { SqlAliasRenameDialog } from "./SqlAliasRenameDialog";
 import { SqlColumnInspectionDialog } from "./SqlColumnInspectionDialog";
+import { SqlRefactorDialog, type SqlRefactorModalMode } from "./SqlRefactorDialog";
+import {
+  analyzeExtractCte,
+  analyzeInlineCte,
+  collectWorkspaceSqlDocuments,
+  prepareExpandWildcard,
+} from "./sql-refactor";
 import {
   columnInspectionLimits,
   prepareColumnInspection,
@@ -315,7 +331,19 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const [navDetails, setNavDetails] = useState<ObjectDetails | null>(null);
   const [navDetailsLoading, setNavDetailsLoading] = useState(false);
   const [navDetailsError, setNavDetailsError] = useState<string | null>(null);
+  const [navWorkspaceUsages, setNavWorkspaceUsages] = useState<SqlFindUsagesReport | null>(null);
+  const [navWorkspaceLoading, setNavWorkspaceLoading] = useState(false);
+  const [navWorkspaceError, setNavWorkspaceError] = useState<string | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
+  const [refactorBusy, setRefactorBusy] = useState(false);
+  const [refactorError, setRefactorError] = useState<string | null>(null);
+  const [refactor, setRefactor] = useState<{
+    mode: SqlRefactorModalMode;
+    editor: EditorView;
+    state: EditorState;
+    context: string;
+    sequence: number;
+  } | null>(null);
   const [inspectionBusy, setInspectionBusy] = useState(false);
   const [inspectionError, setInspectionError] = useState<string | null>(null);
   const [inspection, setInspection] = useState<{
@@ -369,6 +397,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
   const sqlSnippets = useStudio((s) => s.sqlSnippets);
   const snippetsRef = useRef(sqlSnippets);
   snippetsRef.current = sqlSnippets;
+  const virtualForeignKeys = useStudio((s) => s.virtualForeignKeys);
+  const virtualForeignKeysRef = useRef(virtualForeignKeys);
+  virtualForeignKeysRef.current = virtualForeignKeys;
   const liveRef = useRef<CompletionCatalog | null>(null);
   const liveObjectsRef = useRef<DatabaseObjectSummary[]>([]);
   const schemaCacheRef = useRef<Map<string, TableSchema>>(new Map());
@@ -383,9 +414,15 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     setNavDetails(null);
     setNavDetailsLoading(false);
     setNavDetailsError(null);
+    setNavWorkspaceUsages(null);
+    setNavWorkspaceLoading(false);
+    setNavWorkspaceError(null);
     setRename(null);
     setTemplate(null);
     setRenameError(null);
+    setRefactor(null);
+    setRefactorBusy(false);
+    setRefactorError(null);
     setInspection(null);
     inspectionRequest.current = null;
     setInspectionBusy(false);
@@ -402,6 +439,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
       ...config,
       tables: snapshot?.tables ?? [],
       snippets: snippetsRef.current,
+      virtualForeignKeys: virtualForeignKeysRef.current,
       sessionId: snapshot ? config.sessionId : null,
       database: snapshot?.identity.database,
       searchPath: snapshot?.identity.searchPath,
@@ -627,6 +665,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     setNavOverlay({ mode, symbol });
     setNavDetails(null);
     setNavDetailsError(null);
+    setNavWorkspaceUsages(null);
+    setNavWorkspaceError(null);
     const catalogObject =
       symbol.kind === "object"
         ? symbol.object
@@ -636,6 +676,39 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
             ? symbol.object
             : null;
     const sessionId = latest.current.sessionId;
+    if (catalogObject) {
+      const studioSnap = useStudio.getState();
+      const activeTab = studioSnap.tabs.find((t) => t.id === studioSnap.activeTabId);
+      const connectionId = activeTab?.connectionId ?? studioSnap.selectedConnectionId ?? null;
+      const otherTabs = studioSnap.tabs.filter((t) => t.id !== studioSnap.activeTabId);
+      const docs = collectWorkspaceSqlDocuments(otherTabs, connectionId);
+      setNavWorkspaceLoading(true);
+      void client
+        .call("find_sql_usages", {
+          request: {
+            engine: latest.current.engine,
+            connectionId,
+            database: latest.current.database ?? liveRef.current?.identity.database ?? null,
+            defaultSchema: latest.current.defaultSchema ?? null,
+            schema: catalogObject.schema,
+            objectName: catalogObject.name,
+            columnName: symbol.kind === "column" ? symbol.name : null,
+            includeSavedQueries: true,
+            documents: docs,
+          },
+        })
+        .then((report) => {
+          if (navRequestSeq.current === reqId) setNavWorkspaceUsages(report);
+        })
+        .catch((err) => {
+          if (navRequestSeq.current === reqId) setNavWorkspaceError(messageOf(err));
+        })
+        .finally(() => {
+          if (navRequestSeq.current === reqId) setNavWorkspaceLoading(false);
+        });
+    } else {
+      setNavWorkspaceLoading(false);
+    }
     if (catalogObject && sessionId && latest.current.objectExplorerSupported) {
       revokeSchemaSelectionBeforeWork(sessionId);
       setNavDetailsLoading(true);
@@ -752,6 +825,183 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     } catch (cause) {
       closeRename();
       setRenameError(messageOf(cause));
+    }
+  };
+
+  const runExtractCte = () => {
+    clearNavigation();
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return false;
+    try {
+      const tableNames = (liveRef.current?.tables ?? latest.current.tables).map(
+        (t) => t.table.name,
+      );
+      const plan = analyzeExtractCte(editor.state, latest.current.engine, tableNames);
+      setRefactor({
+        mode: { kind: "extractCte", plan, state: editor.state },
+        editor,
+        state: editor.state,
+        context: renameContext(),
+        sequence: navRequestSeq.current,
+      });
+    } catch (cause) {
+      setRefactorError(messageOf(cause));
+    }
+    return true;
+  };
+
+  const runInlineCte = () => {
+    clearNavigation();
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return false;
+    try {
+      const plan = analyzeInlineCte(editor.state, latest.current.engine);
+      setRefactor({
+        mode: { kind: "inlineCte", plan },
+        editor,
+        state: editor.state,
+        context: renameContext(),
+        sequence: navRequestSeq.current,
+      });
+    } catch (cause) {
+      setRefactorError(messageOf(cause));
+    }
+    return true;
+  };
+
+  const runExpandWildcard = async () => {
+    clearNavigation();
+    const editor = view.current;
+    if (!editor || latest.current.engine === "redis") return;
+    const state = editor.state;
+    const request = navRequestSeq.current;
+    const initialSessionId = latest.current.sessionId;
+    setRefactorBusy(true);
+    try {
+      if (initialSessionId) {
+        await contextLoadRef.current;
+        if (
+          view.current !== editor ||
+          !editor.state.doc.eq(state.doc) ||
+          latest.current.sessionId !== initialSessionId ||
+          navRequestSeq.current !== request
+        ) {
+          return;
+        }
+      }
+      const context = renameContext();
+      const sessionId = latest.current.sessionId;
+      const consoleMode = Boolean(
+        sessionId && isSnowflakeConsoleSession(useStudio.getState(), sessionId),
+      );
+      const snapshot = sessionId && !consoleMode ? liveRef.current : null;
+      const plan = prepareExpandWildcard(state, state.selection.main.head, {
+        engine: latest.current.engine,
+        tables: snapshot?.tables ?? latest.current.tables,
+        database: latest.current.database ?? snapshot?.identity.database,
+        defaultSchema: latest.current.defaultSchema,
+        searchPath: snapshot?.identity.searchPath,
+      });
+      const schemas: TableSchema[] = [];
+      if (plan.tablesToFetch.length > 0) {
+        if (!sessionId) {
+          throw new Error("Connect this console before expanding catalog table wildcards.");
+        }
+        if (consoleMode) {
+          throw new Error("Catalog wildcard expansion is disabled on reviewed console sessions.");
+        }
+        if (useStudio.getState().sessions[sessionId]?.capabilities.relationBrowsing && !snapshot) {
+          throw new Error("Current console metadata is unavailable. Refresh and retry.");
+        }
+        for (const table of plan.tablesToFetch) {
+          if (
+            view.current !== editor ||
+            !editor.state.doc.eq(state.doc) ||
+            navRequestSeq.current !== request ||
+            renameContext() !== context
+          ) {
+            return;
+          }
+          revokeSchemaSelectionBeforeWork(sessionId);
+          const schema = snapshot
+            ? await client.call<TableSchema>("inspection_schema", {
+                sessionId,
+                revision: snapshot.revision,
+                table,
+              })
+            : await loadTableSchemaCached(sessionId, table);
+          schemas.push(schema);
+        }
+      }
+      if (
+        view.current !== editor ||
+        !editor.state.doc.eq(state.doc) ||
+        navRequestSeq.current !== request ||
+        renameContext() !== context
+      ) {
+        return;
+      }
+      const expanded = plan.finish(editor.state, schemas);
+      setRefactor({
+        mode: {
+          kind: "expandWildcard",
+          wildcardText: plan.wildcardText,
+          ...expanded,
+        },
+        editor,
+        state: editor.state,
+        context,
+        sequence: request,
+      });
+    } catch (cause) {
+      if (navRequestSeq.current === request) {
+        setRefactorError(messageOf(cause));
+      }
+    } finally {
+      if (navRequestSeq.current === request && view.current === editor) {
+        setRefactorBusy(false);
+      }
+    }
+  };
+
+  const applyRefactorChanges = (changes: ChangeSpec | readonly ChangeSpec[], userEvent: string) => {
+    if (!refactor) return;
+    try {
+      if (
+        refactor.editor !== view.current ||
+        refactor.editor.state.doc !== refactor.state.doc ||
+        refactor.context !== renameContext() ||
+        refactor.sequence !== navRequestSeq.current
+      ) {
+        throw new Error("The SQL context changed. Start the refactoring preview again.");
+      }
+      refactor.editor.dispatch({
+        changes,
+        annotations: isolateHistory.of("full"),
+        userEvent,
+      });
+      const ed = refactor.editor;
+      setRefactor(null);
+      queueMicrotask(() => {
+        if (view.current === ed) ed.focus();
+      });
+    } catch (cause) {
+      setRefactor(null);
+      setRefactorError(messageOf(cause));
+    }
+  };
+
+  const openWorkspaceHit = (hit: SqlUsageHit) => {
+    clearNavigation();
+    if (hit.sourceKind === "openTab") {
+      const studio = useStudio.getState();
+      if (studio.tabs.some((t) => t.id === hit.documentId)) {
+        useStudio.setState({ activeTabId: hit.documentId });
+      } else {
+        studio.notify("That tab was closed.");
+      }
+    } else if (hit.savedQueryId) {
+      useStudio.getState().openSavedQuery(hit.savedQueryId);
     }
   };
 
@@ -1143,6 +1393,9 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     formatting.current = null;
   }, [props.engine, props.sessionId]);
   useEffect(() => {
+    schemaCacheRef.current = new Map();
+  }, [virtualForeignKeys]);
+  useEffect(() => {
     if (completion.current?.configure(configure()) && view.current) {
       closeCompletion(view.current);
       completion.current.update(view.current.state);
@@ -1155,6 +1408,7 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
     props.defaultSchema,
     live,
     sqlSnippets,
+    virtualForeignKeys,
   ]);
   useEffect(() => {
     let cancelled = false;
@@ -1517,10 +1771,11 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 fontSize: 11,
                 padding: "4px 12px",
                 display: "flex",
+                flexWrap: "wrap",
                 alignItems: "center",
-                gap: 8,
+                gap: "4px 8px",
                 minWidth: 0,
-                flex: 1,
+                flex: "1 1 320px",
               }}
             >
               <span
@@ -1528,7 +1783,8 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
-                  flex: 1,
+                  flex: "1 1 220px",
+                  minWidth: 180,
                 }}
                 title={contextError ?? live?.identity.searchPath.join(", ")}
               >
@@ -1598,6 +1854,37 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
                 onClick={() => navActionsRef.current.runSqlRename()}
               >
                 Rename alias / CTE
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                title="Extract selected subquery into a WITH CTE"
+                aria-label="Extract SQL CTE"
+                onClick={() => runExtractCte()}
+              >
+                Extract CTE
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                title="Inline WITH CTE at cursor into its FROM/JOIN references"
+                aria-label="Inline SQL CTE"
+                onClick={() => runInlineCte()}
+              >
+                Inline CTE
+              </button>
+              <button
+                type="button"
+                className="button ghost small"
+                style={{ flexShrink: 0 }}
+                title="Expand * or alias.* into explicit columns"
+                aria-label="Expand SQL wildcard"
+                disabled={refactorBusy}
+                onClick={() => void runExpandWildcard()}
+              >
+                {refactorBusy ? "Expanding…" : "Expand *"}
               </button>
               <button
                 type="button"
@@ -1695,6 +1982,31 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           onClose={closeRename}
         />
       )}
+      {refactorError && (
+        <div role="alert" style={{ padding: 8 }}>
+          {refactorError}{" "}
+          <button
+            type="button"
+            className="button ghost small"
+            onClick={() => setRefactorError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {refactor && (
+        <SqlRefactorDialog
+          mode={refactor.mode}
+          onApplyChanges={applyRefactorChanges}
+          onClose={() => {
+            const ed = refactor.editor;
+            setRefactor(null);
+            queueMicrotask(() => {
+              if (view.current === ed) ed.focus();
+            });
+          }}
+        />
+      )}
       {navOverlay && (
         <SqlNavigationOverlay
           mode={navOverlay.mode}
@@ -1703,6 +2015,10 @@ export const SqlEditor = forwardRef<EditorHandle, Props>(function SqlEditor(prop
           objectDetailsLoading={navDetailsLoading}
           objectDetailsError={navDetailsError}
           objectExplorerSupported={Boolean(props.objectExplorerSupported)}
+          workspaceUsages={navWorkspaceUsages}
+          workspaceUsagesLoading={navWorkspaceLoading}
+          workspaceUsagesError={navWorkspaceError}
+          onOpenWorkspaceHit={openWorkspaceHit}
           onJumpInEditor={(from, to) => revealEditorRange(from, to)}
           onOpenDefinition={() => performGoToSymbol(navOverlay.symbol)}
           onOpenObject={

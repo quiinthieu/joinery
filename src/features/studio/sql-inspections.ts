@@ -42,6 +42,83 @@ export const columnInspectionLimits = {
 };
 const tableKey = (table: TableRef) => JSON.stringify([table.schema, table.name]);
 
+function optimalAlignmentDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array<number>(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      let best = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        best = Math.min(best, dp[i - 2][j - 2] + 1);
+      }
+      dp[i][j] = best;
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Ranks candidate column names for a missing column typo using Damerau-Levenshtein
+ * edit distance, underscore-collapsed similarity, and prefix/suffix containment.
+ */
+export function suggestColumnQuickFixes(
+  missingName: string,
+  candidates: readonly string[],
+  maxSuggestions = 3,
+): string[] {
+  const rawLower = missingName.trim().toLowerCase();
+  if (!rawLower || candidates.length === 0) return [];
+  const collapsedMissing = rawLower.replace(/_/g, "");
+  const scored: { name: string; score: number }[] = [];
+
+  for (const candidate of candidates) {
+    const candLower = candidate.toLowerCase();
+    if (candLower === rawLower) {
+      scored.push({ name: candidate, score: 0 });
+      continue;
+    }
+    const collapsedCand = candLower.replace(/_/g, "");
+    if (collapsedCand && collapsedCand === collapsedMissing) {
+      scored.push({ name: candidate, score: 0.25 });
+      continue;
+    }
+    const rawDist = optimalAlignmentDistance(rawLower, candLower);
+    const collapsedDist = optimalAlignmentDistance(collapsedMissing, collapsedCand);
+    const minDist = Math.min(rawDist, collapsedDist + 0.35);
+    const maxLen = Math.max(rawLower.length, candLower.length);
+    const allowedDist = Math.max(2, Math.floor(maxLen * 0.45));
+
+    const hasSubstringMatch =
+      rawLower.length >= 3 &&
+      (candLower.startsWith(rawLower) ||
+        candLower.endsWith(rawLower) ||
+        rawLower.startsWith(candLower) ||
+        candLower.includes(rawLower));
+
+    if (rawDist <= allowedDist || collapsedDist <= allowedDist || hasSubstringMatch) {
+      const substringBonus = hasSubstringMatch ? -0.6 : 0;
+      const prefixBonus = candLower[0] === rawLower[0] ? -0.15 : 0;
+      scored.push({
+        name: candidate,
+        score:
+          minDist +
+          substringBonus +
+          prefixBonus +
+          Math.abs(candLower.length - rawLower.length) * 0.05,
+      });
+    }
+  }
+
+  scored.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
+  return scored.slice(0, maxSuggestions).map((s) => s.name);
+}
+
 /**
  * Flat direct-table SELECTs, plus CTEs or a derived table whose body is that
  * shape. A CTE or derived table may join two or more flat SELECT arms with
@@ -78,7 +155,12 @@ export function prepareColumnInspection(
     new Error(
       "Column inspection supports a direct-table SELECT with bounded JOINs, without subqueries.",
     );
-  if (context.engine !== "postgres" && context.engine !== "mysql" && context.engine !== "snowflake")
+  if (
+    context.engine !== "postgres" &&
+    context.engine !== "mysql" &&
+    context.engine !== "snowflake" &&
+    context.engine !== "sqlite"
+  )
     throw unsupported();
   const statement = statementTokensAt(state, pos);
   if (!statement) throw new Error("Statement is incomplete or exceeds the inspection limit.");
@@ -91,7 +173,8 @@ export function prepareColumnInspection(
     if (
       (context.engine === "postgres" && new TextEncoder().encode(name).length > 63) ||
       (context.engine === "mysql" && [...name].length > 64) ||
-      (context.engine === "snowflake" && [...name].length > 255)
+      (context.engine === "snowflake" && [...name].length > 255) ||
+      (context.engine === "sqlite" && [...name].length > 1024)
     )
       throw unsupported();
   };
@@ -101,7 +184,8 @@ export function prepareColumnInspection(
     (nameToken(token) ||
       (["Keyword", "Type", "Builtin"].includes(token.kind) &&
         /^[A-Za-z_][A-Za-z0-9_$]*$/.test(token.text)));
-  const columnKey = (name: string) => (context.engine === "mysql" ? name.toLowerCase() : name);
+  const columnKey = (name: string) =>
+    context.engine === "mysql" || context.engine === "sqlite" ? name.toLowerCase() : name;
   const tree = ensureSyntaxTree(state, state.doc.length, 75);
   if (!tree) throw unsupported();
   let invalid = false;
@@ -128,7 +212,8 @@ export function prepareColumnInspection(
   );
   const key = (raw: string) => {
     const value = identifierValue(readIdentifier(raw), context.engine);
-    return context.engine === "mysql" && context.caseSensitiveTableNames === false
+    return (context.engine === "mysql" && context.caseSensitiveTableNames === false) ||
+      context.engine === "sqlite"
       ? value.toLowerCase()
       : value;
   };
@@ -660,9 +745,16 @@ export function prepareColumnInspection(
       "TIMESTAMP",
       "VARCHAR",
     ]);
+    const isImplicitRowId = (rawIdent: string) => {
+      const lower = readIdentifier(rawIdent).value.toLowerCase();
+      if (context.engine === "mysql") return lower === "_rowid";
+      if (context.engine === "sqlite") {
+        return lower === "rowid" || lower === "oid" || lower === "_rowid_";
+      }
+      return false;
+    };
     function noteUnqualified(token: SqlToken, owners: Binding[]) {
-      if (context.engine === "mysql" && readIdentifier(token.text).value.toLowerCase() === "_rowid")
-        throw unsupported();
+      if (isImplicitRowId(token.text)) throw unsupported();
       checkName(token);
       if (!owners.length) throw unsupported();
       const ref: MissingSqlColumn = {
@@ -719,11 +811,7 @@ export function prepareColumnInspection(
         // Qualified function names are not column references; their arguments
         // are still visited on the next iteration.
         if (!list[i + 3]?.children) {
-          if (
-            context.engine === "mysql" &&
-            readIdentifier(column.text).value.toLowerCase() === "_rowid"
-          )
-            throw unsupported();
+          if (isImplicitRowId(column.text)) throw unsupported();
           const binding = scope.find((item) => item.key === key(token.text));
           if (!binding)
             throw new Error(

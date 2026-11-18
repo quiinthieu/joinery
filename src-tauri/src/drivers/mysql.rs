@@ -944,6 +944,9 @@ impl Driver for Mysql {
     ) -> AppResult<BrowseRows> {
         self.browse_rows(schema, query.clone(), after).await
     }
+    async fn search_data(&self, request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        self.search_rows(request.clone()).await
+    }
     async fn apply(&self, schema: &TableSchema, rows: &[RowMutation]) -> AppResult<()> {
         let _ = (schema, rows);
         Err(guard::expired())

@@ -505,12 +505,7 @@ fn schema_identifiers_types_and_structural_bounds_are_validated() {
         )
         .is_ok()
     );
-    for ty in [
-        UnsupportedType::Geography,
-        UnsupportedType::Geometry,
-        UnsupportedType::Vector,
-        UnsupportedType::Unknown,
-    ] {
+    for ty in [UnsupportedType::Vector, UnsupportedType::Unknown] {
         assert_eq!(
             MutationColumn::new(
                 "x",
@@ -895,5 +890,172 @@ fn thousand_column_full_width_update_compiles_with_2000_binds() {
         .unwrap_err()
         .code,
         ErrorCode::ResultLimitReached
+    );
+}
+
+#[test]
+fn spatial_geography_and_geometry_compile_wkt_ewkt_geojson_and_detect_cross_format_overlap() {
+    let spatial_target = MutationTarget::new(
+        "db",
+        "schema",
+        "spatial_locations",
+        vec![
+            column(
+                "id",
+                ScalarType::Decimal {
+                    precision: 38,
+                    scale: 0,
+                },
+                false,
+            ),
+            column("geo", ScalarType::Geography, true),
+            column("geom", ScalarType::Geometry, true),
+        ],
+    )
+    .unwrap();
+
+    // INSERT uses SELECT with TO_GEOGRAPHY / TO_GEOMETRY
+    let ins_batch = compile(
+        &spatial_target,
+        &[Mutation::Insert {
+            values: vec![
+                (0, text("1")),
+                (
+                    1,
+                    text("{\"type\":\"Point\",\"coordinates\":[-122.4194,37.7749]}"),
+                ),
+                (2, text("SRID=3857;POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))")),
+            ],
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        ins_batch.units()[0].sql(),
+        "INSERT INTO \"db\".\"schema\".\"spatial_locations\" (\"id\", \"geo\", \"geom\") SELECT CAST(? AS NUMBER(38,0)), TO_GEOGRAPHY(CAST(? AS VARCHAR)), TO_GEOMETRY(CAST(? AS VARCHAR))"
+    );
+    assert_eq!(
+        ins_batch.units()[0].bindings()[1].kind(),
+        BindingKind::Geography
+    );
+    assert_eq!(
+        ins_batch.units()[0].bindings()[2].kind(),
+        BindingKind::Geometry
+    );
+    parse_batch(&ins_batch);
+
+    // UPDATE uses ST_ASEWKB(...) IS NOT DISTINCT FROM ST_ASEWKB(...)
+    let orig = OriginalRow::new(
+        &spatial_target,
+        vec![
+            text("1"),
+            text("{\"type\":\"Point\",\"coordinates\":[-122.4194,37.7749]}"),
+            CellValue::Null,
+        ],
+    )
+    .unwrap();
+    let upd_batch = compile(
+        &spatial_target,
+        &[Mutation::Update {
+            original: orig.clone(),
+            changes: vec![
+                (1, text("SRID=4326;LINESTRING(-122.4 37.7, -122.5 37.8)")),
+                (
+                    2,
+                    text("GEOMETRYCOLLECTION(POINT(1 2), LINESTRING(0 0, 2 2))"),
+                ),
+            ],
+        }],
+    )
+    .unwrap();
+    let upd_sql = upd_batch.units()[0].sql();
+    assert!(upd_sql.contains("\"geo\" = TO_GEOGRAPHY(CAST(? AS VARCHAR))"));
+    assert!(upd_sql.contains("\"geom\" = TO_GEOMETRY(CAST(? AS VARCHAR))"));
+    assert!(upd_sql.contains(
+        "ST_ASEWKB(\"geo\") IS NOT DISTINCT FROM ST_ASEWKB(TO_GEOGRAPHY(CAST(? AS VARCHAR)))"
+    ));
+    assert!(
+        upd_sql.contains("ST_ASEWKB(\"geom\") IS NOT DISTINCT FROM ST_ASEWKB(CAST(? AS GEOMETRY))")
+    );
+    parse_batch(&upd_batch);
+
+    // Cross-format canonical overlap: GeoJSON Point(-122.4194, 37.7749) == WKT POINT(-122.4194 37.7749)
+    let wkt_equivalent_insert = Mutation::Insert {
+        values: vec![
+            (0, text("1")),
+            (1, text("POINT(-122.4194 37.7749)")),
+            (2, CellValue::Null),
+        ],
+    };
+    assert_eq!(
+        compile(
+            &spatial_target,
+            &[Mutation::Delete { original: orig }, wkt_equivalent_insert,]
+        )
+        .unwrap_err()
+        .code,
+        ErrorCode::Conflict
+    );
+
+    // Reject out-of-range GEOGRAPHY lon/lat, non-4326 GEOGRAPHY SRID, mismatched WKT Z/M arity, and unclosed polygons
+    for bad_geo in [
+        "POINT(181 0)",
+        "POINT(0 -91)",
+        "SRID=3857;POINT(-122.4 37.7)",
+        "POINT Z (-122.4 37.7)",
+        "POINT ZM (-122.4 37.7 10)",
+        "POLYGON((0 0, 1 0, 1 1, 0 1))",
+        "LINESTRING(0 0)",
+        "{\"type\":\"Point\",\"coordinates\":[200,10]}",
+    ] {
+        assert_eq!(
+            compile(
+                &spatial_target,
+                &[Mutation::Insert {
+                    values: vec![(0, text("2")), (1, text(bad_geo)), (2, CellValue::Null),],
+                }]
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidInput,
+            "expected invalid spatial input for {bad_geo}"
+        );
+    }
+
+    // GeoJSON CRS84 URN is accepted as WGS84 SRID 4326 on GEOGRAPHY, and POINT Z vs POINT M do NOT collide!
+    let crs84_batch = compile(
+        &spatial_target,
+        &[Mutation::Insert {
+            values: vec![
+                (0, text("3")),
+                (
+                    1,
+                    text("{\"type\":\"Point\",\"coordinates\":[-122.4,37.7],\"crs\":{\"type\":\"name\",\"properties\":{\"name\":\"urn:ogc:def:crs:OGC:1.3:CRS84\"}}}"),
+                ),
+                (2, text("POINT Z (1 2 3)")),
+            ],
+        }],
+    )
+    .unwrap();
+    parse_batch(&crs84_batch);
+
+    let z_orig = OriginalRow::new(
+        &spatial_target,
+        vec![text("4"), CellValue::Null, text("POINT Z (1 2 3)")],
+    )
+    .unwrap();
+    let m_insert = Mutation::Insert {
+        values: vec![
+            (0, text("4")),
+            (1, CellValue::Null),
+            (2, text("POINT M (1 2 3)")),
+        ],
+    };
+    assert!(
+        compile(
+            &spatial_target,
+            &[Mutation::Delete { original: z_orig }, m_insert]
+        )
+        .is_ok(),
+        "POINT Z (1 2 3) and POINT M (1 2 3) have distinct canonical dimensions and must not conflict"
     );
 }

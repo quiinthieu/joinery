@@ -3,6 +3,7 @@ use serde::Serialize;
 pub mod compare;
 pub mod connection_attempts;
 pub mod console_contract;
+pub mod data_search;
 pub mod ddl;
 pub mod domain;
 pub mod drivers;
@@ -17,6 +18,7 @@ pub mod params;
 pub mod persistence;
 mod query_plan;
 mod relation_inspection;
+pub mod result_view;
 pub mod results;
 pub mod safety;
 pub mod schema_diff;
@@ -25,8 +27,10 @@ pub mod secrets;
 pub mod snowflake_cleanup;
 #[cfg(unix)]
 pub mod snowflake_runtime;
+pub mod sql_refactor;
 pub mod sql_text;
 pub mod ssh;
+pub mod workspace_sql;
 
 #[cfg(feature = "desktop")]
 mod commands;
@@ -276,6 +280,18 @@ pub fn run() {
             commands::set_temporary_result_storage,
             commands::save_sql_snippet,
             commands::delete_sql_snippet,
+            commands::save_virtual_foreign_key,
+            commands::delete_virtual_foreign_key,
+            commands::run_workspace_sql,
+            commands::search_database_data,
+            commands::snowflake_query_history,
+            commands::snowflake_query_operator_profile,
+            commands::local_history_entries,
+            commands::record_local_history,
+            commands::delete_local_history_entry,
+            commands::clear_local_history,
+            commands::find_sql_usages,
+            commands::query_result_view,
             #[cfg(feature = "native-smoke")]
             commands::native_smoke_fixture,
             #[cfg(feature = "native-smoke")]

@@ -60,6 +60,7 @@ mod snowflake_session;
 pub(crate) mod snowflake_sql_contract;
 #[cfg(all(unix, feature = "test-harness"))]
 pub mod snowflake_table_qualification;
+pub mod sqlite;
 
 pub trait QuerySink: Send {
     fn limit(&mut self, reason: &str);
@@ -445,6 +446,34 @@ pub trait Driver: Send + Sync {
         Err(AppError::new(
             ErrorCode::Unsupported,
             "Schema snapshots are unavailable for this engine",
+        ))
+    }
+    /// Bounded, parameterized full-text data search across tables.
+    async fn search_data(&self, _request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Full-text data search is unavailable for this engine",
+        ))
+    }
+    /// Bounded post-execution Snowflake session query history.
+    async fn snowflake_query_history(
+        &self,
+        _limit: u32,
+        _redact_sql: bool,
+    ) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake session query history is unavailable for this engine",
+        ))
+    }
+    /// Bounded post-execution Snowflake operator profile for a single query ID.
+    async fn snowflake_query_operator_profile(
+        &self,
+        _query_id: &str,
+    ) -> AppResult<SnowflakeOperatorProfile> {
+        Err(AppError::new(
+            ErrorCode::Unsupported,
+            "Snowflake operator profile inspection is unavailable for this engine",
         ))
     }
     async fn browse(

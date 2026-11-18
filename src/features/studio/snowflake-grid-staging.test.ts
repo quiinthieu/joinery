@@ -183,6 +183,8 @@ describe("snowflake-grid-staging", () => {
       { dataType: "VARIANT", resultKind: "json", expectedDefault: "null" },
       { dataType: "ARRAY", resultKind: "json", expectedDefault: "[]" },
       { dataType: "OBJECT", resultKind: "json", expectedDefault: "{}" },
+      { dataType: "GEOGRAPHY", resultKind: "text", expectedDefault: "POINT(0 0)" },
+      { dataType: "GEOMETRY", resultKind: "text", expectedDefault: "POINT(0 0)" },
     ];
     for (const c of cases) {
       const col = makeColumn({
@@ -200,7 +202,7 @@ describe("snowflake-grid-staging", () => {
       });
     }
 
-    for (const unsupported of ["GEOGRAPHY", "GEOMETRY", "VECTOR(FLOAT, 3)", "FUTURE_TYPE"]) {
+    for (const unsupported of ["VECTOR(FLOAT, 3)", "FUTURE_TYPE"]) {
       const col = makeColumn({
         name: "G",
         dataType: unsupported,

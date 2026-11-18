@@ -1,4 +1,4 @@
-import { MySQL, PostgreSQL, SQLDialect, StandardSQL } from "@codemirror/lang-sql";
+import { MySQL, PostgreSQL, SQLDialect, SQLite, StandardSQL } from "@codemirror/lang-sql";
 import type { EngineKind } from "../../ipc/generated";
 import { identifierValue, type Identifier } from "../../data/sql-identifier";
 export { identifierValue, type Identifier } from "../../data/sql-identifier";
@@ -11,7 +11,13 @@ const Snowflake = SQLDialect.define({
 });
 
 export function sqlDialect(engine: EngineKind) {
-  return engine === "postgres" ? PostgreSQL : engine === "mysql" ? MySQL : Snowflake;
+  return engine === "postgres"
+    ? PostgreSQL
+    : engine === "mysql"
+      ? MySQL
+      : engine === "sqlite"
+        ? SQLite
+        : Snowflake;
 }
 
 export function readIdentifier(raw: string, complete = true): Identifier {

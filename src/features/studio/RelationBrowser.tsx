@@ -24,6 +24,14 @@ import { InlineError, Modal } from "../../components/ui/Modal";
 import { tabNavigation } from "../../components/ui/tabs";
 import { JsonTreeViewer, SpatialViewer } from "../grid/ValueDialog";
 import {
+  COPY_FORMATS,
+  copyFormatLabel,
+  formatGridCells,
+  writeClipboardText,
+  type CopyCell,
+  type CopyFormat,
+} from "../grid/copy-format";
+import {
   MAX_HEX_PREVIEW_BYTES,
   buildJsonTree,
   decodeBinaryPreview,
@@ -37,12 +45,14 @@ import {
 } from "../grid/value-format";
 import { ReviewDialog } from "../safety/ReviewDialog";
 import { SnowflakeDdlDialog, type SnowflakeDdlDialogRequest } from "./SnowflakeDdlDialog";
+import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import { DdlPanel } from "./ObjectInspectorView";
 import {
   MAX_SNOWFLAKE_GRID_MUTATIONS,
   SAFE_SNOWFLAKE_BATCH_FRAME_BYTES,
   buildSnowflakeGridMutations,
   canColumnDefaultOnInsert,
+  cloneSnowflakePreviewRow,
   createBlankInsertRow,
   estimateInsertRowsFrameBytes,
   isWritableSnowflakeColumn,
@@ -278,6 +288,11 @@ export function RelationBrowser({
   const [error, setError] = useState<string | null>(null);
   const [rowPage, setRowPage] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
+  const [previewTransposed, setPreviewTransposed] = useState(false);
+  const [copyFormat, setCopyFormat] = useState<CopyFormat>("csv");
+  const [copyScope, setCopyScope] = useState<"page" | "slice">("page");
+  const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
+  const virtualForeignKeys = useStudio((state) => state.virtualForeignKeys);
   const [inspectedCell, setInspectedCell] = useState<{
     absRowIndex: number;
     colIndex: number;
@@ -310,6 +325,7 @@ export function RelationBrowser({
     setDraftSortDirection("asc");
     setDraftSortNulls("");
     setDraftFilters([]);
+    setPreviewTransposed(false);
     setAppliedSlice(DEFAULT_PREVIEW_SLICE);
   };
   useEffect(() => {
@@ -730,6 +746,67 @@ export function RelationBrowser({
     resetPreviewSlice();
     relationSelector.current?.focus();
   };
+  const selectVirtualRelation = (
+    destTable: { schema: string; name: string },
+    presetFilters?: DraftFilterRow[],
+  ) => {
+    if (!catalog || busy) return;
+    const matchesInCatalog = catalog.relations.filter(
+      (entry) =>
+        entry.database === catalog.database &&
+        entry.table.schema === destTable.schema &&
+        entry.table.name === destTable.name &&
+        entry.availability === "available",
+    );
+    if (matchesInCatalog.length !== 1) return;
+    const destination = matchesInCatalog[0];
+    generation.current++;
+    setSearch("");
+    setDdlRequest(null);
+    setSelected(destination.targetId);
+    setInspection(null);
+    setPreview(null);
+    setDefinition(null);
+    setConstraints(null);
+    setConstraintsError(null);
+    setMappings(null);
+    setMappingsError(null);
+    setChecks(null);
+    setChecksError(null);
+    setError(null);
+    setRowPage(0);
+    setColumnPage(0);
+    clearStagedGridEdits();
+    resetPreviewSlice();
+    if (presetFilters && presetFilters.length > 0) {
+      setDraftFilters(presetFilters.slice(0, MAX_PREVIEW_FILTERS));
+    }
+    relationSelector.current?.focus();
+  };
+  const outboundVirtualFks = useMemo(
+    () =>
+      target && session?.connectionId
+        ? virtualForeignKeys.filter(
+            (v) =>
+              v.connectionId === session.connectionId &&
+              v.source.schema === target.table.schema &&
+              v.source.name === target.table.name,
+          )
+        : [],
+    [session?.connectionId, target, virtualForeignKeys],
+  );
+  const inboundVirtualFks = useMemo(
+    () =>
+      target && session?.connectionId
+        ? virtualForeignKeys.filter(
+            (v) =>
+              v.connectionId === session.connectionId &&
+              v.target.schema === target.table.schema &&
+              v.target.name === target.table.name,
+          )
+        : [],
+    [session?.connectionId, target, virtualForeignKeys],
+  );
   const matches =
     catalog?.relations.filter((entry) =>
       `${entry.table.schema}.${entry.table.name}`
@@ -1752,6 +1829,179 @@ export function RelationBrowser({
             )}
           </section>
         )}
+        {target && session?.connectionId && (
+          <section aria-label="Virtual relationships">
+            <div className="query-actions" style={{ justifyContent: "space-between" }}>
+              <h4>Virtual relationships (Joinery local)</h4>
+              <button
+                type="button"
+                className="button small"
+                disabled={busy}
+                onClick={() => setVirtualFkDialogOpen(true)}
+              >
+                Add virtual FK…
+              </button>
+            </div>
+            {outboundVirtualFks.length === 0 && inboundVirtualFks.length === 0 ? (
+              <p>
+                No local virtual foreign keys defined on {target.table.schema}.{target.table.name}.
+              </p>
+            ) : (
+              <div className="relation-table-scroll">
+                <table>
+                  <caption>Virtual relationships</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Name</th>
+                      <th scope="col">Direction</th>
+                      <th scope="col">Mapping</th>
+                      <th scope="col">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {outboundVirtualFks.map((vfk) => {
+                      const canNavigate = Boolean(
+                        catalog &&
+                        catalog.relations.filter(
+                          (entry) =>
+                            entry.database === catalog.database &&
+                            entry.table.schema === vfk.target.schema &&
+                            entry.table.name === vfk.target.name &&
+                            entry.availability === "available",
+                        ).length === 1,
+                      );
+                      const firstRowFilters =
+                        preview && preview.rows.length > 0
+                          ? (() => {
+                              const filters: DraftFilterRow[] = [];
+                              for (let idx = 0; idx < vfk.columns.length; idx++) {
+                                const colName = vfk.columns[idx]!;
+                                const targetCol = vfk.targetColumns[idx];
+                                const colPos = preview.columns.findIndex((c) => c.name === colName);
+                                if (colPos < 0 || !targetCol) return undefined;
+                                const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                                // SQL NULL keys reference nothing; never filter referenced rows by IS NULL.
+                                if (val === null) return undefined;
+                                filters.push({
+                                  id: `vfk-out-${vfk.id}-${idx}`,
+                                  column: targetCol,
+                                  operator: "equals" as RelationFilterOperator,
+                                  value: val,
+                                });
+                              }
+                              return filters.length > 0 ? filters : undefined;
+                            })()
+                          : undefined;
+                      return (
+                        <tr key={`out-${vfk.id}`}>
+                          <td className="mono">{vfk.name}</td>
+                          <td>References</td>
+                          <td className="mono">
+                            ({vfk.columns.join(", ")}) → {vfk.target.schema}.{vfk.target.name}(
+                            {vfk.targetColumns.join(", ")})
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={busy || !canNavigate}
+                              onClick={() => selectVirtualRelation(vfk.target, firstRowFilters)}
+                            >
+                              Select {vfk.target.name}
+                            </button>{" "}
+                            <button
+                              type="button"
+                              className="button small danger-text"
+                              aria-label={`Delete virtual foreign key ${vfk.name}`}
+                              disabled={busy}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(vfk.id)
+                                  .catch((err) => setError(messageOf(err)))
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {inboundVirtualFks.map((vfk) => {
+                      const canNavigate = Boolean(
+                        catalog &&
+                        catalog.relations.filter(
+                          (entry) =>
+                            entry.database === catalog.database &&
+                            entry.table.schema === vfk.source.schema &&
+                            entry.table.name === vfk.source.name &&
+                            entry.availability === "available",
+                        ).length === 1,
+                      );
+                      const firstRowFilters =
+                        preview && preview.rows.length > 0
+                          ? (() => {
+                              const filters: DraftFilterRow[] = [];
+                              for (let idx = 0; idx < vfk.targetColumns.length; idx++) {
+                                const targetCol = vfk.targetColumns[idx]!;
+                                const sourceCol = vfk.columns[idx];
+                                const colPos = preview.columns.findIndex(
+                                  (c) => c.name === targetCol,
+                                );
+                                if (colPos < 0 || !sourceCol) return undefined;
+                                const val = preview.rows[rowPage * PAGE_ROWS]?.[colPos] ?? null;
+                                if (val === null) return undefined;
+                                filters.push({
+                                  id: `vfk-in-${vfk.id}-${idx}`,
+                                  column: sourceCol,
+                                  operator: "equals" as RelationFilterOperator,
+                                  value: val,
+                                });
+                              }
+                              return filters.length > 0 ? filters : undefined;
+                            })()
+                          : undefined;
+                      return (
+                        <tr key={`in-${vfk.id}`}>
+                          <td className="mono">{vfk.name}</td>
+                          <td>Referenced by</td>
+                          <td className="mono">
+                            {vfk.source.schema}.{vfk.source.name}({vfk.columns.join(", ")}) → (
+                            {vfk.targetColumns.join(", ")})
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button small"
+                              disabled={busy || !canNavigate}
+                              onClick={() => selectVirtualRelation(vfk.source, firstRowFilters)}
+                            >
+                              Select {vfk.source.name}
+                            </button>{" "}
+                            <button
+                              type="button"
+                              className="button small danger-text"
+                              aria-label={`Delete virtual foreign key ${vfk.name}`}
+                              disabled={busy}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(vfk.id)
+                                  .catch((err) => setError(messageOf(err)))
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
         {inspection && (
           <>
             <h3>
@@ -2411,168 +2661,373 @@ export function RelationBrowser({
               >
                 Next columns
               </button>
+              <button
+                type="button"
+                aria-pressed={previewTransposed}
+                onClick={() => setPreviewTransposed((prev) => !prev)}
+              >
+                {previewTransposed ? "Table view" : "Transpose"}
+              </button>
+              <label>
+                Format{" "}
+                <select
+                  aria-label="Copy Snowflake preview format"
+                  value={copyFormat}
+                  onChange={(e) => setCopyFormat(e.target.value as CopyFormat)}
+                >
+                  {COPY_FORMATS.map((fmt) => (
+                    <option key={fmt.id} value={fmt.id}>
+                      {fmt.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Scope{" "}
+                <select
+                  aria-label="Copy Snowflake preview scope"
+                  value={copyScope}
+                  onChange={(e) => setCopyScope(e.target.value as "page" | "slice")}
+                >
+                  <option value="page">Visible page ({rows.length})</option>
+                  <option value="slice">Retained slice ({preview.rows.length})</option>
+                </select>
+              </label>
+              <button
+                type="button"
+                className="button small"
+                aria-label="Copy Snowflake preview slice"
+                disabled={preview.columns.length === 0}
+                onClick={() => {
+                  const pkCols = new Set<string>();
+                  if (
+                    mappings &&
+                    mappings.contextKey === contextKey &&
+                    mappings.value.targetId === selected &&
+                    mappings.value.revision === catalog?.revision
+                  ) {
+                    for (const m of mappings.value.mappings) {
+                      if (m.kind === "primaryKey" && m.status === "available") {
+                        for (const c of m.columns) pkCols.add(c.columnName);
+                      }
+                    }
+                  }
+                  const enrichedColumns = preview.columns.map((c) =>
+                    pkCols.has(c.name) ? { ...c, primaryKey: true } : c,
+                  );
+                  const startIdx = copyScope === "page" ? rowPage * PAGE_ROWS : 0;
+                  const sourceRows = copyScope === "page" ? rows : preview.rows;
+                  const matrix: CopyCell[][] = sourceRows.map((row, localIdx) => {
+                    const absIdx = startIdx + localIdx;
+                    const rowEdits = updatedCells[absIdx];
+                    if (!rowEdits) return row;
+                    return row.map((cell, cIdx) => {
+                      const override = rowEdits[cIdx];
+                      if (!override) return cell;
+                      if (override.kind === "default") return { kind: "default" } as const;
+                      if (override.kind === "null") return null;
+                      return override.value;
+                    });
+                  });
+                  const formatted = formatGridCells({
+                    columns: enrichedColumns,
+                    rows: matrix,
+                    format: copyFormat,
+                    engine: "snowflake",
+                    table: inspection?.table ?? target?.table ?? null,
+                    includeHeaders: true,
+                  });
+                  if (!formatted.ok) {
+                    setError(formatted.error);
+                    return;
+                  }
+                  void writeClipboardText(formatted.text)
+                    .then(() => {
+                      setError(null);
+                      useStudio
+                        .getState()
+                        .notify(
+                          `Copied ${formatted.rowCount.toLocaleString()} Snowflake row${formatted.rowCount === 1 ? "" : "s"} as ${copyFormatLabel(copyFormat)}`,
+                        );
+                    })
+                    .catch((err) => setError(messageOf(err)));
+                }}
+              >
+                Copy slice
+              </button>
             </div>
             <div className="relation-table-scroll">
-              <table>
-                <caption>
-                  {activeSnapshotId ? "Editable Snowflake preview" : "Read-only preview"}
-                </caption>
-                <thead>
-                  <tr>
-                    {activeSnapshotId && <th>Row action</th>}
-                    {columns.map((column) => (
-                      <th key={column.id}>{column.name}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((row, index) => {
-                    const absRowIndex = rowPage * PAGE_ROWS + index;
-                    const rowDeleted = Boolean(deletedRows[absRowIndex]);
-                    return (
-                      <tr key={absRowIndex}>
-                        {activeSnapshotId && (
-                          <td>
-                            <button
-                              type="button"
-                              className="button small"
-                              aria-label={
-                                rowDeleted
-                                  ? `Undo delete row ${absRowIndex + 1}`
-                                  : `Mark row ${absRowIndex + 1} for delete`
-                              }
-                              onClick={() => toggleDeleteRow(absRowIndex)}
-                            >
-                              {rowDeleted ? "Undo delete" : "Delete"}
-                            </button>
-                          </td>
-                        )}
-                        {columns.map((column, i) => {
-                          const colIndex = columnPage * PAGE_COLUMNS + i;
-                          const value = row[colIndex];
-                          const inspectedCol = inspection?.columns[colIndex];
-                          const effectiveDbType =
-                            inspectedCol?.fullType || inspectedCol?.dataType || column.databaseType;
-                          const classifierCol = {
-                            kind: column.kind,
-                            databaseType: effectiveDbType,
-                          };
-                          const richInspectorCol =
-                            isJsonColumn(classifierCol) ||
-                            isBinaryColumn(classifierCol) ||
-                            isSpatialColumn(classifierCol);
-                          const cellEditable =
-                            Boolean(activeSnapshotId) &&
-                            !rowDeleted &&
-                            Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
-                          if (cellEditable && inspectedCol) {
+              {previewTransposed ? (
+                <table aria-label="Transposed Snowflake preview">
+                  <caption>Transposed Snowflake preview</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Column</th>
+                      <th scope="col">Type</th>
+                      {rows.map((_, index) => {
+                        const absRowIndex = rowPage * PAGE_ROWS + index;
+                        return <th key={absRowIndex}>{`Row ${absRowIndex + 1}`}</th>;
+                      })}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {columns.map((column, i) => {
+                      const colIndex = columnPage * PAGE_COLUMNS + i;
+                      const inspectedCol = inspection?.columns[colIndex];
+                      const effectiveDbType =
+                        inspectedCol?.fullType || inspectedCol?.dataType || column.databaseType;
+                      return (
+                        <tr key={column.id}>
+                          <th scope="row" className="mono">
+                            {column.name}
+                          </th>
+                          <td className="mono">{effectiveDbType}</td>
+                          {rows.map((row, index) => {
+                            const absRowIndex = rowPage * PAGE_ROWS + index;
                             const override = updatedCells[absRowIndex]?.[colIndex];
-                            const effective: SnowflakeGridCellInput =
-                              override ??
-                              (value === null ? { kind: "null" } : { kind: "text", value });
-                            const textForCheck = effective.kind === "text" ? effective.value : null;
-                            const showInspect =
-                              richInspectorCol ||
-                              (textForCheck !== null &&
-                                (textForCheck.length > 64 || textForCheck.includes("\n")));
+                            const rawValue =
+                              override === undefined
+                                ? row[colIndex]
+                                : override.kind === "text"
+                                  ? override.value
+                                  : null;
                             return (
                               <td
-                                key={column.id}
+                                key={absRowIndex}
+                                className="mono"
                                 onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
                               >
-                                <input
-                                  aria-label={`Row ${absRowIndex + 1} ${column.name}`}
-                                  disabled={effective.kind === "null"}
-                                  placeholder={effective.kind === "null" ? "NULL" : ""}
-                                  value={effective.kind === "text" ? effective.value : ""}
-                                  onChange={(e) =>
-                                    setCellOverride(absRowIndex, colIndex, {
-                                      kind: "text",
-                                      value: e.target.value,
-                                    })
-                                  }
-                                />
-                                {showInspect && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
-                                  >
-                                    Inspect
-                                  </button>
-                                )}
-                                {inspectedCol.nullable && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Toggle NULL for row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() =>
-                                      setCellOverride(
-                                        absRowIndex,
-                                        colIndex,
-                                        effective.kind === "null"
-                                          ? { kind: "text", value: value ?? "" }
-                                          : { kind: "null" },
-                                      )
-                                    }
-                                  >
-                                    {effective.kind === "null" ? "Text" : "NULL"}
-                                  </button>
-                                )}
-                                {override && (
-                                  <button
-                                    type="button"
-                                    className="button small"
-                                    aria-label={`Revert row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setCellOverride(absRowIndex, colIndex, null)}
-                                  >
-                                    Revert
-                                  </button>
+                                {override?.kind === "default" ? (
+                                  <span aria-label="DEFAULT">DEFAULT</span>
+                                ) : rawValue === null ? (
+                                  <span aria-label="NULL">∅</span>
+                                ) : rawValue === "" ? (
+                                  <span aria-label="Empty string">“”</span>
+                                ) : (
+                                  rawValue
                                 )}
                               </td>
                             );
-                          }
-                          const showInspectReadOnly =
-                            value !== null &&
-                            (richInspectorCol || value.length > 64 || value.includes("\n"));
-                          return (
-                            <td
-                              key={column.id}
-                              onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
-                            >
-                              {value === null ? (
-                                <span aria-label="NULL">∅</span>
-                              ) : value === "" ? (
-                                <span aria-label="Empty string">“”</span>
-                              ) : (
-                                value
-                              )}
-                              {showInspectReadOnly && (
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              ) : (
+                <table>
+                  <caption>
+                    {activeSnapshotId ? "Editable Snowflake preview" : "Read-only preview"}
+                  </caption>
+                  <thead>
+                    <tr>
+                      {activeSnapshotId && <th>Row action</th>}
+                      {columns.map((column) => (
+                        <th key={column.id}>{column.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((row, index) => {
+                      const absRowIndex = rowPage * PAGE_ROWS + index;
+                      const rowDeleted = Boolean(deletedRows[absRowIndex]);
+                      return (
+                        <tr key={absRowIndex}>
+                          {activeSnapshotId && (
+                            <td>
+                              <button
+                                type="button"
+                                className="button small"
+                                aria-label={
+                                  rowDeleted
+                                    ? `Undo delete row ${absRowIndex + 1}`
+                                    : `Mark row ${absRowIndex + 1} for delete`
+                                }
+                                onClick={() => toggleDeleteRow(absRowIndex)}
+                              >
+                                {rowDeleted ? "Undo delete" : "Delete"}
+                              </button>
+                              {inspection && (
                                 <>
                                   {" "}
                                   <button
                                     type="button"
                                     className="button small"
-                                    aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
-                                    onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    aria-label={`Clone row ${absRowIndex + 1}`}
+                                    disabled={
+                                      busy ||
+                                      gridBusy ||
+                                      Boolean(csvImportQueue) ||
+                                      totalStagedMutations >= MAX_SNOWFLAKE_GRID_MUTATIONS
+                                    }
+                                    onClick={() => {
+                                      const cloned = cloneSnowflakePreviewRow(
+                                        inspection.columns,
+                                        row,
+                                        updatedCells[absRowIndex],
+                                      );
+                                      if (
+                                        estimateInsertRowsFrameBytes(
+                                          [...insertedRows, cloned],
+                                          inspection.columns,
+                                        ) > SAFE_SNOWFLAKE_BATCH_FRAME_BYTES
+                                      ) {
+                                        setError(
+                                          "Staged Snowflake inserts reached the single-batch frame limit; review and apply current edits first.",
+                                        );
+                                        return;
+                                      }
+                                      setInsertedRows((prev) => [...prev, cloned]);
+                                    }}
                                   >
-                                    Inspect
+                                    Clone
                                   </button>
                                 </>
                               )}
                             </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                          )}
+                          {columns.map((column, i) => {
+                            const colIndex = columnPage * PAGE_COLUMNS + i;
+                            const value = row[colIndex];
+                            const inspectedCol = inspection?.columns[colIndex];
+                            const effectiveDbType =
+                              inspectedCol?.fullType ||
+                              inspectedCol?.dataType ||
+                              column.databaseType;
+                            const classifierCol = {
+                              kind: column.kind,
+                              databaseType: effectiveDbType,
+                            };
+                            const richInspectorCol =
+                              isJsonColumn(classifierCol) ||
+                              isBinaryColumn(classifierCol) ||
+                              isSpatialColumn(classifierCol);
+                            const cellEditable =
+                              Boolean(activeSnapshotId) &&
+                              !rowDeleted &&
+                              Boolean(inspectedCol && isWritableSnowflakeColumn(inspectedCol));
+                            if (cellEditable && inspectedCol) {
+                              const override = updatedCells[absRowIndex]?.[colIndex];
+                              const effective: SnowflakeGridCellInput =
+                                override ??
+                                (value === null ? { kind: "null" } : { kind: "text", value });
+                              const textForCheck =
+                                effective.kind === "text" ? effective.value : null;
+                              const showInspect =
+                                richInspectorCol ||
+                                (textForCheck !== null &&
+                                  (textForCheck.length > 64 || textForCheck.includes("\n")));
+                              return (
+                                <td
+                                  key={column.id}
+                                  onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                >
+                                  <input
+                                    aria-label={`Row ${absRowIndex + 1} ${column.name}`}
+                                    disabled={effective.kind === "null"}
+                                    placeholder={effective.kind === "null" ? "NULL" : ""}
+                                    value={effective.kind === "text" ? effective.value : ""}
+                                    onChange={(e) =>
+                                      setCellOverride(absRowIndex, colIndex, {
+                                        kind: "text",
+                                        value: e.target.value,
+                                      })
+                                    }
+                                  />
+                                  {showInspect && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    >
+                                      Inspect
+                                    </button>
+                                  )}
+                                  {inspectedCol.nullable && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Toggle NULL for row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() =>
+                                        setCellOverride(
+                                          absRowIndex,
+                                          colIndex,
+                                          effective.kind === "null"
+                                            ? { kind: "text", value: value ?? "" }
+                                            : { kind: "null" },
+                                        )
+                                      }
+                                    >
+                                      {effective.kind === "null" ? "Text" : "NULL"}
+                                    </button>
+                                  )}
+                                  {override && (
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Revert row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setCellOverride(absRowIndex, colIndex, null)}
+                                    >
+                                      Revert
+                                    </button>
+                                  )}
+                                </td>
+                              );
+                            }
+                            const showInspectReadOnly =
+                              value !== null &&
+                              (richInspectorCol || value.length > 64 || value.includes("\n"));
+                            return (
+                              <td
+                                key={column.id}
+                                onDoubleClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                              >
+                                {value === null ? (
+                                  <span aria-label="NULL">∅</span>
+                                ) : value === "" ? (
+                                  <span aria-label="Empty string">“”</span>
+                                ) : (
+                                  value
+                                )}
+                                {showInspectReadOnly && (
+                                  <>
+                                    {" "}
+                                    <button
+                                      type="button"
+                                      className="button small"
+                                      aria-label={`Inspect row ${absRowIndex + 1} ${column.name}`}
+                                      onClick={() => setInspectedCell({ absRowIndex, colIndex })}
+                                    >
+                                      Inspect
+                                    </button>
+                                  </>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
             </div>
           </>
         )}
       </div>
+      {virtualFkDialogOpen && target && session?.connectionId && (
+        <VirtualForeignKeyDialog
+          connectionId={session.connectionId}
+          initialSource={target.table}
+          sourceColumns={inspection?.columns.map((c) => c.name) ?? []}
+          knownTables={
+            catalog?.relations.filter((r) => r.availability === "available").map((r) => r.table) ??
+            []
+          }
+          onClose={() => setVirtualFkDialogOpen(false)}
+        />
+      )}
     </Modal>
   );
 }
@@ -2667,6 +3122,31 @@ function SnowflakeCellInspectorModal({
         JSON.parse(value);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Enter valid JSON");
+        return;
+      }
+    }
+    if (!isNull && viewerKind === "spatial") {
+      const parsed = parseSpatialPreview(value);
+      if (!parsed.ok) {
+        setError(parsed.error);
+        return;
+      }
+      const isGeography = databaseType.trim().toUpperCase().startsWith("GEOGRAPHY");
+      if (isGeography && parsed.srid !== null && parsed.srid !== 4326) {
+        setError("Snowflake GEOGRAPHY requires WGS84 SRID 4326");
+        return;
+      }
+      if (
+        isGeography &&
+        parsed.bbox &&
+        (parsed.bbox[0] < -180 ||
+          parsed.bbox[2] > 180 ||
+          parsed.bbox[1] < -90 ||
+          parsed.bbox[3] > 90)
+      ) {
+        setError(
+          "GEOGRAPHY coordinates must fall within longitude [-180, 180] and latitude [-90, 90]",
+        );
         return;
       }
     }

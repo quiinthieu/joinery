@@ -27,6 +27,7 @@ interface Configuration {
   sessionId: string | null;
   tables: TableInfo[];
   snippets?: readonly SqlSnippet[];
+  virtualForeignKeys?: readonly unknown[];
   database?: string;
   defaultSchema?: string;
   searchPath?: string[];
@@ -207,6 +208,14 @@ export class CompletionSession {
       previous.contextRevision === config.contextRevision &&
       (previous.contextFingerprint ?? null) === (config.contextFingerprint ?? null)
     ) {
+      if ((previous.virtualForeignKeys ?? null) !== (config.virtualForeignKeys ?? null)) {
+        this.configuration = config;
+        this.cancelPending();
+        this.schemas.retain([]);
+        this.scopeKey = "";
+        this.loadedSchemas = [];
+        return true;
+      }
       if (previous.snippets !== config.snippets) {
         this.configuration = config;
         this.cancelPending();

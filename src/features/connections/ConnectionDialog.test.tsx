@@ -913,3 +913,56 @@ test("a hidden console query limit is preserved without enabling console consent
   );
   await screen.findByRole("alert");
 });
+
+test("SQLite connection form defaults to :memory:, hides TCP/SSH fields, and saves file path profile", async () => {
+  enableSnowflakeEngine();
+  const bootstrap = useStudio.getState().bootstrap!;
+  useStudio.setState({
+    bootstrap: {
+      ...bootstrap,
+      supportedEngines: ["postgres", "mysql", "sqlite", "redis", "snowflake"],
+    },
+  });
+  vi.mocked(client.call).mockImplementation(async (command, args) => {
+    if (command === "save_profile") return (args as { profile: unknown }).profile as never;
+    if (command === "prepare_connection") throw new Error("Stop after profile save");
+    return null as never;
+  });
+
+  render(<ConnectionDialog onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText("Connection name", { exact: true }), {
+    target: { value: "Local App SQLite" },
+  });
+  fireEvent.change(screen.getByLabelText("Database engine", { exact: true }), {
+    target: { value: "sqlite" },
+  });
+
+  const dbInput = screen.getByLabelText("Database file path (or :memory:)", {
+    exact: true,
+  }) as HTMLInputElement;
+  expect(dbInput.value).toBe(":memory:");
+  fireEvent.change(screen.getByLabelText("Safe Mode", { exact: true }), {
+    target: { value: "silent" },
+  });
+  expect(screen.queryByLabelText("Host", { exact: true })).toBeNull();
+  expect(screen.queryByLabelText("Port", { exact: true })).toBeNull();
+  expect(screen.queryByLabelText(/Connect through an SSH bastion/i)).toBeNull();
+
+  fireEvent.change(dbInput, { target: { value: "/tmp/joinery_fixture.sqlite" } });
+  fireEvent.submit(screen.getByRole("button", { name: "Save and connect" }).closest("form")!);
+
+  await waitFor(() =>
+    expect(client.call).toHaveBeenCalledWith(
+      "save_profile",
+      expect.objectContaining({
+        profile: expect.objectContaining({
+          engine: "sqlite",
+          database: "/tmp/joinery_fixture.sqlite",
+          ssh: null,
+          snowflake: null,
+        }),
+      }),
+    ),
+  );
+  await screen.findByRole("alert");
+});

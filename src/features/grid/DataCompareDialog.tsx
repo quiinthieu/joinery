@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   Check,
+  Copy,
   Database,
+  FileCode2,
   KeyRound,
   Layers,
   Loader2,
@@ -26,8 +28,10 @@ import type {
   TableRef,
   TableSchema,
 } from "../../ipc/generated";
-import type { StudioTab } from "../../state/studio";
+import { useStudio, type StudioTab } from "../../state/studio";
 import { ReviewDialog } from "../safety/ReviewDialog";
+import { writeClipboardText } from "./copy-format";
+import { generateDataSyncSql, type DataSyncDirection } from "./data-sync-sql";
 import { EMPTY_QUERY, hasRawClauses } from "./table-query";
 
 interface SnapshotCandidate {
@@ -38,6 +42,8 @@ interface SnapshotCandidate {
   rowCount: number;
   truncatedHint: boolean;
   tabId: string;
+  connectionId: string | null;
+  table: TableRef | null;
 }
 
 interface SideSelectionState {
@@ -75,18 +81,27 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
     const connPrefix = tab.connectionId
       ? `${profileNames.get(tab.connectionId) ?? "Connection"} · `
       : "";
-    if (tab.kind === "query") {
+    if (tab.kind === "query" || tab.kind === "result" || tab.kind === "workspaceSql") {
       for (const res of tab.results) {
         if (res.columns.length === 0) continue;
         const suffix = res.status === "truncated" ? " · truncated" : "";
+        const pinnedLabel = tab.pinnedResultLabels?.[res.id];
         items.push({
           id: `query:${tab.id}:${res.id}`,
-          label: `${connPrefix}${tab.title} · Query ${res.statementIndex + 1} (${res.retainedRows.toLocaleString()} rows${suffix})`,
+          label:
+            tab.kind === "result" || tab.kind === "workspaceSql"
+              ? `${connPrefix}${tab.title} (${res.retainedRows.toLocaleString()} rows${suffix})`
+              : `${connPrefix}${tab.title} · ${pinnedLabel ?? `Query ${res.statementIndex + 1}`} (${res.retainedRows.toLocaleString()} rows${suffix})`,
           resultIds: [res.id],
           columns: res.columns,
           rowCount: res.retainedRows,
           truncatedHint: res.status === "truncated",
           tabId: tab.id,
+          connectionId: tab.connectionId,
+          table:
+            res.editability?.status === "editable"
+              ? res.editability.table
+              : (res.table ?? tab.table ?? null),
         });
       }
     } else if (tab.kind === "table" && tab.table && tab.pages.length > 0) {
@@ -102,6 +117,8 @@ function collectSnapshots(tabs: StudioTab[], profiles: ConnectionProfile[]): Sna
         rowCount: tab.loadedRows,
         truncatedHint: truncated,
         tabId: tab.id,
+        connectionId: tab.connectionId,
+        table: tab.table,
       });
     }
   }
@@ -218,7 +235,7 @@ function buildInitialSides(
   } else if (initialTab) {
     const tabSnaps = snapshots.filter((s) => s.tabId === initialTab.id);
     const activeSnap =
-      initialTab.kind === "query" && initialTab.activeResultId
+      (initialTab.kind === "query" || initialTab.kind === "result") && initialTab.activeResultId
         ? (tabSnaps.find((s) => s.resultIds[0] === initialTab.activeResultId) ?? tabSnaps[0])
         : tabSnaps[0];
     if (activeSnap) {
@@ -259,7 +276,9 @@ export function DataCompareDialog({
   onClose(): void;
 }) {
   const liveProfiles = profiles.filter(
-    (p) => (p.engine === "postgres" || p.engine === "mysql") && Boolean(sessions[p.id]),
+    (p) =>
+      (p.engine === "postgres" || p.engine === "mysql" || p.engine === "sqlite") &&
+      Boolean(sessions[p.id]),
   );
   const snapshots = collectSnapshots(tabs, profiles);
 
@@ -285,6 +304,10 @@ export function DataCompareDialog({
   const [report, setReport] = useState<DataCompareReport | null>(null);
   const [filterTab, setFilterTab] = useState<DiffFilterTab>("all");
   const [changedColsOnly, setChangedColsOnly] = useState(false);
+  const [syncDirection, setSyncDirection] = useState<DataSyncDirection>("leftToRight");
+  const [syncIncludeInsert, setSyncIncludeInsert] = useState(true);
+  const [syncIncludeUpdate, setSyncIncludeUpdate] = useState(true);
+  const [syncIncludeDelete, setSyncIncludeDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const compareSeqRef = useRef(0);
 
@@ -679,7 +702,7 @@ export function DataCompareDialog({
             }}
           >
             <option value="liveTable" disabled={liveProfiles.length === 0}>
-              Live table (PostgreSQL / MySQL)
+              Live table (PostgreSQL / MySQL / SQLite)
             </option>
             <option value="snapshot" disabled={snapshots.length === 0}>
               Retained tab snapshot
@@ -737,11 +760,17 @@ export function DataCompareDialog({
                   }}
                 >
                   {liveProfiles.length === 0 ? (
-                    <option value="">No connected PG/MySQL session</option>
+                    <option value="">No connected PG/MySQL/SQLite session</option>
                   ) : (
                     liveProfiles.map((p) => (
                       <option key={p.id} value={p.id}>
-                        {p.name} ({p.engine === "mysql" ? "MySQL" : "PostgreSQL"})
+                        {p.name} (
+                        {p.engine === "mysql"
+                          ? "MySQL"
+                          : p.engine === "sqlite"
+                            ? "SQLite"
+                            : "PostgreSQL"}
+                        )
                       </option>
                     ))
                   )}
@@ -1085,6 +1114,135 @@ export function DataCompareDialog({
                 </label>
               ) : null}
             </div>
+
+            {report.diffs.length > 0 &&
+              (() => {
+                const targetSide = syncDirection === "leftToRight" ? right : left;
+                const targetSnap =
+                  targetSide.mode === "snapshot"
+                    ? snapshots.find((s) => s.id === targetSide.snapshotId)
+                    : undefined;
+                const targetConnId =
+                  targetSide.mode === "liveTable"
+                    ? targetSide.connectionId || null
+                    : (targetSnap?.connectionId ?? null);
+                const targetProfile = targetConnId
+                  ? profiles.find((p) => p.id === targetConnId)
+                  : undefined;
+                const targetTable =
+                  targetSide.mode === "liveTable" && targetSide.connectionId
+                    ? parseTableKey(targetSide.tableKey, catalog[targetSide.connectionId] ?? [])
+                    : (targetSnap?.table ?? null);
+                const targetCols = syncDirection === "leftToRight" ? rightColumns : leftColumns;
+                const syncPlan = generateDataSyncSql({
+                  report,
+                  direction: syncDirection,
+                  engine: targetProfile?.engine,
+                  targetTable,
+                  targetColumns: targetCols,
+                  includeInsert: syncIncludeInsert,
+                  includeUpdate: syncIncludeUpdate,
+                  includeDelete: syncIncludeDelete,
+                });
+
+                return (
+                  <div
+                    role="region"
+                    aria-label="Data synchronization SQL"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 10,
+                      padding: "8px 12px",
+                      border: "1px solid var(--border-subtle, rgba(128, 128, 128, 0.2))",
+                      borderRadius: 8,
+                      marginBottom: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}
+                    >
+                      <strong style={{ fontSize: 12 }}>Sync SQL</strong>
+                      <select
+                        aria-label="Sync SQL direction"
+                        value={syncDirection}
+                        onChange={(e) => setSyncDirection(e.target.value as DataSyncDirection)}
+                        style={{ height: 28, fontSize: 12 }}
+                      >
+                        <option value="leftToRight">Sync Right ← Left</option>
+                        <option value="rightToLeft">Sync Left ← Right</option>
+                      </select>
+                      <label className="checkbox-row" style={{ fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={syncIncludeInsert}
+                          onChange={(e) => setSyncIncludeInsert(e.target.checked)}
+                        />
+                        <span>INSERT missing</span>
+                      </label>
+                      <label className="checkbox-row" style={{ fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={syncIncludeUpdate}
+                          onChange={(e) => setSyncIncludeUpdate(e.target.checked)}
+                        />
+                        <span>UPDATE modified</span>
+                      </label>
+                      <label className="checkbox-row" style={{ fontSize: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={syncIncludeDelete}
+                          onChange={(e) => setSyncIncludeDelete(e.target.checked)}
+                        />
+                        <span>DELETE extra</span>
+                      </label>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {syncPlan.ok && (
+                        <span className="muted mono" style={{ fontSize: 11 }}>
+                          {syncPlan.statementCount.toLocaleString()} stmt
+                          {syncPlan.statementCount === 1 ? "" : "s"}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        className="button ghost small"
+                        disabled={!syncPlan.ok || syncPlan.statementCount === 0}
+                        onClick={() => {
+                          if (!syncPlan.ok) return;
+                          void writeClipboardText(syncPlan.sql)
+                            .then(() =>
+                              useStudio
+                                .getState()
+                                .notify(
+                                  `Copied ${syncPlan.statementCount.toLocaleString()} sync SQL statement${syncPlan.statementCount === 1 ? "" : "s"}`,
+                                ),
+                            )
+                            .catch((err) => setError(messageOf(err)));
+                        }}
+                      >
+                        <Copy size={12} />
+                        Copy Sync SQL
+                      </button>
+                      <button
+                        type="button"
+                        className="button ghost small"
+                        disabled={!syncPlan.ok || syncPlan.statementCount === 0}
+                        onClick={() => {
+                          if (!syncPlan.ok) return;
+                          useStudio.getState().openQuery(targetConnId, syncPlan.sql);
+                          onClose();
+                        }}
+                      >
+                        <FileCode2 size={12} />
+                        Open Sync SQL in editor
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
 
             {filterTab === "anomalies" ? (
               <div className="compare-anomalies-panel">

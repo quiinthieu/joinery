@@ -80,6 +80,8 @@ pub(super) fn validate(connection: &Connection) -> AppResult<()> {
     super::library::read_bookmarks(connection)?;
     super::library::read_sql_format_settings(connection)?;
     super::library::read_sql_snippets(connection)?;
+    super::library::read_virtual_foreign_keys(connection)?;
+    super::local_history::read_entries(connection)?;
     if version >= 2 {
         snowflake_console::validate_records(connection)?;
     }

@@ -4096,44 +4096,173 @@ impl Driver for SnowflakeExternal {
                         Err(err) => return Err(err),
                     };
                     if object.kind == DatabaseObjectKind::Table {
-                        let key_rows = self.read_spec(&metadata::constraints_read(&target)?).await?;
-                        let check_rows = self
-                            .read_spec(&metadata::check_constraints_read(&target)?)
-                            .await?;
-                        let keys = browsing::parse_constraints(&target, &key_rows)?;
-                        let mappings = if target.traits.dynamic == Some(false) {
-                            let reads = metadata::mapping_reads(&target)?;
-                            let primary = self.read_spec(&reads[0]).await?;
-                            let unique = self.read_spec(&reads[1]).await?;
-                            let foreign = self.read_spec(&reads[2]).await?;
-                            browsing::parse_mappings(
-                                &target,
-                                &keys,
-                                [&primary, &unique, &foreign],
-                            )?
-                        } else {
-                            browsing::unsupported_mappings(&keys)
-                        };
-                        let checks = browsing::parse_check_constraints(&target, &check_rows)?;
-                        for mapping in &mappings {
-                            if mapping.kind
-                                == crate::relation_inspection::RelationKeyConstraintKind::ForeignKey
-                                && let Some(ref_table) = &mapping.referenced_table
-                                && ref_table.database == database
+                        let subtype = explorer::classify_table_subtype(&target);
+                        let columns = match metadata::resolved_columns_sql(&context, &target.table)
+                        {
+                            Ok(col_sql) => match self
+                                .metadata_read(&col_sql, 0, metadata::COLUMN_MAX_BYTES)
+                                .await
                             {
-                                details.uses.push(DependencyEdge {
-                                    object: DatabaseObjectRef {
-                                        schema: ref_table.table.schema.clone(),
-                                        name: ref_table.table.name.clone(),
-                                        kind: DatabaseObjectKind::Table,
-                                        identity: None,
-                                    },
-                                    relation: "foreign key".into(),
-                                });
+                                Ok(col_rows) => metadata::parse_resolved_columns(&target.table, col_rows)
+                                    .map(|s| s.columns)
+                                    .unwrap_or_default(),
+                                Err(err)
+                                    if matches!(
+                                        err.code,
+                                        ErrorCode::Database
+                                            | ErrorCode::PermissionDenied
+                                            | ErrorCode::Unsupported
+                                    ) && !self.is_closed() =>
+                                {
+                                    Vec::new()
+                                }
+                                Err(err) => return Err(err),
+                            },
+                            Err(_) => Vec::new(),
+                        };
+
+                        let mut dyn_meta = explorer::DynamicTableMeta::default();
+                        let mut ext_meta = explorer::ExternalTableMeta::default();
+
+                        if subtype == SnowflakeTableSubtype::Dynamic {
+                            let show_sql = explorer::dynamic_table_meta_sql(
+                                &context,
+                                &object.schema,
+                                &object.name,
+                            )?;
+                            match self
+                                .metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES)
+                                .await
+                            {
+                                Ok(res) => {
+                                    dyn_meta =
+                                        explorer::parse_dynamic_table_meta(&object.name, &res);
+                                }
+                                Err(err)
+                                    if self.is_closed()
+                                        || matches!(
+                                            err.code,
+                                            ErrorCode::ConnectionFailed
+                                                | ErrorCode::ConnectionClosed
+                                                | ErrorCode::Cancelled
+                                                | ErrorCode::OutcomeUnknown
+                                        ) =>
+                                {
+                                    return Err(err);
+                                }
+                                Err(_) => {}
+                            }
+                            if let ObjectDdlStatus::Available { ddl, .. } = &details.ddl {
+                                let schema_rows =
+                                    self.read_spec(&metadata::schemas_read(&context)?).await?;
+                                let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+                                let mut known = Vec::new();
+                                for schema in schemas.iter().take(64) {
+                                    let rows = self
+                                        .read_spec(&metadata::explorer_tables_read(&context, schema)?)
+                                        .await?;
+                                    let batch = explorer::parse_tables(&context, schema, &rows)?;
+                                    if known.len().saturating_add(batch.len()) > explorer::OBJECT_LIMIT {
+                                        break;
+                                    }
+                                    known.extend(batch);
+                                }
+                                for mut edge in explorer::extract_view_dependencies(
+                                    &database,
+                                    &object.schema,
+                                    &object.name,
+                                    ddl,
+                                    &known,
+                                ) {
+                                    edge.relation = "dynamic table source".into();
+                                    details.uses.push(edge);
+                                }
+                            }
+                        } else if subtype == SnowflakeTableSubtype::External {
+                            let show_sql = explorer::external_table_meta_sql(
+                                &context,
+                                &object.schema,
+                                &object.name,
+                            )?;
+                            match self
+                                .metadata_read(&show_sql, 16, browsing::PREVIEW_MAX_BYTES)
+                                .await
+                            {
+                                Ok(res) => {
+                                    ext_meta =
+                                        explorer::parse_external_table_meta(&object.name, &res);
+                                }
+                                Err(err)
+                                    if self.is_closed()
+                                        || matches!(
+                                            err.code,
+                                            ErrorCode::ConnectionFailed
+                                                | ErrorCode::ConnectionClosed
+                                                | ErrorCode::Cancelled
+                                                | ErrorCode::OutcomeUnknown
+                                        ) =>
+                                {
+                                    return Err(err);
+                                }
+                                Err(_) => {}
                             }
                         }
-                        details.constraints =
-                            explorer::build_table_constraints(&database, &keys, &mappings, &checks);
+
+                        details.snowflake_table = Some(SnowflakeTableDetails {
+                            subtype,
+                            target_lag: dyn_meta.target_lag,
+                            warehouse: dyn_meta.warehouse,
+                            refresh_mode: dyn_meta.refresh_mode,
+                            scheduling_state: dyn_meta.scheduling_state,
+                            external_location: ext_meta.external_location,
+                            file_format: ext_meta.file_format,
+                            columns,
+                        });
+
+                        if !matches!(
+                            subtype,
+                            SnowflakeTableSubtype::External | SnowflakeTableSubtype::Event
+                        ) {
+                            let key_rows =
+                                self.read_spec(&metadata::constraints_read(&target)?).await?;
+                            let check_rows = self
+                                .read_spec(&metadata::check_constraints_read(&target)?)
+                                .await?;
+                            let keys = browsing::parse_constraints(&target, &key_rows)?;
+                            let mappings = if target.traits.dynamic == Some(false) {
+                                let reads = metadata::mapping_reads(&target)?;
+                                let primary = self.read_spec(&reads[0]).await?;
+                                let unique = self.read_spec(&reads[1]).await?;
+                                let foreign = self.read_spec(&reads[2]).await?;
+                                browsing::parse_mappings(
+                                    &target,
+                                    &keys,
+                                    [&primary, &unique, &foreign],
+                                )?
+                            } else {
+                                browsing::unsupported_mappings(&keys)
+                            };
+                            let checks = browsing::parse_check_constraints(&target, &check_rows)?;
+                            for mapping in &mappings {
+                                if mapping.kind
+                                    == crate::relation_inspection::RelationKeyConstraintKind::ForeignKey
+                                    && let Some(ref_table) = &mapping.referenced_table
+                                    && ref_table.database == database
+                                {
+                                    details.uses.push(DependencyEdge {
+                                        object: DatabaseObjectRef {
+                                            schema: ref_table.table.schema.clone(),
+                                            name: ref_table.table.name.clone(),
+                                            kind: DatabaseObjectKind::Table,
+                                            identity: None,
+                                        },
+                                        relation: "foreign key".into(),
+                                    });
+                                }
+                            }
+                            details.constraints =
+                                explorer::build_table_constraints(&database, &keys, &mappings, &checks);
+                        }
                     } else if let ObjectDdlStatus::Available { ddl, .. } = &details.ddl {
                         let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
                         let schemas = metadata::parse_schemas(&context, &schema_rows)?;
@@ -4481,6 +4610,246 @@ impl Driver for SnowflakeExternal {
             plan.snapshot.canonicalize();
             self.recheck_metadata_context(&context).await?;
             Ok(plan.snapshot)
+        })
+        .await
+    }
+    async fn search_data(&self, request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        use super::snowflake_explorer as explorer;
+        use crate::data_search::{
+            MAX_SEARCH_REPORT_BYTES, MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS,
+            build_snowflake_search_sql, build_table_match, estimate_table_match_bytes,
+            filter_candidate_tables, validate_search_request,
+        };
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        let max_tables = validate_search_request(request)?;
+        let started = std::time::Instant::now();
+
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let Some(database) = context.database.clone() else {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "Select an active Snowflake database before searching table data",
+                ));
+            };
+            let schema_rows = self.read_spec(&metadata::schemas_read(&context)?).await?;
+            let schemas = metadata::parse_schemas(&context, &schema_rows)?;
+            let mut discovered = Vec::new();
+            let mut skipped_tables = 0usize;
+            for s in &schemas {
+                if self.is_closed() {
+                    return Err(closed_error());
+                }
+                if !request.schemas.is_empty() && !request.schemas.iter().any(|wanted| wanted == s)
+                {
+                    continue;
+                }
+                if !request.tables.is_empty()
+                    && !request.tables.iter().any(|wanted| &wanted.schema == s)
+                {
+                    continue;
+                }
+                let table_rows = match self
+                    .read_spec(&metadata::explorer_tables_read(&context, s)?)
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database | ErrorCode::PermissionDenied
+                        ) && !self.is_closed() =>
+                    {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                for obj in explorer::parse_tables(&context, s, &table_rows)? {
+                    discovered.push(TableRef {
+                        schema: obj.object.schema,
+                        name: obj.object.name,
+                    });
+                }
+            }
+            let (candidates, mut truncated) =
+                filter_candidate_tables(discovered, request, max_tables);
+
+            let mut scanned_tables = 0usize;
+            let mut total_row_hits = 0usize;
+            let mut report_bytes = 0usize;
+            let mut matches = Vec::new();
+
+            for table in &candidates {
+                if self.is_closed() {
+                    return Err(closed_error());
+                }
+                if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
+                    || report_bytes >= MAX_SEARCH_REPORT_BYTES
+                {
+                    truncated = true;
+                    break;
+                }
+                let col_sql = match metadata::resolved_columns_sql(&context, table) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                };
+                let col_rows = match self
+                    .metadata_read(&col_sql, 0, metadata::COLUMN_MAX_BYTES)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database
+                                | ErrorCode::PermissionDenied
+                                | ErrorCode::Unsupported
+                        ) && !self.is_closed() =>
+                    {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                let schema = match metadata::parse_resolved_columns(table, col_rows) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                };
+                let Some((sql, binds, searchable)) = build_snowflake_search_sql(
+                    &database,
+                    &schema,
+                    &request.query,
+                    request.match_mode,
+                    request.case_sensitive,
+                    MAX_SEARCH_ROWS_PER_TABLE,
+                ) else {
+                    skipped_tables += 1;
+                    continue;
+                };
+                scanned_tables += 1;
+                let res = match self
+                    .metadata_read_bound(
+                        &sql,
+                        binds,
+                        MAX_SEARCH_ROWS_PER_TABLE + 1,
+                        browsing::PREVIEW_MAX_BYTES,
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(err)
+                        if matches!(
+                            err.code,
+                            ErrorCode::Database
+                                | ErrorCode::PermissionDenied
+                                | ErrorCode::Unsupported
+                        ) && !self.is_closed() =>
+                    {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    Err(err) => return Err(err),
+                };
+                let allowed_rows = MAX_SEARCH_TOTAL_ROW_HITS
+                    .saturating_sub(total_row_hits)
+                    .min(MAX_SEARCH_ROWS_PER_TABLE);
+                if let Some(m) = build_table_match(
+                    &schema,
+                    searchable,
+                    res.rows,
+                    &request.query,
+                    request.match_mode,
+                    request.case_sensitive,
+                    allowed_rows,
+                ) {
+                    let bytes = estimate_table_match_bytes(&m);
+                    if report_bytes.saturating_add(bytes) > MAX_SEARCH_REPORT_BYTES
+                        && !matches.is_empty()
+                    {
+                        truncated = true;
+                        break;
+                    }
+                    report_bytes += bytes;
+                    total_row_hits += m.rows.len();
+                    if m.has_more_in_table && allowed_rows < MAX_SEARCH_ROWS_PER_TABLE {
+                        truncated = true;
+                    }
+                    matches.push(m);
+                }
+            }
+
+            self.recheck_metadata_context(&context).await?;
+            Ok(DataSearchReport {
+                query: request.query.clone(),
+                match_mode: request.match_mode,
+                case_sensitive: request.case_sensitive,
+                database: Some(database),
+                scanned_tables,
+                skipped_tables,
+                total_row_hits,
+                truncated,
+                elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+                matches,
+            })
+        })
+        .await
+    }
+
+    async fn snowflake_query_history(
+        &self,
+        limit: u32,
+        redact_sql: bool,
+    ) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+        use super::snowflake_explorer as explorer;
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        // Validate limit eagerly before acquiring the metadata lane.
+        explorer::query_history_sql(None, limit, redact_sql)?;
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let sql = explorer::query_history_sql(context.database.as_deref(), limit, redact_sql)?;
+            let result = self
+                .metadata_read(&sql, limit as usize, browsing::PREVIEW_MAX_BYTES)
+                .await?;
+            let entries = explorer::parse_query_history_entries(&result, redact_sql)?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(entries)
+        })
+        .await
+    }
+
+    async fn snowflake_query_operator_profile(
+        &self,
+        query_id: &str,
+    ) -> AppResult<SnowflakeOperatorProfile> {
+        use super::snowflake_explorer as explorer;
+        self.grid.require_ordinary()?;
+        self.require_ordinary_mode()?;
+        let trimmed_id = query_id.trim();
+        if !explorer::is_valid_query_id(trimmed_id) {
+            return Err(AppError::invalid("Provide a valid Snowflake query ID"));
+        }
+        self.metadata_operation(async {
+            let context = self.live_metadata_context().await?;
+            let result = self
+                .metadata_read_bound(
+                    explorer::operator_profile_sql(),
+                    vec![Value::String(trimmed_id.to_owned())],
+                    explorer::MAX_OPERATOR_STATS_ROWS,
+                    browsing::PREVIEW_MAX_BYTES,
+                )
+                .await?;
+            let profile = explorer::parse_operator_profile(trimmed_id, &result)?;
+            self.recheck_metadata_context(&context).await?;
+            Ok(profile)
         })
         .await
     }
@@ -5018,6 +5387,10 @@ const sdk = { createConnection() {
       const showRoles = sql === 'SHOW ROLES';
       const showWarehouses = sql === 'SHOW WAREHOUSES';
       const showDatabases = sql === 'SHOW DATABASES';
+      const showDynamicTables = sql.startsWith('SHOW DYNAMIC TABLES LIKE ');
+      const showExternalTables = sql.startsWith('SHOW EXTERNAL TABLES LIKE ');
+      const queryHistory = sql.includes('INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION(');
+      const operatorStats = sql.includes('GET_QUERY_OPERATOR_STATS(');
       const use = /^(USE SCHEMA|USE ROLE|USE WAREHOUSE|USE DATABASE) /u.test(sql);
       const boundary = ['BEGIN TRANSACTION','COMMIT','ROLLBACK'].includes(sql);
       const dml = /^(INSERT INTO|UPDATE|DELETE FROM) /u.test(sql);
@@ -5253,6 +5626,23 @@ const sdk = { createConnection() {
       } else if (zeroRows) {
         names = ['ID','NOTES'];
         rows = [];
+      } else if (showDynamicTables) {
+        names = ['name','target_lag','warehouse','refresh_mode','scheduling_state'];
+        rows = value('dynamicTableRows', [['DYN_ORDERS','5 minutes','ETL_WH','INCREMENTAL','ACTIVE']]);
+      } else if (showExternalTables) {
+        names = ['name','location','file_format_type'];
+        rows = value('externalTableRows', [['EXT_EVENTS','@DB.PUBLIC.S3_STAGE/events/','PARQUET']]);
+      } else if (queryHistory) {
+        names = ['QUERY_ID','QUERY_TEXT','QUERY_TYPE','EXECUTION_STATUS','WAREHOUSE_NAME','WAREHOUSE_SIZE','DATABASE_NAME','SCHEMA_NAME','START_TIME','TOTAL_ELAPSED_TIME','COMPILATION_TIME','EXECUTION_TIME','QUEUED_TIME','BYTES_SCANNED','CACHE_RATIO','SPILL_LOCAL','SPILL_REMOTE','PARTITIONS_SCANNED','PARTITIONS_TOTAL','ROWS_PRODUCED','ERROR_MESSAGE'];
+        rows = value('queryHistoryRows', [
+          ['01b4a9c0-0001-9f12-0000-00420001a111','SELECT ID, NOTES FROM "DB"."PUBLIC"."ORDERS"','SELECT','SUCCESS','WH','X-Small','DB','PUBLIC','2026-11-16 08:00:00Z','185','35','145','5','65536','0.75','4096','0','3','12','42',null],
+        ]);
+      } else if (operatorStats) {
+        names = ['STEP_ID','OPERATOR_ID','PARENT_OPERATORS','OPERATOR_TYPE','OVERALL_PCT','INPUT_ROWS','OUTPUT_ROWS','BYTES_SCANNED','CACHE_RATIO','PARTITIONS_SCANNED','PARTITIONS_TOTAL','SPILL_LOCAL','SPILL_REMOTE','OPERATOR_ATTRIBUTES'];
+        rows = value('operatorStatsRows', [
+          ['1','0','[]','Result','0.05','42',null,null,null,null,null,null,null,'{}'],
+          ['1','1','[0]','TableScan','0.95',null,'42','65536','0.75','3','12','4096','1024','{"table_name":"DB.PUBLIC.ORDERS"}'],
+        ]);
       } else if (sql !== 'SELECT 1') {
         throw new Error('unexpected fixture SQL');
       }
@@ -5645,6 +6035,8 @@ process.stdin.on('end', retire);
                     || sql.starts_with("DESCRIBE TABLE ")
                     || sql.starts_with("DESCRIBE VIEW ")
                     || sql.starts_with("DESCRIBE MATERIALIZED VIEW ")
+                    || sql.starts_with("SHOW DYNAMIC TABLES LIKE '")
+                    || sql.starts_with("SHOW EXTERNAL TABLES LIKE '")
                     || ["BEGIN TRANSACTION", "COMMIT", "ROLLBACK"].contains(&sql.as_str())
                     || [
                         "INSERT INTO ",
@@ -8419,6 +8811,142 @@ process.stdin.on('end', retire);
             .find(|t| t.name == "ACTIVE_ORDERS")
             .unwrap();
         assert!(restricted_view.view_definition.is_none());
+
+        h.finish().await;
+    }
+
+    #[tokio::test]
+    async fn special_snowflake_tables_and_post_execution_query_profile_round_trip() {
+        let h = Harness::open().await;
+
+        // 1. Dynamic Table inspection + upstream lineage + SHOW DYNAMIC TABLES metadata
+        h.settings(json!({
+            "explorerExactTableRows": [[
+                "DB", "PUBLIC", "DYN_ORDERS", "BASE TABLE",
+                "NO", "NO", "NO", "YES", "NO", "NO", "128", "16384", "Incremental order rollup"
+            ]],
+            "definition": "CREATE OR REPLACE DYNAMIC TABLE \"DB\".\"PUBLIC\".\"DYN_ORDERS\" TARGET_LAG = '5 minutes' WAREHOUSE = ETL_WH AS SELECT ID, NOTES FROM \"DB\".\"PUBLIC\".\"ORDERS\";",
+            "constraintRows": [],
+            "checkRows": []
+        }));
+        let dyn_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "DYN_ORDERS".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        let sf_dyn = dyn_details
+            .snowflake_table
+            .as_ref()
+            .expect("snowflake_table metadata");
+        assert_eq!(sf_dyn.subtype, SnowflakeTableSubtype::Dynamic);
+        assert_eq!(sf_dyn.target_lag.as_deref(), Some("5 minutes"));
+        assert_eq!(sf_dyn.warehouse.as_deref(), Some("ETL_WH"));
+        assert_eq!(sf_dyn.refresh_mode.as_deref(), Some("INCREMENTAL"));
+        assert_eq!(sf_dyn.scheduling_state.as_deref(), Some("ACTIVE"));
+        assert_eq!(sf_dyn.columns.len(), 2);
+        assert!(
+            dyn_details.uses.iter().any(|edge| {
+                edge.object.schema == "PUBLIC"
+                    && edge.object.name == "ORDERS"
+                    && edge.relation == "dynamic table source"
+            }),
+            "expected dynamic table upstream lineage to PUBLIC.ORDERS, got {:?}",
+            dyn_details.uses
+        );
+
+        // 2. External Table inspection (skips unsupported table_constraints/check_constraints)
+        h.settings(json!({
+            "explorerExactTableRows": [[
+                "DB", "PUBLIC", "EXT_EVENTS", "EXTERNAL TABLE",
+                "NO", "NO", "NO", "NO", "NO", "NO", null, null, "S3 parquet feed"
+            ]],
+            "definition": "CREATE OR REPLACE EXTERNAL TABLE \"DB\".\"PUBLIC\".\"EXT_EVENTS\" LOCATION = @DB.PUBLIC.S3_STAGE/events/ FILE_FORMAT = (TYPE = PARQUET);"
+        }));
+        let ext_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "EXT_EVENTS".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        let sf_ext = ext_details.snowflake_table.as_ref().unwrap();
+        assert_eq!(sf_ext.subtype, SnowflakeTableSubtype::External);
+        assert_eq!(
+            sf_ext.external_location.as_deref(),
+            Some("@DB.PUBLIC.S3_STAGE/events/")
+        );
+        assert_eq!(sf_ext.file_format.as_deref(), Some("PARQUET"));
+
+        // 3. Event Table inspection
+        h.settings(json!({
+            "explorerExactTableRows": [[
+                "DB", "PUBLIC", "APP_EVENTS", "EVENT TABLE",
+                "NO", "NO", "NO", "NO", "NO", "NO", "500", "32768", "OpenTelemetry event table"
+            ]],
+            "definition": "CREATE EVENT TABLE \"DB\".\"PUBLIC\".\"APP_EVENTS\";"
+        }));
+        let evt_details = h
+            .driver
+            .object_details(&DatabaseObjectRef {
+                schema: "PUBLIC".into(),
+                name: "APP_EVENTS".into(),
+                kind: DatabaseObjectKind::Table,
+                identity: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            evt_details.snowflake_table.as_ref().unwrap().subtype,
+            SnowflakeTableSubtype::Event
+        );
+
+        // 4. Post-execution QUERY_HISTORY (redacted vs unredacted) & Operator Profile
+        h.settings(json!({}));
+        let redacted_history = h.driver.snowflake_query_history(25, true).await.unwrap();
+        assert_eq!(redacted_history.len(), 1);
+        assert_eq!(
+            redacted_history[0].query_text,
+            "[SQL text hidden by connection privacy policy]"
+        );
+        assert_eq!(redacted_history[0].total_elapsed_ms, Some(185));
+        assert_eq!(redacted_history[0].partitions_scanned, Some(3));
+        assert_eq!(redacted_history[0].partitions_total, Some(12));
+        assert_eq!(redacted_history[0].bytes_spilled_local, Some(4096));
+
+        let unredacted_history = h.driver.snowflake_query_history(25, false).await.unwrap();
+        assert_eq!(
+            unredacted_history[0].query_text,
+            "SELECT ID, NOTES FROM \"DB\".\"PUBLIC\".\"ORDERS\""
+        );
+
+        let profile = h
+            .driver
+            .snowflake_query_operator_profile("01b4a9c0-0001-9f12-0000-00420001a111")
+            .await
+            .unwrap();
+        assert_eq!(profile.operators.len(), 2);
+        assert_eq!(profile.bottleneck_operator_id, Some(1));
+        assert_eq!(profile.total_spilled_local_bytes, 4096);
+        assert_eq!(profile.total_spilled_remote_bytes, 1024);
+        assert_eq!(
+            profile.operators[1].detail.as_deref(),
+            Some("{\"table_name\":\"DB.PUBLIC.ORDERS\"}")
+        );
+
+        let bad_id = h
+            .driver
+            .snowflake_query_operator_profile("bad;drop table")
+            .await
+            .unwrap_err();
+        assert_eq!(bad_id.code, ErrorCode::InvalidInput);
 
         h.finish().await;
     }

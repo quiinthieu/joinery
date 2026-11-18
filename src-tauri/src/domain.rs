@@ -21,6 +21,7 @@ pub use crate::schema_diff::{
 pub enum EngineKind {
     Postgres,
     Mysql,
+    Sqlite,
     Redis,
     Snowflake,
 }
@@ -527,6 +528,9 @@ pub struct ForeignKey {
     pub columns: Vec<String>,
     pub target: TableRef,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 impl ForeignKey {
@@ -545,6 +549,7 @@ impl ForeignKey {
                     columns: vec![column],
                     target,
                     target_columns: vec![target_column],
+                    virtual_relationship: false,
                 }),
             }
         }
@@ -562,6 +567,9 @@ pub struct InboundForeignKey {
     pub source: TableRef,
     pub columns: Vec<String>,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 impl InboundForeignKey {
@@ -580,6 +588,7 @@ impl InboundForeignKey {
                     source,
                     columns: vec![column],
                     target_columns: vec![target_column],
+                    virtual_relationship: false,
                 }),
             }
         }
@@ -622,6 +631,9 @@ pub struct DiagramForeignKey {
     pub columns: Vec<String>,
     pub target: TableRef,
     pub target_columns: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[ts(optional, as = "Option<bool>")]
+    pub virtual_relationship: bool,
 }
 
 /// Read-only relationship graph for one schema.
@@ -712,6 +724,7 @@ impl SchemaDiagram {
                         columns: vec![row.column],
                         target: row.target,
                         target_columns: vec![row.target_column],
+                        virtual_relationship: false,
                     },
                     row.expected,
                 )),
@@ -921,6 +934,45 @@ pub enum ObjectDdlStatus {
     Unavailable { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SnowflakeTableSubtype {
+    Base,
+    Transient,
+    Temporary,
+    Dynamic,
+    Hybrid,
+    External,
+    Event,
+    Iceberg,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeTableDetails {
+    pub subtype: SnowflakeTableSubtype,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub target_lag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub warehouse: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub refresh_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub scheduling_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub external_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub file_format: Option<String>,
+    #[serde(default)]
+    pub columns: Vec<ColumnInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectDetails {
@@ -936,6 +988,9 @@ pub struct ObjectDetails {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub storage: Option<TableStorageStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub snowflake_table: Option<SnowflakeTableDetails>,
     pub uses: Vec<DependencyEdge>,
     pub used_by: Vec<DependencyEdge>,
 }
@@ -1590,6 +1645,9 @@ pub struct SqlFormatDialects {
     pub mysql: Option<SqlFormatStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub sqlite: Option<SqlFormatStyle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub snowflake: Option<SqlFormatStyle>,
 }
 
@@ -1645,6 +1703,33 @@ pub struct SqlSnippetInput {
     pub place: SqlSnippetPlace,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VirtualForeignKey {
+    pub id: String,
+    pub connection_id: String,
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target: TableRef,
+    pub target_columns: Vec<String>,
+    #[ts(type = "number")]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VirtualForeignKeyInput {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub connection_id: String,
+    pub name: String,
+    pub source: TableRef,
+    pub columns: Vec<String>,
+    pub target: TableRef,
+    pub target_columns: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
@@ -1667,6 +1752,9 @@ pub struct Bootstrap {
     pub sql_format_settings: SqlFormatSettings,
     #[serde(default)]
     pub sql_snippets: Vec<SqlSnippet>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<VirtualForeignKey>>")]
+    pub virtual_foreign_keys: Vec<VirtualForeignKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -1688,6 +1776,9 @@ pub struct SavedTableLayout {
     pub table: TableRef,
     pub column_order: Vec<String>,
     pub hidden_columns: Vec<String>,
+    #[serde(default)]
+    #[ts(optional, as = "Option<Vec<String>>")]
+    pub pinned_columns: Vec<String>,
     pub column_widths: std::collections::BTreeMap<String, u32>,
 }
 
@@ -2771,6 +2862,310 @@ pub struct DataCompareReport {
     pub right_anomalies: CompareSideAnomalies,
     pub diffs: Vec<ComparedRowDiff>,
     pub diffs_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceResultMount {
+    pub alias: String,
+    pub result_ids: Vec<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceSqlRequest {
+    pub mounts: Vec<WorkspaceResultMount>,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSqlResponse {
+    pub result: ResultInfo,
+    pub elapsed_ms: u32,
+    pub mounted_rows: usize,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum DataSearchMatchMode {
+    #[default]
+    Contains,
+    Exact,
+    StartsWith,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DataSearchRequest {
+    pub session_id: String,
+    pub query: String,
+    #[serde(default)]
+    pub schemas: Vec<String>,
+    #[serde(default)]
+    pub tables: Vec<TableRef>,
+    #[serde(default)]
+    pub match_mode: DataSearchMatchMode,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub max_tables: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchRowHit {
+    pub matched_columns: Vec<String>,
+    pub row: Vec<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchTableMatch {
+    pub table: TableRef,
+    pub columns: Vec<ColumnInfo>,
+    pub searchable_columns: Vec<String>,
+    pub rows: Vec<DataSearchRowHit>,
+    pub has_more_in_table: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSearchReport {
+    pub query: String,
+    pub match_mode: DataSearchMatchMode,
+    pub case_sensitive: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub database: Option<String>,
+    pub scanned_tables: usize,
+    pub skipped_tables: usize,
+    pub total_row_hits: usize,
+    pub truncated: bool,
+    pub elapsed_ms: u32,
+    pub matches: Vec<DataSearchTableMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeQueryHistoryRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeQueryHistoryEntry {
+    pub query_id: String,
+    pub query_text: String,
+    pub query_type: String,
+    pub execution_status: String,
+    pub warehouse_name: Option<String>,
+    pub warehouse_size: Option<String>,
+    pub database_name: Option<String>,
+    pub schema_name: Option<String>,
+    pub start_time: String,
+    #[ts(type = "number | null")]
+    pub total_elapsed_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub compilation_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub execution_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub queued_ms: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_scanned: Option<u64>,
+    pub cache_hit_ratio: Option<f64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_local: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_remote: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_scanned: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_total: Option<u64>,
+    #[ts(type = "number | null")]
+    pub rows_produced: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SnowflakeOperatorProfileRequest {
+    pub session_id: String,
+    pub query_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeOperatorStat {
+    pub step_id: u32,
+    pub operator_id: u32,
+    pub parent_operators: Vec<u32>,
+    pub operator_type: String,
+    pub overall_percentage: Option<f64>,
+    #[ts(type = "number | null")]
+    pub input_rows: Option<u64>,
+    #[ts(type = "number | null")]
+    pub output_rows: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_scanned: Option<u64>,
+    pub cache_hit_ratio: Option<f64>,
+    #[ts(type = "number | null")]
+    pub partitions_scanned: Option<u64>,
+    #[ts(type = "number | null")]
+    pub partitions_total: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_local: Option<u64>,
+    #[ts(type = "number | null")]
+    pub bytes_spilled_remote: Option<u64>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SnowflakeOperatorProfile {
+    pub query_id: String,
+    pub operators: Vec<SnowflakeOperatorStat>,
+    #[ts(type = "number")]
+    pub total_spilled_local_bytes: u64,
+    #[ts(type = "number")]
+    pub total_spilled_remote_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub bottleneck_step_id: Option<u32>,
+    pub bottleneck_operator_id: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum LocalHistoryTrigger {
+    Executed,
+    Saved,
+    Snapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalHistoryEntry {
+    pub id: String,
+    pub tab_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    pub trigger: LocalHistoryTrigger,
+    pub sql: String,
+    #[ts(type = "number")]
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalHistoryInput {
+    pub tab_key: String,
+    pub title: String,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    pub trigger: LocalHistoryTrigger,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum SqlUsageSourceKind {
+    OpenTab,
+    SavedQuery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlUsageDocument {
+    pub id: String,
+    pub title: String,
+    pub source_kind: SqlUsageSourceKind,
+    #[serde(default)]
+    pub saved_query_id: Option<String>,
+    pub sql: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SqlFindUsagesRequest {
+    pub engine: EngineKind,
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    #[serde(default)]
+    pub database: Option<String>,
+    #[serde(default)]
+    pub default_schema: Option<String>,
+    pub schema: String,
+    pub object_name: String,
+    #[serde(default)]
+    pub column_name: Option<String>,
+    #[serde(default)]
+    pub include_saved_queries: bool,
+    #[serde(default)]
+    pub documents: Vec<SqlUsageDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlUsageHit {
+    pub document_id: String,
+    pub document_title: String,
+    pub source_kind: SqlUsageSourceKind,
+    pub saved_query_id: Option<String>,
+    pub role: String,
+    pub span: SqlSpan,
+    pub line_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SqlFindUsagesReport {
+    pub scanned_documents: usize,
+    pub skipped_statements: usize,
+    pub truncated: bool,
+    pub hits: Vec<SqlUsageHit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResultSortSpec {
+    pub column_id: String,
+    #[serde(default)]
+    pub descending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResultViewRequest {
+    pub result_id: String,
+    #[serde(default)]
+    pub filter_text: Option<String>,
+    #[serde(default)]
+    pub filter_column_id: Option<String>,
+    #[serde(default)]
+    pub case_sensitive: bool,
+    #[serde(default)]
+    pub sort: Vec<ResultSortSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultViewResponse {
+    pub result_id: String,
+    pub row_indices: Vec<u32>,
+    #[ts(type = "number")]
+    pub matched_rows: usize,
+    #[ts(type = "number")]
+    pub scanned_rows: usize,
+    pub truncated: bool,
+    pub elapsed_ms: u32,
 }
 
 #[cfg(test)]

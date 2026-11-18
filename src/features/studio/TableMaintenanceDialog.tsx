@@ -43,6 +43,7 @@ export function TableMaintenanceDialog({
 
   const engine = profile?.engine ?? session?.engine ?? "postgres";
   const isPostgres = engine === "postgres";
+  const isSqlite = engine === "sqlite";
   const isReadOnly = profile?.safeMode === "readOnly";
   const hasOpenTransaction = sessionState !== undefined && sessionState.transactionState !== "idle";
 
@@ -66,14 +67,14 @@ export function TableMaintenanceDialog({
   const [preparedPlan, setPreparedPlan] = useState<PreparedPlan | null>(null);
 
   const action = useMemo<TableMaintenanceAction>(() => {
-    if (isPostgres) {
+    if (isPostgres || isSqlite) {
       if (pgKind === "vacuum") {
         return {
           type: "vacuum",
           table,
-          analyze: vacuumAnalyze,
-          verbose: vacuumVerbose,
-          full: vacuumFull,
+          analyze: isSqlite ? false : vacuumAnalyze,
+          verbose: isSqlite ? false : vacuumVerbose,
+          full: isSqlite ? false : vacuumFull,
         };
       }
       if (pgKind === "reindexTable") {
@@ -85,8 +86,8 @@ export function TableMaintenanceDialog({
       return {
         type: "analyze",
         table,
-        verbose: analyzeVerbose,
-        columns: selectedColumns,
+        verbose: isSqlite ? false : analyzeVerbose,
+        columns: isSqlite ? [] : selectedColumns,
       };
     }
     if (mysqlKind === "optimizeTable") {
@@ -99,6 +100,7 @@ export function TableMaintenanceDialog({
   }, [
     analyzeVerbose,
     isPostgres,
+    isSqlite,
     mysqlKind,
     pgKind,
     selectedColumns,
@@ -377,6 +379,36 @@ export function TableMaintenanceDialog({
               </>
             )}
           </>
+        ) : isSqlite ? (
+          <div className="segmented" role="radiogroup" aria-label="SQLite maintenance action">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={pgKind === "analyze"}
+              className={pgKind === "analyze" ? "active" : ""}
+              onClick={() => setPgKind("analyze")}
+            >
+              ANALYZE
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={pgKind === "vacuum"}
+              className={pgKind === "vacuum" ? "active" : ""}
+              onClick={() => setPgKind("vacuum")}
+            >
+              VACUUM
+            </button>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={pgKind === "reindexTable"}
+              className={pgKind === "reindexTable" ? "active" : ""}
+              onClick={() => setPgKind("reindexTable")}
+            >
+              REINDEX
+            </button>
+          </div>
         ) : (
           <div
             className="segmented"

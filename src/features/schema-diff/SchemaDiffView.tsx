@@ -211,13 +211,15 @@ export function SchemaDiffView({
   const sessionSupportsSchemaDiff = (sess: (typeof sessions)[string] | undefined) =>
     Boolean(
       sess &&
-      (sess.capabilities.schemaDiff ?? (sess.engine === "postgres" || sess.engine === "mysql")),
+      (sess.capabilities.schemaDiff ??
+        (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite")),
     );
 
   const sessionSupportsDdlEditing = (sess: (typeof sessions)[string] | undefined) =>
     Boolean(
       sess &&
-      (sess.capabilities.ddlEditing ?? (sess.engine === "postgres" || sess.engine === "mysql")),
+      (sess.capabilities.ddlEditing ??
+        (sess.engine === "postgres" || sess.engine === "mysql" || sess.engine === "sqlite")),
     );
 
   const primaryConnectionId = tab.connectionId ?? "";
@@ -256,9 +258,11 @@ export function SchemaDiffView({
           schemaSet.add(
             sess.engine === "mysql"
               ? (profile?.database ?? "mysql")
-              : sess.engine === "snowflake"
-                ? profile?.snowflake?.schema || "PUBLIC"
-                : "public",
+              : sess.engine === "sqlite"
+                ? "main"
+                : sess.engine === "snowflake"
+                  ? profile?.snowflake?.schema || "PUBLIC"
+                  : "public",
           );
         }
         return {

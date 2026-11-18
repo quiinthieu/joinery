@@ -208,7 +208,7 @@ fn format_column_ddl(
             }
             parts.join(" ")
         }
-        EngineKind::Postgres | EngineKind::Redis => {
+        EngineKind::Postgres | EngineKind::Sqlite | EngineKind::Redis => {
             let mut parts = vec![col_ident, col.data_type.clone()];
             if let Some(gen_kind) = &col.generated
                 && !gen_kind.trim().is_empty()
@@ -221,6 +221,7 @@ fn format_column_ddl(
                 parts.push(format!("GENERATED ALWAYS AS ({expr}) {}", gen_kind.trim()));
             } else if let Some(id_mode) = &col.identity
                 && !id_mode.trim().is_empty()
+                && engine != EngineKind::Sqlite
             {
                 parts.push(format!("GENERATED {} AS IDENTITY", id_mode.trim()));
             } else if let Some(def) = &col.default_expression
@@ -279,10 +280,53 @@ fn format_inline_constraint_ddl(
     source_schema: &str,
     target_schema: &str,
 ) -> Option<String> {
-    if c.kind == ConstraintKind::ForeignKey {
+    if c.kind == ConstraintKind::ForeignKey && engine != EngineKind::Sqlite {
         return None;
     }
     match engine {
+        EngineKind::Sqlite => {
+            let cols = c
+                .columns
+                .iter()
+                .map(|col| quote_engine_identifier(engine, col))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let def = match c.kind {
+                ConstraintKind::ForeignKey => {
+                    let target = c.target.as_ref()?;
+                    let ref_cols = c
+                        .target_columns
+                        .iter()
+                        .map(|col| quote_engine_identifier(engine, col))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "FOREIGN KEY ({cols}) REFERENCES {} ({ref_cols})",
+                        quote_engine_identifier(engine, &target.name)
+                    )
+                }
+                ConstraintKind::PrimaryKey => format!("PRIMARY KEY ({cols})"),
+                ConstraintKind::Unique => format!("UNIQUE ({cols})"),
+                ConstraintKind::Check => {
+                    let raw =
+                        retarget_schema_sql(&c.definition, engine, source_schema, target_schema);
+                    if raw.is_empty() {
+                        "CHECK (1)".into()
+                    } else {
+                        raw
+                    }
+                }
+                ConstraintKind::Exclusion => return None,
+            };
+            if c.name.trim().is_empty() || c.name.to_ascii_lowercase().starts_with("sqlite_") {
+                Some(def)
+            } else {
+                Some(format!(
+                    "CONSTRAINT {} {def}",
+                    quote_engine_identifier(engine, &c.name)
+                ))
+            }
+        }
         EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
             let def = if !c.definition.trim().is_empty() {
                 retarget_schema_sql(&c.definition, engine, source_schema, target_schema)
@@ -551,7 +595,7 @@ fn build_create_table_stmts(
         destructive: false,
     }];
 
-    if engine != EngineKind::Mysql
+    if !matches!(engine, EngineKind::Mysql | EngineKind::Sqlite)
         && let Some(comment) = &table.comment
         && !comment.is_empty()
     {
@@ -577,6 +621,30 @@ fn build_create_index_stmt(
     target_schema: &str,
 ) -> DdlStatement {
     let sql = match engine {
+        EngineKind::Sqlite => {
+            if let Some(def) = &idx.definition
+                && !def.trim().is_empty()
+                && source_schema
+                    .trim()
+                    .eq_ignore_ascii_case(target_schema.trim())
+            {
+                ensure_semicolon(def)
+            } else {
+                let unique = if idx.unique { "UNIQUE " } else { "" };
+                let pred = idx
+                    .predicate
+                    .as_deref()
+                    .filter(|p| !p.trim().is_empty())
+                    .map(|p| format!(" WHERE {}", p.trim()))
+                    .unwrap_or_default();
+                format!(
+                    "CREATE {unique}INDEX {} ON {} ({}){pred};",
+                    quote_qualified(engine, target_schema, &idx.name),
+                    quote_engine_identifier(engine, table_name),
+                    idx.expressions.join(", ")
+                )
+            }
+        }
         EngineKind::Postgres | EngineKind::Redis | EngineKind::Snowflake => {
             if let Some(def) = &idx.definition
                 && !def.trim().is_empty()
@@ -653,6 +721,9 @@ fn build_add_constraint_stmt(
     source_schema: &str,
     target_schema: &str,
 ) -> Option<DdlStatement> {
+    if engine == EngineKind::Sqlite {
+        return None;
+    }
     let qualified_table = quote_qualified(engine, target_schema, table_name);
     let quoted_cname = quote_engine_identifier(engine, &c.name);
     let sql = match engine {
@@ -735,6 +806,7 @@ fn build_add_constraint_stmt(
                 ConstraintKind::Exclusion => return None,
             }
         }
+        EngineKind::Sqlite => return None,
     };
 
     Some(DdlStatement {
@@ -833,6 +905,8 @@ fn build_create_view_stmts(
         ensure_semicolon(body)
     } else if view.kind == DatabaseObjectKind::MaterializedView {
         format!("CREATE MATERIALIZED VIEW {qualified} AS {body};")
+    } else if engine == EngineKind::Sqlite {
+        format!("CREATE VIEW {qualified} AS {body};")
     } else {
         format!("CREATE OR REPLACE VIEW {qualified} AS {body};")
     };
@@ -865,7 +939,7 @@ fn build_create_view_stmts(
         }
     }
 
-    if engine != EngineKind::Mysql
+    if !matches!(engine, EngineKind::Mysql | EngineKind::Sqlite)
         && let Some(comment) = &view.comment
         && !comment.is_empty()
     {
@@ -1109,6 +1183,24 @@ fn build_create_trigger_stmts(
                 ))
             }
         }
+        EngineKind::Sqlite => {
+            if retargeted
+                .trim_start()
+                .to_ascii_uppercase()
+                .starts_with("CREATE ")
+            {
+                ensure_semicolon(&retargeted)
+            } else {
+                let events = trig.events.join(" OR ");
+                ensure_semicolon(&format!(
+                    "CREATE TRIGGER {} {} {events} ON {} FOR EACH {} {retargeted}",
+                    quote_qualified(engine, target_schema, &trig.name),
+                    trig.timing,
+                    quote_engine_identifier(engine, table_name),
+                    trig.orientation
+                ))
+            }
+        }
         _ => {
             if retargeted
                 .trim_start()
@@ -1251,8 +1343,16 @@ pub fn generate_schema_ddl(
         })
         .collect();
 
-    // 2. Base Tables (with inline PK/Unique/Check/Exclude constraints & comments)
-    for table in &base_tables {
+    // 2. Base Tables (with inline PK/Unique/Check/Exclude constraints & comments;
+    //    for SQLite, inline FKs require parent-before-child ordering)
+    let ordered_base_tables: Vec<&SnapshotTable> = if engine == EngineKind::Sqlite {
+        let mut child_first = order_tables_for_drop(&base_tables);
+        child_first.reverse();
+        child_first
+    } else {
+        base_tables.clone()
+    };
+    for table in &ordered_base_tables {
         statements.extend(build_create_table_stmts(
             table,
             engine,
@@ -1498,7 +1598,7 @@ pub fn generate_migration_ddl(
             };
             if let Some(destructive) = status {
                 let sql = match engine {
-                    EngineKind::Mysql => format!(
+                    EngineKind::Mysql | EngineKind::Sqlite => format!(
                         "DROP TRIGGER {};",
                         quote_qualified(engine, dst_schema, &l_trig.name)
                     ),
@@ -1624,13 +1724,20 @@ pub fn generate_migration_ddl(
                 _ => None,
             };
             if let Some(destructive) = status {
-                statements.push(build_drop_constraint_stmt(
-                    tbl_name,
-                    l_c,
-                    engine,
-                    dst_schema,
-                    destructive,
-                ));
+                if engine == EngineKind::Sqlite {
+                    warnings.push(format!(
+                        "Table '{}' removed or modified foreign key '{}'; SQLite does not support ALTER TABLE DROP CONSTRAINT and requires a table rebuild.",
+                        tbl_name, l_c.name
+                    ));
+                } else {
+                    statements.push(build_drop_constraint_stmt(
+                        tbl_name,
+                        l_c,
+                        engine,
+                        dst_schema,
+                        destructive,
+                    ));
+                }
             }
         }
     }
@@ -1706,13 +1813,20 @@ pub fn generate_migration_ddl(
                 _ => None,
             };
             if let Some(destructive) = status {
-                statements.push(build_drop_constraint_stmt(
-                    tbl_name,
-                    l_c,
-                    engine,
-                    dst_schema,
-                    destructive,
-                ));
+                if engine == EngineKind::Sqlite {
+                    warnings.push(format!(
+                        "Table '{}' removed or modified constraint '{}'; SQLite does not support ALTER TABLE DROP CONSTRAINT and requires a table rebuild.",
+                        tbl_name, l_c.name
+                    ));
+                } else {
+                    statements.push(build_drop_constraint_stmt(
+                        tbl_name,
+                        l_c,
+                        engine,
+                        dst_schema,
+                        destructive,
+                    ));
+                }
             }
         }
     }
@@ -1797,7 +1911,7 @@ pub fn generate_migration_ddl(
     }
 
     // Phase 4: Create new tables & alter surviving tables
-    let right_base_tables: Vec<&SnapshotTable> = r_snap
+    let raw_right_base_tables: Vec<&SnapshotTable> = r_snap
         .tables
         .iter()
         .filter(|t| {
@@ -1807,6 +1921,13 @@ pub fn generate_migration_ddl(
             )
         })
         .collect();
+    let right_base_tables: Vec<&SnapshotTable> = if engine == EngineKind::Sqlite {
+        let mut child_first = order_tables_for_drop(&raw_right_base_tables);
+        child_first.reverse();
+        child_first
+    } else {
+        raw_right_base_tables
+    };
 
     for r_tbl in &right_base_tables {
         let Some(l_tbl) = left_tables
@@ -1879,6 +2000,12 @@ pub fn generate_migration_ddl(
             }
             let quoted_col = quote_engine_identifier(engine, &r_col.name);
             match engine {
+                EngineKind::Sqlite => {
+                    warnings.push(format!(
+                        "Column '{}.{}' changed definition; SQLite does not support modifying column types, nullability, or defaults in place and requires a table rebuild.",
+                        r_tbl.name, r_col.name
+                    ));
+                }
                 EngineKind::Mysql => {
                     statements.push(DdlStatement {
                         sql: format!(
@@ -2109,7 +2236,7 @@ pub fn generate_migration_ddl(
                 destructive: false,
             });
         }
-        if l_tbl.comment != r_tbl.comment {
+        if l_tbl.comment != r_tbl.comment && engine != EngineKind::Sqlite {
             let sql = match engine {
                 EngineKind::Mysql => format!(
                     "ALTER TABLE {qualified_table} COMMENT = {};",
@@ -2169,11 +2296,17 @@ pub fn generate_migration_ddl(
                         != format_constraint_spec(r_c, engine, right_schema)
                 }
             };
-            if needs_add
-                && let Some(stmt) =
+            if needs_add {
+                if engine == EngineKind::Sqlite {
+                    warnings.push(format!(
+                        "Table '{}' added or modified constraint '{}'; SQLite does not support ALTER TABLE ADD CONSTRAINT and requires a table rebuild.",
+                        r_tbl.name, r_c.name
+                    ));
+                } else if let Some(stmt) =
                     build_add_constraint_stmt(&r_tbl.name, r_c, engine, right_schema, dst_schema)
-            {
-                statements.push(stmt);
+                {
+                    statements.push(stmt);
+                }
             }
         }
     }
@@ -2238,11 +2371,19 @@ pub fn generate_migration_ddl(
                         != format_constraint_spec(r_c, engine, right_schema)
                 }
             };
-            if needs_add
-                && let Some(stmt) =
+            if needs_add {
+                if engine == EngineKind::Sqlite {
+                    if l_tbl_opt.is_some() {
+                        warnings.push(format!(
+                            "Table '{}' added or modified foreign key '{}'; SQLite does not support ALTER TABLE ADD CONSTRAINT and requires a table rebuild.",
+                            r_tbl.name, r_c.name
+                        ));
+                    }
+                } else if let Some(stmt) =
                     build_add_constraint_stmt(&r_tbl.name, r_c, engine, right_schema, dst_schema)
-            {
-                statements.push(stmt);
+                {
+                    statements.push(stmt);
+                }
             }
         }
     }
@@ -2497,10 +2638,13 @@ pub fn build_index_constraint_ddl(
     engine: EngineKind,
     action: &IndexConstraintAction,
 ) -> AppResult<IndexConstraintPreview> {
-    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+    if !matches!(
+        engine,
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
+    ) {
         return Err(AppError::new(
             ErrorCode::Unsupported,
-            "Index and constraint editing is available for PostgreSQL and MySQL/MariaDB",
+            "Index and constraint editing is available for PostgreSQL, MySQL/MariaDB, and SQLite",
         ));
     }
 
@@ -2651,6 +2795,48 @@ pub fn build_index_constraint_ddl(
                         formatted_keys.join(", ")
                     )
                 }
+                EngineKind::Sqlite => {
+                    if *concurrently {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "CONCURRENTLY index builds are only supported on PostgreSQL",
+                        ));
+                    }
+                    let norm_method = if method.trim().is_empty() {
+                        "btree".to_owned()
+                    } else {
+                        method.trim().to_ascii_lowercase()
+                    };
+                    if norm_method != "btree" {
+                        return Err(AppError::new(
+                            ErrorCode::InvalidInput,
+                            format!(
+                                "SQLite indexes only support the btree access method (got '{norm_method}')"
+                            ),
+                        ));
+                    }
+                    let pred_clause = if let Some(pred) = predicate
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        let valid_pred = validate_sql_fragment(pred, "partial index predicate")?;
+                        format!(" WHERE {valid_pred}")
+                    } else {
+                        String::new()
+                    };
+                    let unique_kw = if *unique { "UNIQUE " } else { "" };
+                    let qualified_index = quote_qualified(engine, table.schema.trim(), index_name);
+                    let unqualified_table = quote_engine_identifier(engine, table.name.trim());
+                    warnings.push(
+                        "CREATE INDEX on SQLite scans the table and acquires a write lock on the database file until the index build completes."
+                            .into(),
+                    );
+                    format!(
+                        "CREATE {unique_kw}INDEX {qualified_index} ON {unqualified_table} ({}){pred_clause};",
+                        formatted_keys.join(", ")
+                    )
+                }
                 _ => unreachable!(),
             };
 
@@ -2706,6 +2892,18 @@ pub fn build_index_constraint_ddl(
                         quote_qualified(engine, table.schema.trim(), table.name.trim())
                     )
                 }
+                EngineKind::Sqlite => {
+                    if *concurrently {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "DROP INDEX CONCURRENTLY is only supported on PostgreSQL",
+                        ));
+                    }
+                    format!(
+                        "DROP INDEX {};",
+                        quote_qualified(engine, table.schema.trim(), index_name)
+                    )
+                }
                 _ => unreachable!(),
             };
 
@@ -2732,6 +2930,12 @@ pub fn build_index_constraint_ddl(
             on_update,
             not_valid,
         } => {
+            if engine == EngineKind::Sqlite {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "SQLite does not support ALTER TABLE ADD CONSTRAINT; define constraints in CREATE TABLE or use virtual foreign keys",
+                ));
+            }
             validate_table_ref(table, "Target")?;
             let qualified_table = quote_qualified(engine, table.schema.trim(), table.name.trim());
             let cname = if engine == EngineKind::Mysql
@@ -2944,6 +3148,12 @@ pub fn build_index_constraint_ddl(
             kind,
             cascade,
         } => {
+            if engine == EngineKind::Sqlite {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "SQLite does not support ALTER TABLE DROP CONSTRAINT; recreate the table to remove a table constraint",
+                ));
+            }
             validate_table_ref(table, "Target")?;
             let cname = if engine == EngineKind::Mysql
                 && *kind == ConstraintKind::PrimaryKey
@@ -3149,6 +3359,20 @@ fn format_draft_column_spec(
     }
 
     let quoted_col = quote_engine_identifier(engine, col_name);
+    if engine == EngineKind::Sqlite && col.auto_increment {
+        if !dtype.eq_ignore_ascii_case("integer") {
+            return Err(AppError::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "SQLite AUTOINCREMENT column '{col_name}' must use exact data type INTEGER"
+                ),
+            ));
+        }
+        return Ok(format!(
+            "{quoted_col} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL"
+        ));
+    }
+
     let mut parts = vec![quoted_col, dtype.to_owned()];
 
     let is_pg_serial = engine == EngineKind::Postgres
@@ -3181,16 +3405,19 @@ fn format_draft_column_spec(
 }
 
 /// Builds engine-aware DDL statements for creating tables, adding/modifying/dropping
-/// columns, and dropping tables or views on PostgreSQL and MySQL/MariaDB.
+/// columns, and dropping tables or views on PostgreSQL, MySQL/MariaDB, and SQLite.
 /// Never executes SQL.
 pub fn build_table_object_ddl(
     engine: EngineKind,
     action: &TableObjectAction,
 ) -> AppResult<TableObjectPreview> {
-    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+    if !matches!(
+        engine,
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
+    ) {
         return Err(AppError::new(
             ErrorCode::Unsupported,
-            "Table and object DDL editing is available for PostgreSQL and MySQL/MariaDB",
+            "Table and object DDL editing is available for PostgreSQL, MySQL/MariaDB, and SQLite",
         ));
     }
 
@@ -3223,11 +3450,17 @@ pub fn build_table_object_ddl(
                 }
                 if col.auto_increment {
                     auto_inc_count += 1;
-                    if engine == EngineKind::Mysql && !col.primary_key {
+                    if matches!(engine, EngineKind::Mysql | EngineKind::Sqlite) && !col.primary_key
+                    {
                         return Err(AppError::new(
                             ErrorCode::InvalidInput,
                             format!(
-                                "MySQL/MariaDB requires AUTO_INCREMENT column '{col_name}' to be part of the PRIMARY KEY"
+                                "{} requires auto-increment column '{col_name}' to be part of the PRIMARY KEY",
+                                if engine == EngineKind::Sqlite {
+                                    "SQLite"
+                                } else {
+                                    "MySQL/MariaDB"
+                                }
                             ),
                         ));
                     }
@@ -3241,14 +3474,25 @@ pub fn build_table_object_ddl(
                 ));
             }
 
-            if engine == EngineKind::Mysql && auto_inc_count > 1 {
+            if matches!(engine, EngineKind::Mysql | EngineKind::Sqlite) && auto_inc_count > 1 {
                 return Err(AppError::new(
                     ErrorCode::InvalidInput,
-                    "MySQL/MariaDB allows at most one AUTO_INCREMENT column per table",
+                    if engine == EngineKind::Sqlite {
+                        "SQLite allows at most one AUTOINCREMENT column per table"
+                    } else {
+                        "MySQL/MariaDB allows at most one AUTO_INCREMENT column per table"
+                    },
+                ));
+            }
+            if engine == EngineKind::Sqlite && auto_inc_count == 1 && pk_cols.len() > 1 {
+                return Err(AppError::new(
+                    ErrorCode::InvalidInput,
+                    "SQLite AUTOINCREMENT cannot be combined with a composite PRIMARY KEY",
                 ));
             }
 
-            if !pk_cols.is_empty() {
+            let sqlite_inline_pk = engine == EngineKind::Sqlite && auto_inc_count == 1;
+            if !pk_cols.is_empty() && !sqlite_inline_pk {
                 if engine == EngineKind::Postgres {
                     let pk_name = format!("{}_pkey", table.name.trim());
                     body_lines.push(format!(
@@ -3329,6 +3573,11 @@ pub fn build_table_object_ddl(
                     object_name: table.name.trim().to_owned(),
                     destructive: false,
                 });
+            } else if engine == EngineKind::Sqlite && comment_clean.is_some() {
+                warnings.push(
+                    "SQLite does not support COMMENT ON TABLE; the table comment was omitted from generated DDL."
+                        .into(),
+                );
             }
 
             let script = statements
@@ -3345,6 +3594,12 @@ pub fn build_table_object_ddl(
         TableObjectAction::AddColumn { table, column } => {
             validate_table_ref(table, "Target")?;
             let col_name = validate_identifier(&column.name, "column name")?;
+            if engine == EngineKind::Sqlite && (column.primary_key || column.auto_increment) {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "SQLite ALTER TABLE ADD COLUMN cannot add a PRIMARY KEY or AUTOINCREMENT column; recreate the table instead",
+                ));
+            }
             if engine == EngineKind::Mysql && column.auto_increment && !column.primary_key {
                 return Err(AppError::new(
                     ErrorCode::InvalidInput,
@@ -3372,15 +3627,18 @@ pub fn build_table_object_ddl(
                         .into(),
                 );
             }
-            if engine == EngineKind::Mysql {
-                warnings.push(
+            match engine {
+                EngineKind::Mysql => warnings.push(
                     "ALTER TABLE on MySQL/MariaDB causes an implicit commit of any open transaction on this session."
                         .into(),
-                );
-            } else {
-                warnings.push(
+                ),
+                EngineKind::Sqlite => warnings.push(
+                    "ALTER TABLE ADD COLUMN on SQLite appends the column to sqlite_schema and acquires a write lock on the database file."
+                        .into(),
+                ),
+                _ => warnings.push(
                     "ALTER TABLE ADD COLUMN acquires an ACCESS EXCLUSIVE lock on the table.".into(),
-                );
+                ),
             }
 
             let stmt = DdlStatement {
@@ -3528,6 +3786,37 @@ pub fn build_table_object_ddl(
                             .into(),
                     );
                 }
+                EngineKind::Sqlite => {
+                    if using_expr.is_some() {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "PostgreSQL USING cast expressions are not supported on SQLite",
+                        ));
+                    }
+                    let Some(target_col) = renamed_to else {
+                        return Err(AppError::new(
+                            ErrorCode::Unsupported,
+                            "SQLite only supports renaming columns in place (enter a new column name for ALTER TABLE … RENAME COLUMN). Changing data type, nullability, or default requires rebuilding the table.",
+                        ));
+                    };
+                    let quoted_new = quote_engine_identifier(engine, target_col);
+                    statements.push(DdlStatement {
+                        sql: format!(
+                            "ALTER TABLE {qualified_table} RENAME COLUMN {quoted_old} TO {quoted_new};"
+                        ),
+                        description: format!(
+                            "Rename column {old_col} to {target_col} on {}",
+                            table.name.trim()
+                        ),
+                        object_kind: DatabaseObjectKind::Table,
+                        object_name: format!("{}.{target_col}", table.name.trim()),
+                        destructive: false,
+                    });
+                    warnings.push(
+                        "SQLite ALTER TABLE RENAME COLUMN renames the column across table definitions, indexes, triggers, and views in the same schema. Column type, nullability, and default changes are not applied by RENAME COLUMN."
+                            .into(),
+                    );
+                }
                 _ => unreachable!(),
             }
 
@@ -3549,10 +3838,14 @@ pub fn build_table_object_ddl(
         } => {
             validate_table_ref(table, "Target")?;
             let col_name = validate_identifier(column_name, "column name")?;
-            if engine == EngineKind::Mysql && *cascade {
+            if matches!(engine, EngineKind::Mysql | EngineKind::Sqlite) && *cascade {
                 return Err(AppError::new(
                     ErrorCode::Unsupported,
-                    "MySQL/MariaDB DROP COLUMN does not support CASCADE",
+                    if engine == EngineKind::Sqlite {
+                        "SQLite DROP COLUMN does not support CASCADE"
+                    } else {
+                        "MySQL/MariaDB DROP COLUMN does not support CASCADE"
+                    },
                 ));
             }
             let qualified_table = quote_qualified(engine, table.schema.trim(), table.name.trim());
@@ -3592,10 +3885,14 @@ pub fn build_table_object_ddl(
         TableObjectAction::DropObject { object, cascade } => {
             let schema_name = validate_identifier(&object.schema, "object schema")?;
             let obj_name = validate_identifier(&object.name, "object name")?;
-            if engine == EngineKind::Mysql && *cascade {
+            if matches!(engine, EngineKind::Mysql | EngineKind::Sqlite) && *cascade {
                 return Err(AppError::new(
                     ErrorCode::Unsupported,
-                    "MySQL/MariaDB DROP TABLE/VIEW does not support CASCADE",
+                    if engine == EngineKind::Sqlite {
+                        "SQLite DROP TABLE/VIEW does not support CASCADE"
+                    } else {
+                        "MySQL/MariaDB DROP TABLE/VIEW does not support CASCADE"
+                    },
                 ));
             }
             let kw = match object.kind {
@@ -3701,10 +3998,13 @@ pub fn build_table_maintenance_sql(
     engine: EngineKind,
     action: &TableMaintenanceAction,
 ) -> AppResult<TableMaintenancePreview> {
-    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+    if !matches!(
+        engine,
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
+    ) {
         return Err(AppError::new(
             ErrorCode::Unsupported,
-            "Table maintenance commands are only supported for PostgreSQL and MySQL/MariaDB",
+            "Table maintenance commands are only supported for PostgreSQL, MySQL/MariaDB, and SQLite",
         ));
     }
 
@@ -3934,6 +4234,110 @@ pub fn build_table_maintenance_sql(
                 non_transactional: false,
             })
         }
+        (
+            EngineKind::Sqlite,
+            TableMaintenanceAction::Analyze {
+                table,
+                verbose,
+                columns,
+            },
+        ) => {
+            validate_table_ref(table, "Target")?;
+            if *verbose || !columns.is_empty() {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "SQLite ANALYZE operates on the table or index as a whole without VERBOSE or column lists",
+                ));
+            }
+            let qualified =
+                quote_qualified(EngineKind::Sqlite, table.schema.trim(), table.name.trim());
+            let sql = format!("ANALYZE {qualified};");
+            let warnings = vec![
+                "ANALYZE scans table and index b-trees to populate sqlite_stat1 query planner statistics."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Analyze table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (
+            EngineKind::Sqlite,
+            TableMaintenanceAction::Vacuum {
+                table,
+                analyze: _,
+                verbose,
+                full: _,
+            },
+        ) => {
+            validate_table_ref(table, "Target")?;
+            if *verbose {
+                return Err(AppError::new(
+                    ErrorCode::Unsupported,
+                    "SQLite VACUUM does not support VERBOSE",
+                ));
+            }
+            let schema_ident = quote_engine_identifier(EngineKind::Sqlite, table.schema.trim());
+            let sql = format!("VACUUM {schema_ident};");
+            let warnings = vec![
+                "VACUUM rebuilds the entire SQLite database file to reclaim free pages and defragment b-trees. It cannot run inside an open transaction."
+                    .to_string(),
+            ];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!("Vacuum SQLite schema {}", table.schema.trim()),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: true,
+            })
+        }
+        (EngineKind::Sqlite, TableMaintenanceAction::ReindexTable { table }) => {
+            validate_table_ref(table, "Target")?;
+            let qualified =
+                quote_qualified(EngineKind::Sqlite, table.schema.trim(), table.name.trim());
+            let sql = format!("REINDEX {qualified};");
+            let warnings =
+                vec!["REINDEX rebuilds every index attached to this SQLite table.".to_string()];
+            Ok(TableMaintenancePreview {
+                statement: DdlStatement {
+                    sql,
+                    description: format!(
+                        "Reindex table {}.{}",
+                        table.schema.trim(),
+                        table.name.trim()
+                    ),
+                    object_kind: DatabaseObjectKind::Table,
+                    object_name: table.name.trim().to_owned(),
+                    destructive: false,
+                },
+                warnings,
+                non_transactional: false,
+            })
+        }
+        (
+            EngineKind::Sqlite,
+            TableMaintenanceAction::AnalyzeTable { .. }
+            | TableMaintenanceAction::OptimizeTable { .. }
+            | TableMaintenanceAction::CheckTable { .. },
+        ) => Err(AppError::new(
+            ErrorCode::Unsupported,
+            "This table maintenance command is only supported on MySQL and MariaDB",
+        )),
         (
             EngineKind::Postgres,
             TableMaintenanceAction::AnalyzeTable { .. }

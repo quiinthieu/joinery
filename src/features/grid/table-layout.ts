@@ -9,6 +9,8 @@ export interface ResolvedTableLayout {
   orderedColumns: ColumnInfo[];
   visibleColumns: ColumnInfo[];
   hiddenSet: ReadonlySet<string>;
+  pinnedSet: ReadonlySet<string>;
+  pinnedCount: number;
   widths: Readonly<Record<string, number>>;
   customized: boolean;
 }
@@ -51,6 +53,7 @@ export function isDefaultTableLayout(layout: SavedTableLayout): boolean {
   return (
     layout.columnOrder.length === 0 &&
     layout.hiddenColumns.length === 0 &&
+    (layout.pinnedColumns?.length ?? 0) === 0 &&
     Object.keys(layout.columnWidths).length === 0
   );
 }
@@ -59,6 +62,7 @@ export function isDefaultTableLayout(layout: SavedTableLayout): boolean {
  * Resolves a table's current schema columns against a saved layout:
  * - Preserves known columns in saved `columnOrder`, appending any new schema columns at the end
  * - Ignores dropped columns that no longer exist in `columns`
+ * - Groups pinned visible columns on the left so `freezeColumns` matches `pinnedCount`
  * - Guarantees at least one column remains visible when `columns.length > 0`
  */
 export function resolveTableLayout(
@@ -70,32 +74,46 @@ export function resolveTableLayout(
       orderedColumns: [],
       visibleColumns: [],
       hiddenSet: new Set(),
+      pinnedSet: new Set(),
+      pinnedCount: 0,
       widths: {},
       customized: false,
     };
   }
-  const byName = new Map(columns.map((column) => [column.name, column]));
+  const byName = new Map<string, ColumnInfo[]>();
+  for (const column of columns) {
+    const bucket = byName.get(column.name);
+    if (bucket) bucket.push(column);
+    else byName.set(column.name, [column]);
+  }
   const orderedColumns: ColumnInfo[] = [];
-  const seen = new Set<string>();
+  const placedNames = new Set<string>();
   for (const name of layout?.columnOrder ?? []) {
-    const found = byName.get(name);
-    if (found && !seen.has(name)) {
-      orderedColumns.push(found);
-      seen.add(name);
+    if (placedNames.has(name)) continue;
+    const bucket = byName.get(name);
+    if (bucket) {
+      orderedColumns.push(...bucket);
+      placedNames.add(name);
     }
   }
   for (const column of columns) {
-    if (!seen.has(column.name)) {
+    if (!placedNames.has(column.name)) {
       orderedColumns.push(column);
-      seen.add(column.name);
     }
   }
 
   const requestedHidden = new Set((layout?.hiddenColumns ?? []).filter((name) => byName.has(name)));
-  if (requestedHidden.size >= orderedColumns.length) {
+  if (orderedColumns.length > 0 && orderedColumns.every((col) => requestedHidden.has(col.name))) {
     requestedHidden.delete(orderedColumns[0].name);
   }
-  const visibleColumns = orderedColumns.filter((column) => !requestedHidden.has(column.name));
+  const requestedPinned = new Set(
+    (layout?.pinnedColumns ?? []).filter((name) => byName.has(name) && !requestedHidden.has(name)),
+  );
+  const baseVisible = orderedColumns.filter((column) => !requestedHidden.has(column.name));
+  const pinnedVisible = baseVisible.filter((column) => requestedPinned.has(column.name));
+  const unpinnedVisible = baseVisible.filter((column) => !requestedPinned.has(column.name));
+  const visibleColumns =
+    pinnedVisible.length > 0 ? [...pinnedVisible, ...unpinnedVisible] : baseVisible;
 
   const widths: Record<string, number> = {};
   let hasCustomWidth = false;
@@ -115,8 +133,11 @@ export function resolveTableLayout(
     orderedColumns,
     visibleColumns,
     hiddenSet: requestedHidden,
+    pinnedSet: requestedPinned,
+    pinnedCount: pinnedVisible.length,
     widths,
-    customized: orderChanged || requestedHidden.size > 0 || hasCustomWidth,
+    customized:
+      orderChanged || requestedHidden.size > 0 || requestedPinned.size > 0 || hasCustomWidth,
   };
 }
 
@@ -127,6 +148,7 @@ function buildNormalizedLayout(
   orderedNames: string[],
   hiddenNames: Iterable<string>,
   rawWidths: Readonly<Record<string, number | undefined>>,
+  pinnedNames: Iterable<string> = [],
 ): SavedTableLayout {
   const known = new Map(columns.slice(0, MAX_LAYOUT_COLUMNS).map((c) => [c.name, c]));
   const defaultOrder = [...known.keys()];
@@ -156,6 +178,11 @@ function buildNormalizedLayout(
     hiddenSet.delete(dedupOrder[0]);
   }
 
+  const pinnedSet = new Set<string>();
+  for (const name of pinnedNames) {
+    if (known.has(name) && !hiddenSet.has(name)) pinnedSet.add(name);
+  }
+
   const columnWidths: Record<string, number> = {};
   for (const [name, column] of known) {
     const width = rawWidths[name];
@@ -172,6 +199,7 @@ function buildNormalizedLayout(
     table,
     columnOrder: orderMatchesDefault ? [] : dedupOrder,
     hiddenColumns: dedupOrder.filter((name) => hiddenSet.has(name)),
+    pinnedColumns: dedupOrder.filter((name) => pinnedSet.has(name)),
     columnWidths,
   };
 }
@@ -185,11 +213,13 @@ export function toggleColumnVisibility(
 ): SavedTableLayout | null {
   const resolved = resolveTableLayout(columns, current);
   const nextHidden = new Set(resolved.hiddenSet);
+  const nextPinned = new Set(resolved.pinnedSet);
   if (nextHidden.has(columnName)) {
     nextHidden.delete(columnName);
   } else {
     if (resolved.visibleColumns.length <= 1) return current;
     nextHidden.add(columnName);
+    nextPinned.delete(columnName);
   }
   return buildNormalizedLayout(
     columns,
@@ -198,6 +228,131 @@ export function toggleColumnVisibility(
     resolved.orderedColumns.map((c) => c.name),
     nextHidden,
     current?.columnWidths ?? {},
+    nextPinned,
+  );
+}
+
+export function toggleColumnPin(
+  columns: ColumnInfo[],
+  current: SavedTableLayout | null,
+  connectionId: string,
+  table: TableRef,
+  columnName: string,
+): SavedTableLayout {
+  const resolved = resolveTableLayout(columns, current);
+  const nextHidden = new Set(resolved.hiddenSet);
+  const nextPinned = new Set(resolved.pinnedSet);
+  if (nextPinned.has(columnName)) {
+    nextPinned.delete(columnName);
+  } else {
+    nextHidden.delete(columnName);
+    nextPinned.add(columnName);
+  }
+  return buildNormalizedLayout(
+    columns,
+    connectionId,
+    table,
+    resolved.orderedColumns.map((c) => c.name),
+    nextHidden,
+    current?.columnWidths ?? {},
+    nextPinned,
+  );
+}
+
+export function showAllColumns(
+  columns: ColumnInfo[],
+  current: SavedTableLayout | null,
+  connectionId: string,
+  table: TableRef,
+): SavedTableLayout {
+  const resolved = resolveTableLayout(columns, current);
+  return buildNormalizedLayout(
+    columns,
+    connectionId,
+    table,
+    resolved.orderedColumns.map((c) => c.name),
+    [],
+    current?.columnWidths ?? {},
+    resolved.pinnedSet,
+  );
+}
+
+export function hideOptionalColumns(
+  columns: ColumnInfo[],
+  current: SavedTableLayout | null,
+  connectionId: string,
+  table: TableRef,
+): SavedTableLayout {
+  const resolved = resolveTableLayout(columns, current);
+  const nextHidden = new Set<string>();
+  for (const col of resolved.orderedColumns) {
+    if (!col.primaryKey && col.nullable && !resolved.pinnedSet.has(col.name)) {
+      nextHidden.add(col.name);
+    }
+  }
+  if (
+    resolved.orderedColumns.length > 0 &&
+    resolved.orderedColumns.every((col) => nextHidden.has(col.name))
+  ) {
+    nextHidden.delete(resolved.orderedColumns[0].name);
+  }
+  return buildNormalizedLayout(
+    columns,
+    connectionId,
+    table,
+    resolved.orderedColumns.map((c) => c.name),
+    nextHidden,
+    current?.columnWidths ?? {},
+    resolved.pinnedSet,
+  );
+}
+
+export function fitColumnsToWindow(
+  columns: ColumnInfo[],
+  current: SavedTableLayout | null,
+  connectionId: string,
+  table: TableRef,
+  availableWidth: number,
+): SavedTableLayout {
+  const resolved = resolveTableLayout(columns, current);
+  if (!resolved.visibleColumns.length) {
+    return buildNormalizedLayout(
+      columns,
+      connectionId,
+      table,
+      resolved.orderedColumns.map((c) => c.name),
+      resolved.hiddenSet,
+      current?.columnWidths ?? {},
+      resolved.pinnedSet,
+    );
+  }
+  const usable = Math.max(
+    MIN_COLUMN_WIDTH * resolved.visibleColumns.length,
+    Math.floor((Number.isFinite(availableWidth) ? availableWidth : 960) - 48),
+  );
+  const naturalTotal = resolved.visibleColumns.reduce(
+    (sum, col) => sum + defaultColumnWidth(col),
+    0,
+  );
+  const nextWidths: Record<string, number | undefined> = { ...(current?.columnWidths ?? {}) };
+  let allocated = 0;
+  resolved.visibleColumns.forEach((col, index) => {
+    const isLast = index === resolved.visibleColumns.length - 1;
+    const share = isLast
+      ? usable - allocated
+      : Math.round((usable * defaultColumnWidth(col)) / Math.max(1, naturalTotal));
+    const clamped = clampColumnWidth(share);
+    nextWidths[col.name] = clamped;
+    allocated += clamped;
+  });
+  return buildNormalizedLayout(
+    columns,
+    connectionId,
+    table,
+    resolved.orderedColumns.map((c) => c.name),
+    resolved.hiddenSet,
+    nextWidths,
+    resolved.pinnedSet,
   );
 }
 
@@ -225,6 +380,7 @@ export function moveOrderedColumn(
       next,
       resolved.hiddenSet,
       current?.columnWidths ?? {},
+      resolved.pinnedSet,
     );
   }
   const [moved] = next.splice(fromIndex, 1);
@@ -236,6 +392,7 @@ export function moveOrderedColumn(
     next,
     resolved.hiddenSet,
     current?.columnWidths ?? {},
+    resolved.pinnedSet,
   );
 }
 
@@ -263,6 +420,7 @@ export function moveVisibleColumn(
       resolved.orderedColumns.map((c) => c.name),
       resolved.hiddenSet,
       current?.columnWidths ?? {},
+      resolved.pinnedSet,
     );
   }
   const [moved] = visible.splice(fromVisibleIndex, 1);
@@ -278,6 +436,7 @@ export function moveVisibleColumn(
     mergedOrder,
     resolved.hiddenSet,
     current?.columnWidths ?? {},
+    resolved.pinnedSet,
   );
 }
 
@@ -300,5 +459,6 @@ export function resizeTableColumn(
       ...(current?.columnWidths ?? {}),
       [columnName]: clampColumnWidth(width),
     },
+    resolved.pinnedSet,
   );
 }

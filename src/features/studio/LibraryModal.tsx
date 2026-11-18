@@ -1,10 +1,21 @@
 import { useMemo, useRef, useState } from "react";
-import { Bookmark, Clock3, Database, FileCode2, Search, Star, Trash2 } from "lucide-react";
-import type { ConnectionProfile, SavedBookmark } from "../../ipc/generated";
+import {
+  Bookmark,
+  Clock3,
+  Database,
+  FileCode2,
+  Link2,
+  Plus,
+  Search,
+  Star,
+  Trash2,
+} from "lucide-react";
+import type { ConnectionProfile, SavedBookmark, VirtualForeignKey } from "../../ipc/generated";
 import { messageOf } from "../../ipc/client";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { tabNavigation } from "../../components/ui/tabs";
 import { ObjectKindGlyph } from "./ObjectInspectorView";
+import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
 import {
   useStudio,
   type OpenLocationOutcome,
@@ -12,11 +23,12 @@ import {
   type StudioTab,
 } from "../../state/studio";
 
-export type LibraryTab = "saved" | "bookmarks" | "recents";
+export type LibraryTab = "saved" | "bookmarks" | "relationships" | "recents";
 
 const LIBRARY_TABS: readonly { id: LibraryTab; label: string }[] = [
   { id: "saved", label: "Saved queries" },
   { id: "bookmarks", label: "Bookmarks" },
+  { id: "relationships", label: "Virtual FKs" },
   { id: "recents", label: "Recent locations" },
 ];
 
@@ -172,6 +184,10 @@ export function LibraryModal({
   const [activeTab, setActiveTab] = useState<LibraryTab>(initialTab);
   const [filter, setFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [editingVfk, setEditingVfk] = useState<{
+    connectionId: string;
+    existing: VirtualForeignKey | null;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const profileById = useMemo(() => {
@@ -228,6 +244,32 @@ export function LibraryModal({
           };
         });
     }
+    if (activeTab === "relationships") {
+      return state.virtualForeignKeys
+        .filter((item) => {
+          if (!queryLower) return true;
+          const conn = profileById.get(item.connectionId)?.name ?? "";
+          return `${item.name} ${item.source.schema}.${item.source.name} ${item.columns.join(",")} ${item.target.schema}.${item.target.name} ${item.targetColumns.join(",")} ${conn}`
+            .toLowerCase()
+            .includes(queryLower);
+        })
+        .map((item) => {
+          const connName = profileById.get(item.connectionId)?.name ?? "Connection";
+          return {
+            key: `vfk:${item.id}`,
+            label: `${item.source.schema}.${item.source.name}(${item.columns.join(", ")}) → ${item.target.schema}.${item.target.name}(${item.targetColumns.join(", ")})`,
+            subtitle: `${connName} · ${item.name}`,
+            badge: "Virtual FK",
+            kind: "vfk" as const,
+            vfk: item,
+            target: {
+              kind: "table" as const,
+              connectionId: item.connectionId,
+              table: item.source,
+            },
+          };
+        });
+    }
     return state.recentLocations
       .filter((item) => {
         if (!queryLower) return true;
@@ -249,6 +291,7 @@ export function LibraryModal({
     state.bookmarks,
     state.recentLocations,
     state.savedQueries,
+    state.virtualForeignKeys,
   ]);
 
   const clampedIndex = entries.length > 0 ? Math.min(selectedIndex, entries.length - 1) : 0;
@@ -265,6 +308,15 @@ export function LibraryModal({
       .catch((err) => state.notify(messageOf(err)));
   }
 
+  const relationalProfiles = (state.bootstrap?.profiles ?? []).filter((p) => p.engine !== "redis");
+  const defaultConnectionId =
+    (state.selectedConnectionId &&
+    relationalProfiles.some((p) => p.id === state.selectedConnectionId)
+      ? state.selectedConnectionId
+      : null) ??
+    relationalProfiles[0]?.id ??
+    null;
+
   return (
     <Modal
       title={
@@ -272,7 +324,9 @@ export function LibraryModal({
           ? "Recent locations"
           : activeTab === "bookmarks"
             ? "Bookmarks"
-            : "Saved queries"
+            : activeTab === "relationships"
+              ? "Virtual foreign keys"
+              : "Saved queries"
       }
       onClose={onClose}
     >
@@ -287,7 +341,9 @@ export function LibraryModal({
               ? "Filter saved queries…"
               : activeTab === "bookmarks"
                 ? "Filter bookmarks…"
-                : "Filter recent locations…"
+                : activeTab === "relationships"
+                  ? "Filter virtual foreign keys…"
+                  : "Filter recent locations…"
           }
           value={filter}
           onChange={(event) => {
@@ -336,6 +392,16 @@ export function LibraryModal({
             );
           })}
         </div>
+        {activeTab === "relationships" && defaultConnectionId && (
+          <button
+            type="button"
+            className="button ghost small"
+            onClick={() => setEditingVfk({ connectionId: defaultConnectionId, existing: null })}
+          >
+            <Plus size={12} />
+            Add virtual FK…
+          </button>
+        )}
       </div>
       <div className="palette-commands library-list">
         {entries.map((entry, idx) => (
@@ -347,10 +413,19 @@ export function LibraryModal({
             <button
               type="button"
               className="library-row-main"
-              onClick={() => openTarget(entry.target)}
+              onClick={() =>
+                entry.kind === "vfk"
+                  ? setEditingVfk({
+                      connectionId: entry.vfk.connectionId,
+                      existing: entry.vfk,
+                    })
+                  : openTarget(entry.target)
+              }
             >
               {entry.kind === "saved" ? (
                 <Bookmark size={15} />
+              ) : entry.kind === "vfk" ? (
+                <Link2 size={15} />
               ) : entry.kind === "bookmark" ? (
                 entry.bookmark.target.kind === "object" ? (
                   <ObjectKindGlyph kind={entry.bookmark.target.object.kind} size={15} />
@@ -402,6 +477,21 @@ export function LibraryModal({
                 <Trash2 size={13} />
               </button>
             )}
+            {entry.kind === "vfk" && (
+              <button
+                type="button"
+                className="icon-button library-row-delete"
+                aria-label={`Delete virtual foreign key ${entry.vfk.name}`}
+                title="Delete virtual foreign key"
+                onClick={() =>
+                  void state
+                    .deleteVirtualForeignKey(entry.vfk.id)
+                    .catch((err) => state.notify(messageOf(err)))
+                }
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
           </div>
         ))}
         {entries.length === 0 && (
@@ -418,6 +508,14 @@ export function LibraryModal({
                 <Star size={18} />
                 <span>No bookmarks yet. Press ⌘D on any table, object, or saved query.</span>
               </>
+            ) : activeTab === "relationships" ? (
+              <>
+                <Link2 size={18} />
+                <span>
+                  No virtual foreign keys yet. Add local relationships for diagrams, JOIN
+                  completion, and related-row navigation.
+                </span>
+              </>
             ) : (
               <>
                 <Clock3 size={18} />
@@ -427,6 +525,38 @@ export function LibraryModal({
           </div>
         )}
       </div>
+      {editingVfk && (
+        <VirtualForeignKeyDialog
+          connectionId={editingVfk.connectionId}
+          existing={editingVfk.existing}
+          knownTables={(() => {
+            const seen = new Set<string>();
+            const out: { schema: string; name: string }[] = [];
+            for (const t of state.catalog[editingVfk.connectionId] ?? []) {
+              const key = `${t.table.schema}.${t.table.name}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                out.push(t.table);
+              }
+            }
+            for (const o of state.objects[editingVfk.connectionId] ?? []) {
+              if (
+                o.object.kind === "table" ||
+                o.object.kind === "view" ||
+                o.object.kind === "materializedView"
+              ) {
+                const key = `${o.object.schema}.${o.object.name}`;
+                if (!seen.has(key)) {
+                  seen.add(key);
+                  out.push({ schema: o.object.schema, name: o.object.name });
+                }
+              }
+            }
+            return out;
+          })()}
+          onClose={() => setEditingVfk(null)}
+        />
+      )}
     </Modal>
   );
 }

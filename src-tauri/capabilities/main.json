@@ -134,6 +134,18 @@
     "allow-save-sql-format-settings",
     "allow-set-temporary-result-storage",
     "allow-save-sql-snippet",
-    "allow-delete-sql-snippet"
+    "allow-delete-sql-snippet",
+    "allow-save-virtual-foreign-key",
+    "allow-delete-virtual-foreign-key",
+    "allow-run-workspace-sql",
+    "allow-search-database-data",
+    "allow-snowflake-query-history",
+    "allow-snowflake-query-operator-profile",
+    "allow-local-history-entries",
+    "allow-record-local-history",
+    "allow-delete-local-history-entry",
+    "allow-clear-local-history",
+    "allow-find-sql-usages",
+    "allow-query-result-view"
   ]
 }

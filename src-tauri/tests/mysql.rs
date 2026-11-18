@@ -1760,6 +1760,7 @@ async fn referencing_foreign_keys_group_composite_inbound_constraints_on_mysql_a
                 },
                 columns: vec!["note_order".into(), "note_line".into()],
                 target_columns: vec!["order_id".into(), "line_no".into()],
+                virtual_relationship: false,
             }],
             "port {port}"
         );
@@ -4990,6 +4991,184 @@ async fn mysql_and_mariadb_single_table_select_result_provenance_commits_and_rej
             )
             .unwrap();
         completed(&execute(&studio, &restore.plan).await);
+        studio.shutdown();
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires disposable MySQL and MariaDB services"]
+async fn mysql_and_mariadb_data_search_virtual_fks_and_workspace_sql() {
+    for port in [53306, 53307] {
+        let (_root, studio, session) = setup(port, SafeMode::Silent).await;
+
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery.dg26_my_invoices, joinery.dg26_my_accounts;
+                 CREATE TABLE joinery.dg26_my_accounts (
+                   id BIGINT PRIMARY KEY,
+                   account_code VARCHAR(64) NOT NULL UNIQUE,
+                   owner_email VARCHAR(128) NOT NULL,
+                   raw_sig VARBINARY(16) NULL
+                 ) ENGINE=InnoDB;
+                 CREATE TABLE joinery.dg26_my_invoices (
+                   id BIGINT PRIMARY KEY,
+                   account_code VARCHAR(64) NOT NULL,
+                   memo VARCHAR(128) NOT NULL,
+                   exact_total DECIMAL(36,4) NOT NULL
+                 ) ENGINE=InnoDB;
+                 INSERT INTO joinery.dg26_my_accounts VALUES
+                   (1, 'ACC-100%_vip!', 'Ada@Example.com', UNHEX('DEADBEEF')),
+                   (2, 'ACC-200', 'grace@example.com', NULL);
+                 INSERT INTO joinery.dg26_my_invoices VALUES
+                   (10, 'ACC-100%_vip!', 'VIP invoice 100%_vip!', 123456789012345678901234567890.1234),
+                   (20, 'ACC-200', 'Standard invoice', 42.5000);",
+            )
+            .await,
+        );
+
+        let search = studio
+            .search_database_data(DataSearchRequest {
+                session_id: session.id.clone(),
+                query: "100%_vip!".into(),
+                schemas: vec!["joinery".into()],
+                tables: vec![
+                    TableRef {
+                        schema: "joinery".into(),
+                        name: "dg26_my_accounts".into(),
+                    },
+                    TableRef {
+                        schema: "joinery".into(),
+                        name: "dg26_my_invoices".into(),
+                    },
+                ],
+                match_mode: DataSearchMatchMode::Contains,
+                case_sensitive: false,
+                max_tables: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(search.scanned_tables, 2, "port {port}");
+        assert_eq!(search.total_row_hits, 2, "port {port}");
+
+        let cs_miss = studio
+            .search_database_data(DataSearchRequest {
+                session_id: session.id.clone(),
+                query: "ada@example.com".into(),
+                schemas: vec!["joinery".into()],
+                tables: vec![TableRef {
+                    schema: "joinery".into(),
+                    name: "dg26_my_accounts".into(),
+                }],
+                match_mode: DataSearchMatchMode::Exact,
+                case_sensitive: true,
+                max_tables: Some(10),
+            })
+            .await
+            .unwrap();
+        assert_eq!(cs_miss.total_row_hits, 0, "port {port}");
+
+        let vfk = studio
+            .save_virtual_foreign_key(VirtualForeignKeyInput {
+                id: None,
+                connection_id: session.connection_id.clone(),
+                name: format!("vfk_my_{port}"),
+                source: TableRef {
+                    schema: "joinery".into(),
+                    name: "dg26_my_invoices".into(),
+                },
+                columns: vec!["account_code".into()],
+                target: TableRef {
+                    schema: "joinery".into(),
+                    name: "dg26_my_accounts".into(),
+                },
+                target_columns: vec!["account_code".into()],
+            })
+            .unwrap();
+
+        let schema = studio
+            .schema(
+                &session.id,
+                &TableRef {
+                    schema: "joinery".into(),
+                    name: "dg26_my_invoices".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            schema
+                .foreign_keys
+                .iter()
+                .any(|fk| fk.name == vfk.name && fk.virtual_relationship),
+            "port {port}"
+        );
+        let diagram = studio.schema_diagram(&session.id, "joinery").await.unwrap();
+        assert!(
+            diagram
+                .foreign_keys
+                .iter()
+                .any(|fk| fk.name == vfk.name && fk.virtual_relationship),
+            "port {port}"
+        );
+
+        let acc_res = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT account_code, owner_email FROM joinery.dg26_my_accounts ORDER BY id",
+            )
+            .await,
+        );
+        let inv_res = result(
+            &run(
+                &studio,
+                &session,
+                "SELECT account_code, exact_total FROM joinery.dg26_my_invoices ORDER BY id",
+            )
+            .await,
+        );
+        let wsql = studio
+            .run_workspace_sql(WorkspaceSqlRequest {
+                mounts: vec![
+                    WorkspaceResultMount {
+                        alias: "order".into(),
+                        result_ids: vec![inv_res.id.clone()],
+                        label: None,
+                    },
+                    WorkspaceResultMount {
+                        alias: "group".into(),
+                        result_ids: vec![acc_res.id.clone()],
+                        label: None,
+                    },
+                ],
+                sql: "SELECT b.owner_email, a.exact_total FROM \"order\" a JOIN \"group\" b ON a.account_code = b.account_code ORDER BY a.account_code".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(wsql.result.retained_rows, 2, "port {port}");
+        assert_eq!(
+            studio.results.row(&wsql.result.id, 0).unwrap(),
+            vec![
+                Some("Ada@Example.com".into()),
+                Some("123456789012345678901234567890.1234".into()),
+            ],
+            "port {port}"
+        );
+
+        studio.release_result(&wsql.result.id);
+        studio.release_result(&acc_res.id);
+        studio.release_result(&inv_res.id);
+        studio.delete_virtual_foreign_key(&vfk.id).unwrap();
+        completed(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS joinery.dg26_my_invoices, joinery.dg26_my_accounts",
+            )
+            .await,
+        );
         studio.shutdown();
     }
 }

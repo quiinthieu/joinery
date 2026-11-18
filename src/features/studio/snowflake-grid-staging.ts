@@ -55,7 +55,9 @@ export type SnowflakeEditTypeFamily =
   | "binary"
   | "variant"
   | "object"
-  | "array";
+  | "array"
+  | "geography"
+  | "geometry";
 
 export function snowflakeEditTypeFamily(dataType: string): SnowflakeEditTypeFamily | null {
   const base = dataType.trim().toUpperCase().split(/[<( ]/, 1)[0];
@@ -105,6 +107,10 @@ export function snowflakeEditTypeFamily(dataType: string): SnowflakeEditTypeFami
       return "object";
     case "ARRAY":
       return "array";
+    case "GEOGRAPHY":
+      return "geography";
+    case "GEOMETRY":
+      return "geometry";
     default:
       return null;
   }
@@ -148,6 +154,9 @@ export function defaultInsertCellForColumn(column: ColumnInspection): SnowflakeG
       return { kind: "text", value: "[]" };
     case "object":
       return { kind: "text", value: "{}" };
+    case "geography":
+    case "geometry":
+      return { kind: "text", value: "POINT(0 0)" };
     default:
       return { kind: "text", value: "" };
   }
@@ -159,6 +168,29 @@ export function createBlankInsertRow(columns: readonly ColumnInspection[]): Stag
     if (isWritableSnowflakeColumn(column)) {
       cells[index] = defaultInsertCellForColumn(column);
     }
+  });
+  return { id: crypto.randomUUID(), cells };
+}
+
+export function cloneSnowflakePreviewRow(
+  columns: readonly ColumnInspection[],
+  row: readonly (string | null)[],
+  rowUpdates?: Readonly<Record<number, SnowflakeGridCellInput>>,
+): StagedInsertRow {
+  const cells: Record<number, SnowflakeGridCellInput> = {};
+  columns.forEach((column, index) => {
+    if (!isWritableSnowflakeColumn(column)) return;
+    if (column.identity && canColumnDefaultOnInsert(column)) {
+      cells[index] = { kind: "default" };
+      return;
+    }
+    const updated = rowUpdates?.[index];
+    if (updated) {
+      cells[index] = updated;
+      return;
+    }
+    const raw = row[index] ?? null;
+    cells[index] = raw === null ? { kind: "null" } : { kind: "text", value: raw };
   });
   return { id: crypto.randomUUID(), cells };
 }
@@ -410,7 +442,7 @@ function mapCsvRowsToInsertRows(
         cells[targetIndex] = { kind: "null" };
       } else if (
         rawValue === "" &&
-        column.resultKind !== "text" &&
+        snowflakeEditTypeFamily(column.dataType) !== "text" &&
         !(
           snowflakeEditTypeFamily(column.dataType) === "binary" &&
           column.defaultExpression === null &&

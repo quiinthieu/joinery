@@ -72,7 +72,9 @@ const sdk = { createConnection(options) {
       const preview = sql.startsWith('SELECT "ID", "NOTES" FROM ');
       const exactRelation = relations && sql.includes(" AND TABLE_NAME = ");
       const browsing = relations && sql.includes('CREATED::VARCHAR AS CREATED');
+      const explorerTables = relations && sql.includes('ROW_COUNT::VARCHAR AS ROW_COUNT');
       const columns = sql.startsWith('SELECT * FROM "DB".') && sql.endsWith(' LIMIT 0');
+      const dataSearch = sql.startsWith('SELECT "ID", "NOTES"') && sql.includes(' WHERE (');
       if (context) {
         names = ['PRINCIPAL','ROLE_NAME','DATABASE_NAME','SCHEMA_NAME','WAREHOUSE_NAME','SESSION_ID','SEARCH_PATH','SECONDARY_ROLES'];
         values = [['SERVER_USER','ROLE',Object.hasOwn(settings,'database')?settings.database:'DB',settings.schema??'PUBLIC',settings.warehouse??'WH',settings.session??'SESSION','["DB.PUBLIC"]',JSON.stringify({roles:settings.roles??'',value:'ALL'})]];
@@ -80,6 +82,10 @@ const sdk = { createConnection(options) {
         names=['key','value']; values=[['QUOTED_IDENTIFIERS_IGNORE_CASE',settings.policy??'false']];
       } else if(schemas) {
         names=['CATALOG_NAME','SCHEMA_NAME']; values=[['DB','OTHER'],['DB','PUBLIC']];
+      } else if(explorerTables) {
+        names=['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','ROW_COUNT','BYTES','COMMENT'];
+        const schema=sql.includes("TABLE_SCHEMA = 'OTHER'")?'OTHER':'PUBLIC';
+        values=[['DB',schema,schema==='OTHER'?'Mixed.Name':'ORDERS','BASE TABLE','2','1024',null]];
       } else if(relations) {
         names=['TABLE_CATALOG','TABLE_SCHEMA','TABLE_NAME','TABLE_TYPE','IS_TRANSIENT','IS_TEMPORARY','IS_ICEBERG','IS_DYNAMIC','IS_HYBRID','IS_IMMUTABLE'];
         const schema=sql.includes("TABLE_SCHEMA = 'OTHER'")?'OTHER':'PUBLIC';
@@ -106,11 +112,26 @@ const sdk = { createConnection(options) {
         values=Array.from({length:settings.previewRows??2},(_,i)=>[String(i),settings.previewBytes?'x'.repeat(40000):i===0?null:'note']);
         if(settings.previewDrift) writeFileSync(settingsFile,JSON.stringify({...settings,warehouse:'CHANGED',previewDrift:false}));
       } else if(columns) {
-        names=['ID','NOTES']; values=settings.columnRows?[['1','unexpected']]:[];
+        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES','COORDS']:['ID','NOTES'];
+        values=settings.columnRows?[['1','unexpected']]:[];
+      } else if(dataSearch) {
+        names=settings.searchColumns?['ID','NOTES','PAYLOAD','RAW_BYTES','COORDS']:['ID','NOTES'];
+        const q = String(options.binds?.[0] ?? '');
+        values = q.toLowerCase().includes('ada') || q.toLowerCase().includes('point(-122')
+          ? [settings.searchColumns ? ['101','Ada order','{"email":"ada@example.com"}','deadbeef','SRID=4326;POINT(-122.4194 37.7749)'] : ['101','Ada order']]
+          : [];
       }
       const statement = {
         getRequestId: () => uuid(id), getQueryId: () => uuid(id + 1000),
-        getColumns: () => names.map((name,index) => ({getName:()=>name,getType:()=> ((columns||preview)&&index===0)||(synthetic&&index<2)||(million&&index===0)?'FIXED':'TEXT'})),
+        getColumns: () => names.map((name,index) => ({
+          getName:()=>name,
+          getType:()=> {
+            if (settings.searchColumns && (columns || dataSearch)) {
+              return ['FIXED','TEXT','OBJECT','BINARY','GEOGRAPHY'][index] ?? 'TEXT';
+            }
+            return ((columns||preview)&&index===0)||(synthetic&&index<2)||(million&&index===0)?'FIXED':'TEXT';
+          },
+        })),
         streamRows() {
           if (million) return Readable.from((async function*() {
             for (let i=1;i<=1000000;i++) yield [String(i),(9007199254740992n+BigInt(i)).toString()];
@@ -1773,5 +1794,82 @@ async fn sdk_relation_superseding_failed_inspection_cannot_restore_older_preview
         ErrorCode::Conflict
     );
     assert_eq!(h.queries().len(), before);
+    h.close().await;
+}
+
+#[tokio::test]
+async fn sdk_search_data_scans_filtered_schemas_uses_to_json_for_objects_and_skips_binary() {
+    let h = Harness::open().await;
+    h.metadata_settings(serde_json::json!({"searchColumns": true}));
+    let report = h
+        .driver
+        .search_data(&DataSearchRequest {
+            session_id: "sf-session".into(),
+            query: "ada".into(),
+            schemas: vec!["PUBLIC".into()],
+            tables: vec![],
+            match_mode: DataSearchMatchMode::Contains,
+            case_sensitive: false,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(report.database.as_deref(), Some("DB"));
+    assert_eq!(report.scanned_tables, 1);
+    assert_eq!(report.skipped_tables, 0);
+    assert_eq!(report.total_row_hits, 1);
+    assert!(!report.truncated);
+    assert_eq!(report.matches.len(), 1);
+    let m = &report.matches[0];
+    assert_eq!(
+        m.table,
+        TableRef {
+            schema: "PUBLIC".into(),
+            name: "ORDERS".into(),
+        }
+    );
+    assert_eq!(
+        m.searchable_columns,
+        vec!["ID", "NOTES", "PAYLOAD", "COORDS"]
+    );
+    assert_eq!(m.rows[0].matched_columns, vec!["NOTES", "PAYLOAD"]);
+    assert_eq!(m.rows[0].row[3].as_deref(), Some("deadbeef"));
+    assert_eq!(
+        m.rows[0].row[4].as_deref(),
+        Some("SRID=4326;POINT(-122.4194 37.7749)")
+    );
+
+    let issued = h.queries();
+    assert!(!issued.iter().any(|q| q.contains("TABLE_SCHEMA = 'OTHER'")));
+    let search_sql = issued
+        .iter()
+        .find(|q| {
+            q.starts_with(
+                "SELECT \"ID\", \"NOTES\", \"PAYLOAD\", \"RAW_BYTES\", ST_ASEWKT(\"COORDS\") AS \"COORDS\"",
+            )
+        })
+        .expect("expected parameterized Snowflake search SQL");
+    assert!(search_sql.contains("CONTAINS(LOWER(TO_JSON(\"PAYLOAD\")), LOWER(?))"));
+    assert!(search_sql.contains("CONTAINS(LOWER(ST_ASEWKT(\"COORDS\")), LOWER(?))"));
+    assert!(!search_sql.contains("TO_VARCHAR(\"PAYLOAD\")"));
+    assert!(!search_sql.contains("\"RAW_BYTES\")"));
+
+    let wkt_report = h
+        .driver
+        .search_data(&DataSearchRequest {
+            session_id: "sf-session".into(),
+            query: "POINT(-122".into(),
+            schemas: vec!["PUBLIC".into()],
+            tables: vec![],
+            match_mode: DataSearchMatchMode::Contains,
+            case_sensitive: false,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        wkt_report.matches[0].rows[0].matched_columns,
+        vec!["COORDS"]
+    );
     h.close().await;
 }

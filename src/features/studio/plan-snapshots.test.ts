@@ -59,6 +59,45 @@ describe("plan snapshot identity", () => {
     expect(planMismatch(original, make("digest-b"))).toBe("Different bound parameters");
     expect(JSON.stringify(original)).not.toContain("boundParameters");
   });
+  it("captures and compares SQLite EXPLAIN QUERY PLAN snapshots", () => {
+    const sqliteSession = {
+      ...session,
+      engine: "sqlite",
+      serverVersion: "SQLite 3.49.1",
+    } as SessionInfo;
+    const sqliteRuntime: SessionRuntimeState = {
+      sessionId: "s",
+      transactionMode: "autoCommit",
+      transactionState: "idle",
+      contextKind: "schema",
+      activeContext: "main",
+      database: "app.sqlite",
+      role: "local",
+      searchPath: ["main"],
+    };
+    const src = planSourceForExecution(
+      prepared("EXPLAIN QUERY PLAN\nSELECT * FROM orders WHERE status = 'open'"),
+      sqliteSession,
+      sqliteRuntime,
+    )!;
+    expect(src).toBeDefined();
+    expect(src.engine).toBe("sqlite");
+    expect(src.query).toBe("SELECT * FROM orders WHERE status = 'open'");
+
+    const store = new PlanSnapshotStore();
+    const { saved } = store.capture(
+      "t-sqlite",
+      "res-sqlite-1",
+      src,
+      JSON.stringify({
+        sqliteQueryPlan: [
+          { id: 2, parent: 0, detail: "SEARCH orders USING INDEX idx_status (status=?)" },
+        ],
+      }),
+    );
+    expect(saved.source.engine).toBe("sqlite");
+    expect(planMismatch(saved.source, src)).toBeNull();
+  });
   it("recognizes Snowflake generated execution without inventing comparable warehouse context", () => {
     const snowflake = {
       ...session,

@@ -1101,6 +1101,159 @@ impl Driver for Postgres {
         })
     }
 
+    async fn search_data(&self, request: &DataSearchRequest) -> AppResult<DataSearchReport> {
+        use crate::data_search::{
+            MAX_SEARCH_REPORT_BYTES, MAX_SEARCH_ROWS_PER_TABLE, MAX_SEARCH_TOTAL_ROW_HITS,
+            build_postgres_search_sql, build_table_match, estimate_table_match_bytes,
+            filter_candidate_tables, validate_search_request,
+        };
+        let max_tables = validate_search_request(request)?;
+        let started = std::time::Instant::now();
+        let all_tables: Vec<TableRef> =
+            self.catalog().await?.into_iter().map(|t| t.table).collect();
+        let (candidates, mut truncated) = filter_candidate_tables(all_tables, request, max_tables);
+
+        let mut scanned_tables = 0usize;
+        let mut skipped_tables = 0usize;
+        let mut total_row_hits = 0usize;
+        let mut report_bytes = 0usize;
+        let mut matches = Vec::new();
+
+        for table in &candidates {
+            if self.is_closed() {
+                return Err(AppError::new(
+                    ErrorCode::ConnectionFailed,
+                    "The database session closed",
+                ));
+            }
+            if total_row_hits >= MAX_SEARCH_TOTAL_ROW_HITS
+                || report_bytes >= MAX_SEARCH_REPORT_BYTES
+            {
+                truncated = true;
+                break;
+            }
+            let schema = match self.schema(table).await {
+                Ok(s) => s,
+                Err(err)
+                    if matches!(
+                        err.code,
+                        ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                    ) && !self.is_closed() =>
+                {
+                    skipped_tables += 1;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let Some((sql, bind, searchable)) = build_postgres_search_sql(
+                &schema,
+                &request.query,
+                request.match_mode,
+                request.case_sensitive,
+                MAX_SEARCH_ROWS_PER_TABLE,
+            ) else {
+                skipped_tables += 1;
+                continue;
+            };
+            scanned_tables += 1;
+            let bind_opt = Some(bind);
+            let parameters: Vec<&(dyn ToSql + Sync)> = vec![&bind_opt];
+            let stream = match self.metadata().await?.query_raw(&sql, parameters).await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let mapped = pg_error(err);
+                    if matches!(
+                        mapped.code,
+                        ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                    ) && !self.is_closed()
+                    {
+                        skipped_tables += 1;
+                        continue;
+                    }
+                    return Err(mapped);
+                }
+            };
+            futures_util::pin_mut!(stream);
+            let mut raw_rows = Vec::new();
+            let mut row_err: Option<AppError> = None;
+            loop {
+                match stream.try_next().await {
+                    Ok(Some(row)) => {
+                        match (0..row.len())
+                            .map(|i| row.try_get::<_, Option<String>>(i))
+                            .collect::<Result<TextRow, _>>()
+                        {
+                            Ok(text_row) => {
+                                if raw_rows.len() <= MAX_SEARCH_ROWS_PER_TABLE {
+                                    raw_rows.push(text_row);
+                                }
+                            }
+                            Err(e) => {
+                                row_err = Some(pg_error(e));
+                                break;
+                            }
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        row_err = Some(pg_error(e));
+                        break;
+                    }
+                }
+            }
+            if let Some(err) = row_err {
+                if matches!(
+                    err.code,
+                    ErrorCode::Database | ErrorCode::PermissionDenied | ErrorCode::Unsupported
+                ) && !self.is_closed()
+                {
+                    skipped_tables += 1;
+                    continue;
+                }
+                return Err(err);
+            }
+            let allowed_rows = MAX_SEARCH_TOTAL_ROW_HITS
+                .saturating_sub(total_row_hits)
+                .min(MAX_SEARCH_ROWS_PER_TABLE);
+            if let Some(m) = build_table_match(
+                &schema,
+                searchable,
+                raw_rows,
+                &request.query,
+                request.match_mode,
+                request.case_sensitive,
+                allowed_rows,
+            ) {
+                let bytes = estimate_table_match_bytes(&m);
+                if report_bytes.saturating_add(bytes) > MAX_SEARCH_REPORT_BYTES
+                    && !matches.is_empty()
+                {
+                    truncated = true;
+                    break;
+                }
+                report_bytes += bytes;
+                total_row_hits += m.rows.len();
+                if m.has_more_in_table && allowed_rows < MAX_SEARCH_ROWS_PER_TABLE {
+                    truncated = true;
+                }
+                matches.push(m);
+            }
+        }
+
+        Ok(DataSearchReport {
+            query: request.query.clone(),
+            match_mode: request.match_mode,
+            case_sensitive: request.case_sensitive,
+            database: None,
+            scanned_tables,
+            skipped_tables,
+            total_row_hits,
+            truncated,
+            elapsed_ms: u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX),
+            matches,
+        })
+    }
+
     async fn apply(&self, _schema: &TableSchema, _rows: &[RowMutation]) -> AppResult<()> {
         Err(AppError::new(
             ErrorCode::PolicyBlocked,

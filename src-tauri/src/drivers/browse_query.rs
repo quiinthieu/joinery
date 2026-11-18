@@ -106,6 +106,7 @@ fn validate_raw_clause(raw: &str, engine: EngineKind) -> AppResult<Option<String
     }
     let dialect: Box<dyn SqlDialect> = match engine {
         EngineKind::Mysql => Box::new(MySqlDialect {}),
+        EngineKind::Sqlite => Box::new(sqlparser::dialect::SQLiteDialect {}),
         _ => Box::new(PostgreSqlDialect {}),
     };
     let tokens = Tokenizer::new(dialect.as_ref(), trimmed)
@@ -128,7 +129,7 @@ fn validate_raw_clause(raw: &str, engine: EngineKind) -> AppResult<Option<String
                     "Bind placeholders cannot be used in table filter or order clauses",
                 ));
             }
-            Token::Char('?') if engine == EngineKind::Mysql => {
+            Token::Char('?') if matches!(engine, EngineKind::Mysql | EngineKind::Sqlite) => {
                 return Err(AppError::invalid(
                     "Bind placeholders cannot be used in table filter or order clauses",
                 ));

@@ -20,6 +20,10 @@ pub(crate) fn explain_sql(
             "EXPLAIN (ANALYZE, FORMAT JSON)",
         ),
         (EngineKind::Mysql, false) => (Box::new(MySqlDialect {}), "EXPLAIN FORMAT=JSON"),
+        (EngineKind::Sqlite, false) => (
+            Box::new(sqlparser::dialect::SQLiteDialect {}),
+            "EXPLAIN QUERY PLAN",
+        ),
         (EngineKind::Snowflake, false) => (Box::new(SnowflakeDialect {}), "EXPLAIN USING JSON"),
         (EngineKind::Mysql, true) if actual_plan == Some(ActualPlanFormat::MariaDbJson) => {
             (Box::new(MySqlDialect {}), "ANALYZE FORMAT=JSON")
@@ -33,7 +37,7 @@ pub(crate) fn explain_sql(
                 if analyze {
                     "Actual plans are available for PostgreSQL and capability-checked MySQL/MariaDB sessions."
                 } else {
-                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, and Snowflake."
+                    "Estimated plans are available for PostgreSQL, MySQL/MariaDB, SQLite, and Snowflake."
                 },
             ));
         }

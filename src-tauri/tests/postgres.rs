@@ -1457,12 +1457,14 @@ async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreada
                 },
                 columns: vec!["note_order".into()],
                 target_columns: vec!["id".into()],
+                virtual_relationship: false,
             },
             InboundForeignKey {
                 name: "order_lines_order_id_fkey".into(),
                 source: order_lines.clone(),
                 columns: vec!["order_id".into()],
                 target_columns: vec!["id".into()],
+                virtual_relationship: false,
             },
         ]
     );
@@ -1481,6 +1483,7 @@ async fn referencing_foreign_keys_preserve_composite_ordinals_and_filter_unreada
             },
             columns: vec!["note_order".into(), "note_line".into()],
             target_columns: vec!["order_id".into(), "line_no".into()],
+            virtual_relationship: false,
         }]
     );
 
@@ -5587,5 +5590,262 @@ async fn single_table_select_result_provenance_commits_edits_and_rejects_missing
         status(&finish(start(&studio, &restore.plan, Some(&restore_approval)).1).await),
         RunStatus::Completed
     );
+    studio.shutdown();
+}
+
+#[tokio::test]
+#[ignore = "requires the disposable PostgreSQL service in compose.yaml"]
+async fn datagrip_2026_3_data_search_virtual_fks_workspace_sql_and_local_history() {
+    let (_root, studio, session) = setup(SafeMode::Silent).await;
+
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &session,
+                "DROP TABLE IF EXISTS public.dg26_invoices, public.dg26_accounts CASCADE;
+                 CREATE TABLE public.dg26_accounts (
+                   id bigint PRIMARY KEY,
+                   account_code text NOT NULL UNIQUE,
+                   owner_email text NOT NULL,
+                   avatar bytea
+                 );
+                 CREATE TABLE public.dg26_invoices (
+                   id bigint PRIMARY KEY,
+                   account_code text NOT NULL,
+                   memo text NOT NULL,
+                   exact_total numeric(38,4) NOT NULL
+                 );
+                 INSERT INTO public.dg26_accounts VALUES
+                   (1, 'ACC-100%_vip!', 'Ada@Example.com', decode('deadbeef', 'hex')),
+                   (2, 'ACC-200', 'grace@example.com', NULL);
+                 INSERT INTO public.dg26_invoices VALUES
+                   (10, 'ACC-100%_vip!', 'VIP invoice 100%_vip!', 9999999999999999999999999999999999.1234),
+                   (20, 'ACC-200', 'Standard invoice', 42.5000);",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+
+    // 1. Parameterized full-text data search with LIKE metacharacter escaping and binary exclusion
+    let ci_search = studio
+        .search_database_data(DataSearchRequest {
+            session_id: session.id.clone(),
+            query: "100%_vip!".into(),
+            schemas: vec!["public".into()],
+            tables: vec![
+                TableRef {
+                    schema: "public".into(),
+                    name: "dg26_accounts".into(),
+                },
+                TableRef {
+                    schema: "public".into(),
+                    name: "dg26_invoices".into(),
+                },
+            ],
+            match_mode: DataSearchMatchMode::Contains,
+            case_sensitive: false,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(ci_search.scanned_tables, 2);
+    assert_eq!(ci_search.total_row_hits, 2);
+    let inv_match = ci_search
+        .matches
+        .iter()
+        .find(|m| m.table.name == "dg26_invoices")
+        .expect("expected dg26_invoices hit");
+    assert_eq!(
+        inv_match.rows[0].matched_columns,
+        vec!["account_code", "memo"]
+    );
+
+    let cs_miss = studio
+        .search_database_data(DataSearchRequest {
+            session_id: session.id.clone(),
+            query: "ada@example.com".into(),
+            schemas: vec!["public".into()],
+            tables: vec![TableRef {
+                schema: "public".into(),
+                name: "dg26_accounts".into(),
+            }],
+            match_mode: DataSearchMatchMode::Exact,
+            case_sensitive: true,
+            max_tables: Some(10),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cs_miss.total_row_hits, 0);
+
+    // 2. Virtual Foreign Keys across schema, inbound references, ER diagram, and isolated physical table edits
+    let vfk = studio
+        .save_virtual_foreign_key(VirtualForeignKeyInput {
+            id: None,
+            connection_id: session.connection_id.clone(),
+            name: "vfk_dg26_invoices_accounts".into(),
+            source: TableRef {
+                schema: "public".into(),
+                name: "dg26_invoices".into(),
+            },
+            columns: vec!["account_code".into()],
+            target: TableRef {
+                schema: "public".into(),
+                name: "dg26_accounts".into(),
+            },
+            target_columns: vec!["account_code".into()],
+        })
+        .unwrap();
+
+    let inv_schema = studio
+        .schema(
+            &session.id,
+            &TableRef {
+                schema: "public".into(),
+                name: "dg26_invoices".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        inv_schema
+            .foreign_keys
+            .iter()
+            .any(|fk| fk.name == vfk.name && fk.virtual_relationship)
+    );
+    let inbound = studio
+        .referencing_foreign_keys(
+            &session.id,
+            &TableRef {
+                schema: "public".into(),
+                name: "dg26_accounts".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        inbound
+            .iter()
+            .any(|fk| fk.name == vfk.name && fk.virtual_relationship)
+    );
+    let diagram = studio.schema_diagram(&session.id, "public").await.unwrap();
+    assert!(
+        diagram
+            .foreign_keys
+            .iter()
+            .any(|fk| fk.name == vfk.name && fk.virtual_relationship)
+    );
+
+    // 3. Cross-source Workspace SQL joining retained snapshots with lossless 38-digit numeric precision
+    let acc_res = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT account_code, owner_email FROM public.dg26_accounts ORDER BY id",
+        )
+        .await,
+    );
+    let inv_res = result(
+        &run(
+            &studio,
+            &session,
+            "SELECT account_code, exact_total FROM public.dg26_invoices ORDER BY id",
+        )
+        .await,
+    );
+    let wsql = studio
+        .run_workspace_sql(WorkspaceSqlRequest {
+            mounts: vec![
+                WorkspaceResultMount {
+                    alias: "order".into(),
+                    result_ids: vec![inv_res.id.clone()],
+                    label: Some("Invoices".into()),
+                },
+                WorkspaceResultMount {
+                    alias: "group".into(),
+                    result_ids: vec![acc_res.id.clone()],
+                    label: Some("Accounts".into()),
+                },
+            ],
+            sql: "SELECT b.owner_email, a.exact_total FROM \"order\" a JOIN \"group\" b ON a.account_code = b.account_code ORDER BY a.account_code".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(wsql.result.retained_rows, 2);
+    assert_eq!(
+        studio.results.row(&wsql.result.id, 0).unwrap(),
+        vec![
+            Some("Ada@Example.com".into()),
+            Some("9999999999999999999999999999999999.1234".into()),
+        ]
+    );
+    studio.release_result(&wsql.result.id);
+    studio.release_result(&acc_res.id);
+    studio.release_result(&inv_res.id);
+
+    // 4. SQL Local History recording & privacy cascade on profile opt-out
+    let mut prof = studio
+        .bootstrap()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|p| p.id == session.connection_id)
+        .unwrap();
+    prof.store_query_text = true;
+    prof.store_drafts = true;
+    let prof = studio.save_profile(prof, None).unwrap();
+    let recorded = studio
+        .record_local_history(LocalHistoryInput {
+            tab_key: "tab:pg-dg26".into(),
+            title: "DG26 Query".into(),
+            connection_id: Some(prof.id.clone()),
+            trigger: LocalHistoryTrigger::Snapshot,
+            sql: "SELECT * FROM public.dg26_invoices;".into(),
+        })
+        .unwrap();
+    assert!(recorded.is_some());
+    assert_eq!(
+        studio
+            .local_history_entries(Some("tab:pg-dg26"))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut private_prof = prof;
+    private_prof.store_query_text = false;
+    private_prof.store_drafts = false;
+    studio.save_profile(private_prof, None).unwrap();
+    assert!(
+        studio
+            .local_history_entries(Some("tab:pg-dg26"))
+            .unwrap()
+            .is_empty()
+    );
+
+    // Reconnect to clean up disposable tables cleanly
+    let cleanup_session = studio
+        .connect(
+            &session.connection_id,
+            ConnectionSecrets {
+                password: Some("joinery-local-only".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status(
+            &run(
+                &studio,
+                &cleanup_session,
+                "DROP TABLE IF EXISTS public.dg26_invoices, public.dg26_accounts CASCADE",
+            )
+            .await
+        ),
+        RunStatus::Completed
+    );
+    studio.delete_virtual_foreign_key(&vfk.id).unwrap();
     studio.shutdown();
 }

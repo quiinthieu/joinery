@@ -9,12 +9,71 @@ export interface PlanNode {
   children: PlanNode[];
 }
 export interface QueryPlan {
-  engine: "PostgreSQL" | "MySQL/MariaDB" | "Snowflake";
+  engine: "PostgreSQL" | "MySQL/MariaDB" | "SQLite" | "Snowflake";
   format: "json" | "tree";
   actual: boolean;
   roots: PlanNode[];
   timings: { label: string; value: string }[];
   estimates?: { label: string; value: string }[];
+}
+
+function parseSqliteQueryPlan(rawSteps: unknown[]): QueryPlan {
+  if (rawSteps.length > 2000) {
+    throw new Error("Plan exceeds the tree-view complexity limit. Use the raw view.");
+  }
+  interface StepRow {
+    id: number;
+    parent: number;
+    detail: string;
+  }
+  const steps: StepRow[] = rawSteps.map((entry, idx) => {
+    if (!record(entry) || typeof entry.detail !== "string") {
+      throw new Error("Unrecognized SQLite query plan step");
+    }
+    const id = typeof entry.id === "number" ? entry.id : Number(entry.id ?? idx + 1);
+    const parent = typeof entry.parent === "number" ? entry.parent : Number(entry.parent ?? 0);
+    return { id, parent, detail: entry.detail };
+  });
+
+  const childrenByParent = new Map<number, StepRow[]>();
+  const knownIds = new Set(steps.map((s) => s.id));
+  for (const step of steps) {
+    const parentKey = knownIds.has(step.parent) && step.parent !== step.id ? step.parent : 0;
+    const list = childrenByParent.get(parentKey) ?? [];
+    list.push(step);
+    childrenByParent.set(parentKey, list);
+  }
+
+  const buildNode = (step: StepRow, path: string, depth: number): PlanNode => {
+    if (depth > 40) {
+      throw new Error("Plan exceeds the tree-view complexity limit. Use the raw view.");
+    }
+    const relMatch = /\b(?:SCAN|SEARCH)\s+(?:TABLE\s+)?([^\s(]+)/i.exec(step.detail);
+    const idxMatch = /\bUSING\s+(?:COVERING\s+)?INDEX\s+([^\s(]+)/i.exec(step.detail);
+    const metrics: { label: string; value: string }[] = [];
+    if (idxMatch) {
+      metrics.push({ label: "Index", value: idxMatch[1]! });
+    } else if (/\bUSING\s+INTEGER\s+PRIMARY\s+KEY\b/i.test(step.detail)) {
+      metrics.push({ label: "Access", value: "INTEGER PRIMARY KEY (rowid)" });
+    }
+    const kids = childrenByParent.get(step.id) ?? [];
+    return {
+      path,
+      label: step.detail,
+      relation: relMatch ? relMatch[1] : undefined,
+      metrics,
+      children: kids.map((child, idx) => buildNode(child, `${path}.children[${idx}]`, depth + 1)),
+    };
+  };
+
+  const topSteps = childrenByParent.get(0) ?? [];
+  return {
+    engine: "SQLite",
+    format: "json",
+    actual: false,
+    roots: topSteps.map((s, idx) => buildNode(s, `$.sqliteQueryPlan[${idx}]`, 0)),
+    timings: [],
+  };
 }
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue =>
@@ -36,6 +95,8 @@ export function parseQueryPlan(raw: string): QueryPlan {
   }
   if (record(data) && ("Operations" in data || "GlobalStats" in data))
     return parseSnowflakePlan(data);
+  if (record(data) && Array.isArray(data.sqliteQueryPlan))
+    return parseSqliteQueryPlan(data.sqliteQueryPlan);
   let visited = 0;
   const check = (depth: number) => {
     if (++visited > 2000 || depth > 40)

@@ -1,5 +1,8 @@
 import { ExecutionTiming } from "../features/studio/ExecutionTiming";
 import { ExecutionSummary } from "../features/studio/ExecutionSummary";
+import { DatabaseOutputPanel } from "../features/studio/DatabaseOutputPanel";
+import type { GridSelectionStats } from "../features/grid/selection-stats";
+import { ResultQuickFilterBar, useResultViewState } from "../features/grid/result-view";
 import {
   lazy,
   Suspense,
@@ -18,12 +21,18 @@ import {
   Clock3,
   Code2,
   Columns3,
+  Copy,
   Download,
+  ExternalLink,
   FileCode2,
   FolderOpen,
   Gauge,
+  History,
+  Layers,
   Loader2,
   Pencil,
+  Pin,
+  PinOff,
   Play,
   Plus,
   RefreshCw,
@@ -33,6 +42,7 @@ import {
   Square,
   Star,
   Table2,
+  Terminal,
   Trash2,
   Unplug,
   Upload,
@@ -43,6 +53,7 @@ import type {
   DatabaseObjectRef,
   ObjectDetails,
   QueryParamSlot,
+  ResultInfo,
   SessionInfo,
   TableInfo,
   TransactionMode,
@@ -60,10 +71,16 @@ import {
   isSnowflakeConsoleSession,
   assertOrdinarySession,
   isConsoleOwnedResult,
+  isResultReferencedByOtherTabs,
 } from "../state/studio";
 import { client, messageOf } from "../ipc/client";
 import { dirtyStore } from "../data/dirty-store";
 import type { CellTarget, DatabaseGridHandle } from "../features/grid/DatabaseGrid";
+import {
+  RecordCardView,
+  TransposeGridView,
+  type GridDisplayMode,
+} from "../features/grid/GridAltViews";
 import { CopyAsMenu } from "../features/grid/CopyAsMenu";
 import { TableFilterBar } from "../features/grid/TableFilterBar";
 import { findTableLayout, resolveTableLayout } from "../features/grid/table-layout";
@@ -78,6 +95,7 @@ import {
 import { SessionStructureView } from "../features/studio/SessionStructureView";
 import { RelationBrowser } from "../features/studio/RelationBrowser";
 import { SnowflakeDdlNotice } from "../features/studio/SnowflakeDdlNotice";
+import { SnowflakeQueryProfileModal } from "../features/studio/SnowflakeQueryProfileModal";
 import { StructureView } from "../features/studio/UtilityViews";
 import { objectTabTitle, tableInfoKindToObjectKind } from "../features/connections/explorer-tree";
 import { RedisTools } from "../features/redis/RedisTools";
@@ -96,6 +114,27 @@ const SqlEditor = lazy(() =>
 );
 const DatabaseGrid = lazy(() => import("../features/grid/DatabaseGrid"));
 const EMPTY_TABLES: TableInfo[] = [];
+const BENCHMARK_ALT_COLUMNS = [
+  ["id", "bigint", "integer"],
+  ["workspace", "text", "text"],
+  ["status", "text", "text"],
+  ["owner", "text", "text"],
+  ["email", "text", "text"],
+  ["amount", "numeric", "decimal"],
+  ["region", "text", "text"],
+  ["created_at", "timestamptz", "temporal"],
+].map(([name, databaseType, kind], i) => ({
+  id: `c${i}`,
+  name,
+  databaseType,
+  kind: kind as ResultInfo["columns"][number]["kind"],
+  nullable: false,
+  primaryKey: i === 0,
+  foreignKey: false,
+  editable: false,
+  insertable: false,
+  hasDefault: false,
+}));
 interface Props {
   tab: StudioTab;
   profile?: ConnectionProfile;
@@ -121,6 +160,7 @@ interface Props {
   onOpenSqlFile(): void;
   onSaveSqlFile(saveAs?: boolean): void;
   onSaveToLibrary(): void;
+  onOpenLocalHistory?(): void;
   onToggleBookmark(): void;
   onQueryChange(query: StudioTab["query"], options?: { force?: boolean }): void;
 }
@@ -150,6 +190,7 @@ export function Workbench({
   onOpenSqlFile,
   onSaveSqlFile,
   onSaveToLibrary,
+  onOpenLocalHistory,
   onToggleBookmark,
   onQueryChange,
 }: Props) {
@@ -157,7 +198,13 @@ export function Workbench({
     [editorSize, setEditorSize] = useState(290),
     [runningTime, setRunningTime] = useState(0),
     [planResultId, setPlanResultId] = useState<string | null>(null),
+    [outputViewTabId, setOutputViewTabId] = useState<string | null>(null),
+    [selectionStatsState, setSelectionStatsState] = useState<{
+      tabId: string;
+      stats: GridSelectionStats;
+    } | null>(null),
     [selectedRows, setSelectedRows] = useState<number[]>([]),
+    [activeCell, setActiveCell] = useState<CellTarget | null>(null),
     [focusRowRequest, setFocusRowRequest] = useState<{ seq: number; row: number } | null>(null),
     [tableDetailsState, setTableDetailsState] = useState<{
       key: string;
@@ -173,6 +220,7 @@ export function Workbench({
     [txBusy, setTxBusy] = useState(false),
     [relationBrowserSession, setRelationBrowserSession] = useState<string | null>(null),
     [relationBrowserRevision, setRelationBrowserRevision] = useState<number | null>(null),
+    [queryProfileSession, setQueryProfileSession] = useState<string | null>(null),
     editorHeight = useRef(290);
   useSyncExternalStore(dirtyStore.subscribe, dirtyStore.snapshot);
   const consoleMode = !!session && isSnowflakeConsoleSession(state, session.id);
@@ -239,10 +287,50 @@ export function Workbench({
         : 0;
   const draftInserts =
     tab.kind === "table" || queryResultEditable ? dirtyStore.insertsForTab(insertScopeId) : [];
+  const rawActiveColumns =
+    tab.kind === "table"
+      ? (tab.schema?.columns ?? [])
+      : tab.kind === "benchmark"
+        ? BENCHMARK_ALT_COLUMNS
+        : (result?.columns ?? []);
   const tableColumns = tab.kind === "table" ? (tab.schema?.columns ?? []) : [];
-  const tableLayout =
-    tab.kind === "table" ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table) : null;
-  const resolvedLayout = resolveTableLayout(tableColumns, tableLayout);
+  const activeDataLayout =
+    tab.kind === "table"
+      ? findTableLayout(state.tableLayouts, tab.connectionId, tab.table)
+      : result
+        ? (tab.resultLayouts?.[result.id] ?? null)
+        : null;
+  const resolvedLayout = resolveTableLayout(rawActiveColumns, activeDataLayout);
+  const gridMode: GridDisplayMode = tab.gridMode ?? "grid";
+  const showOutput = tab.kind === "query" && outputViewTabId === tab.id;
+  const outputEntries = tab.outputLog ?? [];
+  const canLocalFilterResult =
+    (tab.kind === "query" || tab.kind === "result") &&
+    Boolean(result && result.columns.length > 0 && !isQueryPlanResult(result, tab.planSource));
+  const resultView = useResultViewState(canLocalFilterResult ? result : undefined, {
+    disabled: running || !canLocalFilterResult,
+    lockedReason:
+      pendingCount > 0 ? "Review or discard pending edits to change sort or filters" : null,
+    onNotify: (msg) => state.notify(msg),
+  });
+  const activeResultRowIndices = canLocalFilterResult ? resultView.displayRowIndices : null;
+  const baseQueryResultRows = activeResultRowIndices
+    ? activeResultRowIndices.length
+    : (result?.retainedRows ?? 0);
+  const isActiveResultPinned = Boolean(
+    tab.kind === "query" && result && tab.pinnedResultIds?.includes(result.id),
+  );
+  const activeSelectionStats =
+    selectionStatsState?.tabId === tab.id && gridMode === "grid" && !showOutput
+      ? selectionStatsState.stats
+      : null;
+  const handleSelectionStatsChange = (stats: GridSelectionStats | null) => {
+    setSelectionStatsState(stats ? { tabId: tab.id, stats } : null);
+  };
+  const handleSelectCell = (target: CellTarget | null) => {
+    setActiveCell(target);
+    onSelect(target);
+  };
   const filtering = tab.kind === "table" && !!session?.capabilities.tableFiltering;
   const tableEditable =
     tab.kind === "table" &&
@@ -254,7 +342,9 @@ export function Workbench({
   const tableImportable =
     tableEditable &&
     profile?.safeMode !== "readOnly" &&
-    (profile?.engine === "postgres" || profile?.engine === "mysql") &&
+    (profile?.engine === "postgres" ||
+      profile?.engine === "mysql" ||
+      profile?.engine === "sqlite") &&
     tab.schema!.columns.some((col) => col.insertable);
   const mutatingDisabled = running || tab.loadingPage || tab.status === "outcomeUnknown";
   const selectedDraftIds: string[] = [];
@@ -274,11 +364,14 @@ export function Workbench({
     }
   } else if (tab.kind === "query" && result) {
     for (const visualRow of selectedRows) {
-      if (visualRow >= result.retainedRows) {
-        const draft = draftInserts[visualRow - result.retainedRows];
+      if (visualRow >= baseQueryResultRows) {
+        const draft = draftInserts[visualRow - baseQueryResultRows];
         if (draft) selectedDraftIds.push(draft.id);
       } else if (visualRow >= 0) {
-        selectedExisting.push({ resultId: result.id, row: visualRow });
+        const actualRow = activeResultRowIndices ? activeResultRowIndices[visualRow] : visualRow;
+        if (actualRow !== undefined) {
+          selectedExisting.push({ resultId: result.id, row: actualRow });
+        }
       }
     }
   }
@@ -298,14 +391,140 @@ export function Workbench({
       : pendingCount
         ? "Review or discard pending edits to change sort or filters"
         : null;
+  const hasSelectedDirtyRows =
+    selectedDraftIds.length > 0 ||
+    selectedExisting.some(
+      (entry) =>
+        dirtyStore.isDeleted(entry.resultId, entry.row) ||
+        dirtyStore.forResult(entry.resultId).some((c) => c.row === entry.row),
+    );
+  const hasActiveDirtyCell =
+    Boolean(activeCell) &&
+    (Boolean(activeCell!.insert) ||
+      Boolean(activeCell!.deleted) ||
+      Boolean(dirtyStore.get(activeCell!.resultId, activeCell!.row, activeCell!.column.id)));
+  const canRevertSelected = hasSelectedDirtyRows || hasActiveDirtyCell;
+  const cloneCandidateVisualRow: number | null =
+    selectedRows.length > 0
+      ? selectedRows[0]
+      : activeCell
+        ? activeCell.insert
+          ? (() => {
+              const draftIdx = draftInserts.findIndex(
+                (draft) => draft.id === activeCell.insert!.insertId,
+              );
+              const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
+              return draftIdx >= 0 ? baseRows + draftIdx : null;
+            })()
+          : tab.kind === "table"
+            ? (() => {
+                const page = tab.pages.find((p) => p.result.id === activeCell.resultId);
+                return page ? page.start + activeCell.row : null;
+              })()
+            : activeResultRowIndices
+              ? (() => {
+                  const idx = activeResultRowIndices.indexOf(activeCell.row);
+                  return idx >= 0 ? idx : null;
+                })()
+              : activeCell.row
+        : null;
   function stageInsertRow() {
     try {
-      const baseRows = tab.kind === "table" ? tab.loadedRows : (result?.retainedRows ?? 0);
+      const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
       dirtyStore.addInsertRow(insertScopeId);
       const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
       setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
     } catch (error) {
       state.notify(error instanceof Error ? error.message : "Could not stage inserted row");
+    }
+  }
+  async function cloneSelectedRow() {
+    if (cloneCandidateVisualRow === null) {
+      state.notify("Select a row or cell first to clone it.");
+      return;
+    }
+    try {
+      const baseRows = tab.kind === "table" ? tab.loadedRows : baseQueryResultRows;
+      const cols = tab.kind === "table" ? (tab.schema?.columns ?? []) : (result?.columns ?? []);
+      const values: Record<string, string | null> = {};
+      if (cloneCandidateVisualRow >= baseRows) {
+        const sourceDraft = draftInserts[cloneCandidateVisualRow - baseRows];
+        if (!sourceDraft) return;
+        for (const col of cols) {
+          if (!col.insertable || (col.primaryKey && col.hasDefault)) continue;
+          if (col.id in sourceDraft.values) {
+            values[col.id] = sourceDraft.values[col.id] ?? null;
+          }
+        }
+      } else {
+        const source =
+          tab.kind === "table"
+            ? (() => {
+                const page = tab.pages.find(
+                  (p) =>
+                    cloneCandidateVisualRow >= p.start &&
+                    cloneCandidateVisualRow < p.start + p.result.retainedRows,
+                );
+                return page
+                  ? { result: page.result, row: cloneCandidateVisualRow - page.start }
+                  : null;
+              })()
+            : result
+              ? (() => {
+                  const actualRow = activeResultRowIndices
+                    ? activeResultRowIndices[cloneCandidateVisualRow]
+                    : cloneCandidateVisualRow;
+                  return actualRow !== undefined ? { result, row: actualRow } : null;
+                })()
+              : null;
+        if (!source) {
+          state.notify("Scroll to load that row before cloning it.");
+          return;
+        }
+        await resultCache.ensure(source.result.id, source.row, source.result.retainedRows);
+        for (const col of cols) {
+          if (!col.insertable || (col.primaryKey && col.hasDefault)) continue;
+          const dirty = dirtyStore.get(source.result.id, source.row, col.id);
+          const raw = dirty
+            ? dirty.value
+            : (resultCache.read(source.result.id, col.id, source.row, true)?.value ?? null);
+          values[col.id] = raw;
+        }
+      }
+      dirtyStore.cloneInsertRow(insertScopeId, values);
+      const nextRow = baseRows + dirtyStore.insertsForTab(insertScopeId).length - 1;
+      setFocusRowRequest((prev) => ({ seq: (prev?.seq ?? 0) + 1, row: nextRow }));
+      state.notify("Cloned row into staged inserts");
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not clone row");
+    }
+  }
+  function handleRevertSelection() {
+    try {
+      if (hasSelectedDirtyRows) {
+        if (selectedDraftIds.length) {
+          dirtyStore.removeInsertRows(insertScopeId, selectedDraftIds);
+        }
+        const byResult = new Map<string, number[]>();
+        for (const entry of selectedExisting) {
+          byResult.set(entry.resultId, [...(byResult.get(entry.resultId) ?? []), entry.row]);
+        }
+        for (const [resultId, rows] of byResult) {
+          dirtyStore.revertRows(resultId, rows);
+        }
+        return;
+      }
+      if (activeCell) {
+        if (activeCell.insert) {
+          dirtyStore.removeInsertRows(activeCell.insert.tabId, [activeCell.insert.insertId]);
+        } else if (activeCell.deleted) {
+          dirtyStore.setDeleted(activeCell.resultId, [activeCell.row], false);
+        } else {
+          dirtyStore.revertCell(activeCell.resultId, activeCell.row, activeCell.column.id);
+        }
+      }
+    } catch (error) {
+      state.notify(error instanceof Error ? error.message : "Could not revert selected edits");
     }
   }
   function handleDeleteSelection() {
@@ -360,15 +579,22 @@ export function Workbench({
         void state
           .disconnectQuerySession(tab.querySession.id)
           .catch((error) => state.notify(messageOf(error)));
+      const excluding = new Set([tab.id]);
+      const currentTabs = useStudio.getState().tabs;
       for (const result of tab.results) {
-        resultCache.release(result.id);
         dirtyStore.clearTab(result.id, [result.id]);
-        if (!isConsoleOwnedResult(result))
-          void client.call("release_result", { resultId: result.id }).catch(() => {});
+        if (!isResultReferencedByOtherTabs(currentTabs, excluding, result.id)) {
+          resultCache.release(result.id);
+          if (!isConsoleOwnedResult(result))
+            void client.call("release_result", { resultId: result.id }).catch(() => {});
+        }
       }
       state.updateTab(tab.id, {
         connectionId: connectionId || null,
         results: [],
+        pinnedResultIds: undefined,
+        pinnedResultLabels: undefined,
+        resultLayouts: undefined,
         activeResultId: null,
         status: "idle",
         error: null,
@@ -463,13 +689,34 @@ export function Workbench({
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", end, { once: true });
   }
-  if (consoleMode && tab.kind !== "query")
+  if (consoleMode && tab.kind !== "query" && tab.kind !== "result" && tab.kind !== "benchmark")
     return (
       <p role="status">
         Metadata is disabled on this reviewed SQL console session. Open a separate profile with
         reviewed console off; temporary objects and transactions are not shared.
       </p>
     );
+  const renderGridModeSwitch = () => (
+    <div className="grid-mode-switch" role="group" aria-label="Data display mode">
+      {(
+        [
+          ["grid", "Grid"],
+          ["transpose", "Transpose"],
+          ["record", "Record"],
+        ] as const
+      ).map(([mode, label]) => (
+        <button
+          key={mode}
+          type="button"
+          className={`button ghost small ${gridMode === mode ? "active" : ""}`.trim()}
+          aria-pressed={gridMode === mode}
+          onClick={() => state.updateTab(tab.id, { gridMode: mode })}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <>
       <div className="query-toolbar">
@@ -486,13 +733,15 @@ export function Workbench({
           <span>
             {tab.kind === "benchmark"
               ? "1,000,000 virtual rows"
-              : tab.kind === "table"
-                ? `${tab.table?.schema}.${tab.table?.name}`
-                : tab.kind === "object" && tab.object
-                  ? `${tab.object.schema}.${objectTabTitle(tab.object)}`
-                  : profile?.engine === "redis"
-                    ? "Redis console"
-                    : "SQL editor"}
+              : tab.kind === "result"
+                ? tab.title
+                : tab.kind === "table"
+                  ? `${tab.table?.schema}.${tab.table?.name}`
+                  : tab.kind === "object" && tab.object
+                    ? `${tab.object.schema}.${objectTabTitle(tab.object)}`
+                    : profile?.engine === "redis"
+                      ? "Redis console"
+                      : "SQL editor"}
           </span>
           {tab.kind === "query" && (
             <select
@@ -804,6 +1053,25 @@ export function Workbench({
                   <Table2 size={13} /> Browse relations
                 </button>
               )}
+              {!consoleMode &&
+                session?.engine === "snowflake" &&
+                session?.capabilities.relationBrowsing && (
+                  <button
+                    className="button ghost small"
+                    disabled={running || !!state.sessionMetadataRefreshRequired[session.id]}
+                    title={
+                      state.sessionMetadataRefreshRequired[session.id]
+                        ? "Refresh completion context before inspecting query profiles"
+                        : "Inspect Snowflake session QUERY_HISTORY and per-operator stats"
+                    }
+                    onClick={() => {
+                      assertOrdinarySession(session.id);
+                      setQueryProfileSession(session.id);
+                    }}
+                  >
+                    <Gauge size={13} /> Query profile
+                  </button>
+                )}
               <button
                 className="button ghost small"
                 aria-label="Open SQL file"
@@ -852,6 +1120,18 @@ export function Workbench({
                 <Code2 size={13} />
                 Format
               </button>
+              {onOpenLocalHistory && (
+                <button
+                  type="button"
+                  className="button ghost small"
+                  aria-label="Open SQL Local History"
+                  title="SQL Local History (revisions & diff)"
+                  onClick={onOpenLocalHistory}
+                >
+                  <History size={13} />
+                  Local history
+                </button>
+              )}
               {dmlPending && session ? (
                 <SnowflakeDmlPendingControl
                   onDisconnect={() =>
@@ -887,7 +1167,7 @@ export function Workbench({
               )}
               {!consoleMode &&
                 profile &&
-                ["postgres", "mysql", "snowflake"].includes(profile.engine) && (
+                ["postgres", "mysql", "sqlite", "snowflake"].includes(profile.engine) && (
                   <button
                     className="button ghost small"
                     disabled={running || !session || rollbackOnly}
@@ -962,6 +1242,17 @@ export function Workbench({
               </button>
               {pendingCount > 0 && (
                 <>
+                  {canRevertSelected && (
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={running}
+                      onClick={handleRevertSelection}
+                    >
+                      <RotateCcw size={12} />
+                      Revert selected
+                    </button>
+                  )}
                   <button
                     className="button ghost small"
                     disabled={running}
@@ -985,6 +1276,16 @@ export function Workbench({
                 </>
               )}
             </>
+          )}
+          {tab.kind === "result" && tab.originSql != null && (
+            <button
+              type="button"
+              className="button ghost small"
+              onClick={() => state.openOriginatingSql(tab.id)}
+            >
+              <Code2 size={13} />
+              Open originating SQL
+            </button>
           )}
           {tab.kind === "object" && (
             <>
@@ -1041,6 +1342,17 @@ export function Workbench({
             sessionId={session.id}
             ownerTabId={tab.id}
             onClose={() => setRelationBrowserSession(null)}
+          />
+        )}
+      {!consoleMode &&
+        queryProfileSession &&
+        session?.id === queryProfileSession &&
+        !state.sessionMetadataRefreshRequired[session.id] &&
+        !running && (
+          <SnowflakeQueryProfileModal
+            key={`${tab.id}:${session.id}:query-profile`}
+            sessionId={session.id}
+            onClose={() => setQueryProfileSession(null)}
           />
         )}
       {tab.kind === "query" && profile?.engine === "redis" && (
@@ -1134,28 +1446,60 @@ export function Workbench({
             onKeyDown={tabNavigation}
           >
             {tab.results.length ? (
-              tab.results.map((result, i) => (
-                <button
-                  role="tab"
-                  id={`result-tab-${result.id}`}
-                  aria-controls={`result-panel-${tab.id}`}
-                  aria-selected={result.id === (tab.activeResultId ?? tab.results[0]?.id)}
-                  tabIndex={result.id === (tab.activeResultId ?? tab.results[0]?.id) ? 0 : -1}
-                  className={result.id === tab.activeResultId ? "active" : ""}
-                  key={result.id}
-                  onClick={() => state.updateTab(tab.id, { activeResultId: result.id })}
-                >
-                  <Table2 size={12} />
-                  Query {result.statementIndex + 1}
-                  {tab.results.filter((r) => r.statementIndex === result.statementIndex).length > 1
-                    ? ` · ${i + 1}`
-                    : ""}
-                  <span>{result.retainedRows.toLocaleString()}</span>
-                </button>
-              ))
+              tab.results.map((resItem, i) => {
+                const isPinnedSubtab = Boolean(tab.pinnedResultIds?.includes(resItem.id));
+                const pinnedTitle = tab.pinnedResultLabels?.[resItem.id];
+                return (
+                  <button
+                    role="tab"
+                    id={`result-tab-${resItem.id}`}
+                    aria-controls={`result-panel-${tab.id}`}
+                    aria-selected={
+                      !showOutput && resItem.id === (tab.activeResultId ?? tab.results[0]?.id)
+                    }
+                    tabIndex={
+                      !showOutput && resItem.id === (tab.activeResultId ?? tab.results[0]?.id)
+                        ? 0
+                        : -1
+                    }
+                    className={!showOutput && resItem.id === tab.activeResultId ? "active" : ""}
+                    key={resItem.id}
+                    onClick={() => {
+                      setOutputViewTabId(null);
+                      state.updateTab(tab.id, { activeResultId: resItem.id });
+                    }}
+                  >
+                    {isPinnedSubtab ? <Pin size={11} /> : <Table2 size={12} />}
+                    {pinnedTitle ?? (
+                      <>
+                        Query {resItem.statementIndex + 1}
+                        {tab.results.filter(
+                          (r) =>
+                            !tab.pinnedResultIds?.includes(r.id) &&
+                            r.statementIndex === resItem.statementIndex,
+                        ).length > 1
+                          ? ` · ${i + 1}`
+                          : ""}
+                      </>
+                    )}
+                    <span>{resItem.retainedRows.toLocaleString()}</span>
+                  </button>
+                );
+              })
             ) : (
               <span className="result-placeholder">Results</span>
             )}
+            <button
+              type="button"
+              className={showOutput ? "active" : ""}
+              aria-label="Database output"
+              aria-pressed={showOutput}
+              onClick={() => setOutputViewTabId(showOutput ? null : tab.id)}
+            >
+              <Terminal size={12} />
+              Output
+              {outputEntries.length > 0 && <span>{outputEntries.length}</span>}
+            </button>
           </div>
           <div className="table-view-actions">
             {result && result.editability && (
@@ -1179,15 +1523,26 @@ export function Workbench({
             {queryResultEditable && (
               <>
                 {result.columns.some((col) => col.insertable) && (
-                  <button
-                    type="button"
-                    className="button ghost small"
-                    disabled={mutatingDisabled}
-                    onClick={stageInsertRow}
-                  >
-                    <Plus size={12} />
-                    Insert row
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={mutatingDisabled}
+                      onClick={stageInsertRow}
+                    >
+                      <Plus size={12} />
+                      Insert row
+                    </button>
+                    <button
+                      type="button"
+                      className="button ghost small"
+                      disabled={mutatingDisabled || cloneCandidateVisualRow === null}
+                      onClick={() => void cloneSelectedRow()}
+                    >
+                      <Copy size={12} />
+                      Clone row
+                    </button>
+                  </>
                 )}
                 <button
                   type="button"
@@ -1215,6 +1570,17 @@ export function Workbench({
             )}
             {tab.kind === "query" && pendingCount > 0 && (
               <>
+                {canRevertSelected && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={running}
+                    onClick={handleRevertSelection}
+                  >
+                    <RotateCcw size={12} />
+                    Revert selected
+                  </button>
+                )}
                 <button
                   type="button"
                   className="button ghost small"
@@ -1241,6 +1607,14 @@ export function Workbench({
             )}
             {result && result.columns.length > 0 && (
               <>
+                {canLocalFilterResult && !showOutput && (
+                  <ResultQuickFilterBar
+                    columns={resolvedLayout.visibleColumns}
+                    view={resultView}
+                    disabled={running || pendingCount > 0}
+                  />
+                )}
+                {renderGridModeSwitch()}
                 {isQueryPlanResult(result, tab.planSource) && (
                   <button
                     className="button ghost small"
@@ -1250,7 +1624,7 @@ export function Workbench({
                     {planResultId === result.id ? "Data grid" : "View plan"}
                   </button>
                 )}
-                <CopyAsMenu gridRef={gridRef} disabled={running} />
+                <CopyAsMenu gridRef={gridRef} disabled={running || gridMode !== "grid"} />
                 <button
                   type="button"
                   className="button ghost small"
@@ -1268,6 +1642,65 @@ export function Workbench({
                 >
                   <Download size={12} />
                   Export…
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running}
+                  onClick={onOpenColumns}
+                >
+                  <Columns3 size={12} />
+                  Columns
+                  {resolvedLayout.hiddenSet.size > 0
+                    ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
+                    : ""}
+                </button>
+                <button
+                  type="button"
+                  className={`button ghost small ${isActiveResultPinned ? "active" : ""}`}
+                  aria-label={isActiveResultPinned ? "Unpin result" : "Pin result"}
+                  aria-pressed={isActiveResultPinned}
+                  disabled={running || isConsoleOwnedResult(result)}
+                  title={
+                    isActiveResultPinned
+                      ? "Unpin result snapshot (allow replacing on next query run)"
+                      : "Pin result snapshot inside console across future runs"
+                  }
+                  onClick={() => state.togglePinResult(tab.id, result.id)}
+                >
+                  {isActiveResultPinned ? <PinOff size={12} /> : <Pin size={12} />}
+                  {isActiveResultPinned ? "Unpin" : "Pin"}
+                </button>
+                {(isActiveResultPinned || tab.results.length > 1) && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    aria-label="Close result snapshot"
+                    disabled={running || isConsoleOwnedResult(result)}
+                    title="Close and release this result subtab"
+                    onClick={() => state.closeResultSubtab(tab.id, result.id)}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="button ghost small"
+                  aria-label="Open result in tab"
+                  disabled={running || isConsoleOwnedResult(result)}
+                  onClick={() => state.detachResultToTab(tab.id, result.id)}
+                >
+                  <ExternalLink size={12} />
+                  Open in tab
+                </button>
+                <button
+                  type="button"
+                  className="button ghost small"
+                  disabled={running || isConsoleOwnedResult(result)}
+                  onClick={() => state.openUtility("workspaceSql")}
+                >
+                  <Layers size={12} />
+                  Workspace SQL…
                 </button>
               </>
             )}
@@ -1288,6 +1721,53 @@ export function Workbench({
                 </>
               )}
             </span>
+          </div>
+        </div>
+      ) : tab.kind === "result" ? (
+        <div className="results-header table-views">
+          <div className="result-tabs">
+            <button className="active" aria-pressed="true" type="button">
+              <Table2 size={12} />
+              Result snapshot
+              {result ? <span>{result.retainedRows.toLocaleString()}</span> : null}
+            </button>
+          </div>
+          <div className="table-view-actions">
+            {result && result.columns.length > 0 && (
+              <>
+                {canLocalFilterResult && (
+                  <ResultQuickFilterBar columns={resolvedLayout.visibleColumns} view={resultView} />
+                )}
+                {renderGridModeSwitch()}
+                <CopyAsMenu gridRef={gridRef} disabled={gridMode !== "grid"} />
+                <button type="button" className="button ghost small" onClick={onOpenCompare}>
+                  <ArrowLeftRight size={12} />
+                  Compare…
+                </button>
+                <button type="button" className="button ghost small" onClick={onOpenExport}>
+                  <Download size={12} />
+                  Export…
+                </button>
+                <button type="button" className="button ghost small" onClick={onOpenColumns}>
+                  <Columns3 size={12} />
+                  Columns
+                  {resolvedLayout.hiddenSet.size > 0
+                    ? ` (${resolvedLayout.visibleColumns.length}/${resolvedLayout.orderedColumns.length})`
+                    : ""}
+                </button>
+                {resolvedLayout.customized && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    onClick={() => state.setResultLayout(tab.id, result.id, null)}
+                  >
+                    <RotateCcw size={12} />
+                    Reset column layout
+                  </button>
+                )}
+              </>
+            )}
+            <span className="result-caption">Detached result snapshot</span>
           </div>
         </div>
       ) : tab.kind === "table" ? (
@@ -1332,6 +1812,17 @@ export function Workbench({
                   <Plus size={12} />
                   Insert row
                 </button>
+                {tab.schema?.columns.some((col) => col.insertable) && (
+                  <button
+                    type="button"
+                    className="button ghost small"
+                    disabled={mutatingDisabled || cloneCandidateVisualRow === null}
+                    onClick={() => void cloneSelectedRow()}
+                  >
+                    <Copy size={12} />
+                    Clone row
+                  </button>
+                )}
                 <button
                   type="button"
                   className="button ghost small"
@@ -1358,7 +1849,11 @@ export function Workbench({
             )}
             {tab.view === "data" && tableColumns.length > 0 && (
               <>
-                <CopyAsMenu gridRef={gridRef} disabled={running || tab.loadingPage} />
+                {renderGridModeSwitch()}
+                <CopyAsMenu
+                  gridRef={gridRef}
+                  disabled={running || tab.loadingPage || gridMode !== "grid"}
+                />
                 {tableImportable ? (
                   <button
                     type="button"
@@ -1445,7 +1940,8 @@ export function Workbench({
       ) : (
         <div className="benchmark-note">
           <Gauge size={13} />
-          Generated on demand · no database connection · constant row storage
+          <span>Generated on demand · no database connection · constant row storage</span>
+          <div style={{ marginLeft: "auto" }}>{renderGridModeSwitch()}</div>
         </div>
       )}
       {tab.kind === "query" && tab.clientStartedAt !== undefined && (
@@ -1464,7 +1960,9 @@ export function Workbench({
           columns={tab.schema?.columns ?? []}
           disabledReason={queryLock}
           searchNote={
-            profile?.engine === "postgres" ? "case-insensitive text" : "follows column collation"
+            profile?.engine === "postgres" || profile?.engine === "sqlite"
+              ? "case-insensitive text"
+              : "follows column collation"
           }
           onChange={applyQuery}
         />
@@ -1568,6 +2066,11 @@ export function Workbench({
               error={activeTableDetailsError}
             />
           </div>
+        ) : showOutput ? (
+          <DatabaseOutputPanel
+            entries={outputEntries}
+            onClear={() => state.clearTabOutput(tab.id)}
+          />
         ) : tab.kind === "query" &&
           result &&
           isQueryPlanResult(result, tab.planSource) &&
@@ -1579,6 +2082,15 @@ export function Workbench({
             source={tab.planSource}
             canCapture={tab.status === "completed" && session?.id === tab.planSource?.sessionId}
           />
+        ) : tab.kind === "result" && !result ? (
+          <div className="results-empty">
+            <Table2 size={27} />
+            <h3>Result snapshot released</h3>
+            <p>
+              This detached snapshot was released when its connection reset. Reopen the originating
+              SQL to run a fresh query.
+            </p>
+          </div>
         ) : tab.kind === "query" && !result ? (
           <div className="results-empty">
             <Table2 size={27} />
@@ -1592,6 +2104,26 @@ export function Workbench({
               <kbd>⌘ ↵</kbd>Run current query
             </span>
           </div>
+        ) : gridMode === "transpose" ? (
+          <TransposeGridView
+            tab={tab}
+            result={result}
+            visibleColumns={resolvedLayout.visibleColumns}
+            displayRowIndices={activeResultRowIndices}
+            focusRowRequest={focusRowRequest}
+            onSelect={handleSelectCell}
+            onOpenValue={onOpenValue}
+          />
+        ) : gridMode === "record" ? (
+          <RecordCardView
+            tab={tab}
+            result={result}
+            visibleColumns={resolvedLayout.visibleColumns}
+            displayRowIndices={activeResultRowIndices}
+            focusRowRequest={focusRowRequest}
+            onSelect={handleSelectCell}
+            onOpenValue={onOpenValue}
+          />
         ) : (
           <Suspense fallback={<div className="grid-empty">Opening data grid…</div>}>
             <DatabaseGrid
@@ -1600,17 +2132,22 @@ export function Workbench({
               tab={tab}
               result={result}
               theme={state.theme}
-              onSelect={onSelect}
+              onSelect={handleSelectCell}
               onOpenValue={onOpenValue}
               onSelectedRowsChange={setSelectedRows}
+              onSelectionStatsChange={handleSelectionStatsChange}
               focusRowRequest={focusRowRequest}
+              displayRowIndices={activeResultRowIndices}
+              resultSort={canLocalFilterResult ? resultView.config.sort : undefined}
               onSort={
                 filtering
                   ? (column, additive) =>
                       queryLock
                         ? state.notify(queryLock)
                         : applyQuery(cycleSort(tab.query, column.name, additive))
-                  : undefined
+                  : canLocalFilterResult
+                    ? (column, additive) => resultView.toggleSort(column, additive)
+                    : undefined
               }
             />
           </Suspense>
@@ -1644,9 +2181,14 @@ export function Workbench({
           ) : (
             <>
               <span className={`status-dot ${tab.status}`} />
-              {result?.retainedRows.toLocaleString() ?? "0"} rows
+              {activeResultRowIndices && result
+                ? `${activeResultRowIndices.length.toLocaleString()} of ${result.retainedRows.toLocaleString()} rows`
+                : `${result?.retainedRows.toLocaleString() ?? "0"} rows`}
               {result?.status === "truncated" && (
                 <span className="truncated-label">Retention limit reached</span>
+              )}
+              {resultView.response?.truncated && (
+                <span className="truncated-label">View capped at 100,000 rows</span>
               )}
               {tab.status === "completed" && result?.columns.length === 0 && (
                 <span>{tab.metrics[result.statementIndex]?.affectedRows ?? "0"} affected</span>
@@ -1655,6 +2197,20 @@ export function Workbench({
           )}
         </div>
         <div>
+          {activeSelectionStats && (
+            <span
+              className="selection-stats-summary mono"
+              aria-label="Grid selection summary"
+              data-testid="grid-selection-summary"
+              style={{ fontSize: 11 }}
+            >
+              {activeSelectionStats.overLimit
+                ? `${activeSelectionStats.cellCount.toLocaleString()} cells selected`
+                : activeSelectionStats.numericCount > 0
+                  ? `Cells: ${activeSelectionStats.cellCount.toLocaleString()} · Distinct: ${activeSelectionStats.distinctCount.toLocaleString()} · Sum: ${activeSelectionStats.sum} · Avg: ${activeSelectionStats.avg} · Min: ${activeSelectionStats.min} · Max: ${activeSelectionStats.max}`
+                  : `Cells: ${activeSelectionStats.cellCount.toLocaleString()} · Non-null: ${activeSelectionStats.nonNullCount.toLocaleString()} · Distinct: ${activeSelectionStats.distinctCount.toLocaleString()}`}
+            </span>
+          )}
           {pendingCount > 0 && (
             <span className="dirty-count">
               <i className="dirty-dot" />

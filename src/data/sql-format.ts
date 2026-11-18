@@ -2,8 +2,8 @@ import type { EditorState, Text } from "@codemirror/state";
 import { format } from "sql-formatter";
 import type { EngineKind, SqlFormatSettings, SqlFormatStyle } from "../ipc/generated";
 
-export type SqlFormatterDialect = "postgresql" | "mysql" | "snowflake";
-export type SqlFormatScope = "global" | "postgres" | "mysql" | "snowflake";
+export type SqlFormatterDialect = "postgresql" | "mysql" | "sqlite" | "snowflake";
+export type SqlFormatScope = "global" | "postgres" | "mysql" | "sqlite" | "snowflake";
 
 export const DEFAULT_SQL_FORMAT_SETTINGS: SqlFormatSettings = {
   keywordCase: "upper",
@@ -41,6 +41,8 @@ export function sqlFormatterLanguage(engine: EngineKind): SqlFormatterDialect | 
       return "postgresql";
     case "mysql":
       return "mysql";
+    case "sqlite":
+      return "sqlite";
     case "snowflake":
       return "snowflake";
     case "redis":

@@ -1453,7 +1453,9 @@ test("Snowflake supports schema diagrams, schema diff with Snowflake migration D
   await browseDialog.getByRole("button", { name: "Inspect row 1 REGION_GEO", exact: true }).click();
   await expect(page.getByTestId("spatial-viewer")).toContainText("Polygon");
   await expect(page.getByTestId("spatial-svg-preview")).toBeVisible();
-  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("tab", { name: "Raw", exact: true }).click();
+  await page.getByLabel("Cell value").fill("SRID=4326;POINT(-122.4194 37.7749)");
+  await page.getByRole("button", { name: "Apply to staged cell", exact: true }).click();
 
   expect(errors).toEqual([]);
 });

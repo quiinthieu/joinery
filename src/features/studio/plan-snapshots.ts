@@ -4,7 +4,7 @@ import { parseQueryPlan } from "./query-plan";
 export const MAX_PLAN_SNAPSHOTS = 10;
 export const PLAN_SNAPSHOT_BUDGET = 2 * 1024 * 1024;
 export interface PlanSource {
-  engine: "postgres" | "mysql" | "snowflake";
+  engine: "postgres" | "mysql" | "sqlite" | "snowflake";
   serverVersion: string;
   connectionId: string;
   sessionId: string;
@@ -34,7 +34,7 @@ export function planSourceForExecution(
   if (
     !session ||
     plan.sessionId !== session.id ||
-    !["postgres", "mysql", "snowflake"].includes(session.engine) ||
+    !["postgres", "mysql", "sqlite", "snowflake"].includes(session.engine) ||
     plan.statements.length !== 1
   )
     return;
@@ -86,7 +86,9 @@ export function planSourceForExecution(
   const prefixes =
     session.engine === "postgres"
       ? ["EXPLAIN (FORMAT JSON)\n", "EXPLAIN (ANALYZE, FORMAT JSON)\n"]
-      : ["EXPLAIN FORMAT=JSON\n", "ANALYZE FORMAT=JSON\n", "EXPLAIN ANALYZE FORMAT=TREE\n"];
+      : session.engine === "sqlite"
+        ? ["EXPLAIN QUERY PLAN\n"]
+        : ["EXPLAIN FORMAT=JSON\n", "ANALYZE FORMAT=JSON\n", "EXPLAIN ANALYZE FORMAT=TREE\n"];
   const prefix = prefixes.find((value) => executedSql.startsWith(value));
   if (!prefix) return;
   return {
@@ -162,6 +164,7 @@ export class PlanSnapshotStore {
     const engines = {
       postgres: "PostgreSQL",
       mysql: "MySQL/MariaDB",
+      sqlite: "SQLite",
       snowflake: "Snowflake",
     } as const;
     if (engines[source.engine] !== parsed.engine)

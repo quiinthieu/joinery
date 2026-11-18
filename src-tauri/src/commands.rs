@@ -1317,3 +1317,123 @@ pub async fn delete_sql_snippet(studio: State<'_, Arc<Studio>>, id: String) -> A
         .await
         .map_err(join_error)?
 }
+
+#[tauri::command]
+pub async fn save_virtual_foreign_key(
+    studio: State<'_, Arc<Studio>>,
+    input: VirtualForeignKeyInput,
+) -> AppResult<VirtualForeignKey> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.save_virtual_foreign_key(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_virtual_foreign_key(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_virtual_foreign_key(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn run_workspace_sql(
+    studio: State<'_, Arc<Studio>>,
+    request: WorkspaceSqlRequest,
+) -> AppResult<WorkspaceSqlResponse> {
+    studio.run_workspace_sql(request).await
+}
+
+#[tauri::command]
+pub async fn search_database_data(
+    studio: State<'_, Arc<Studio>>,
+    request: DataSearchRequest,
+) -> AppResult<DataSearchReport> {
+    studio.search_database_data(request).await
+}
+
+#[tauri::command]
+pub async fn snowflake_query_history(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeQueryHistoryRequest,
+) -> AppResult<Vec<SnowflakeQueryHistoryEntry>> {
+    studio.snowflake_query_history(request).await
+}
+
+#[tauri::command]
+pub async fn snowflake_query_operator_profile(
+    studio: State<'_, Arc<Studio>>,
+    request: SnowflakeOperatorProfileRequest,
+) -> AppResult<SnowflakeOperatorProfile> {
+    studio.snowflake_query_operator_profile(request).await
+}
+
+#[tauri::command]
+pub async fn local_history_entries(
+    studio: State<'_, Arc<Studio>>,
+    tab_key: Option<String>,
+) -> AppResult<Vec<LocalHistoryEntry>> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.local_history_entries(tab_key.as_deref()))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn record_local_history(
+    studio: State<'_, Arc<Studio>>,
+    input: LocalHistoryInput,
+) -> AppResult<Option<LocalHistoryEntry>> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.record_local_history(input))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn delete_local_history_entry(
+    studio: State<'_, Arc<Studio>>,
+    id: String,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.delete_local_history_entry(&id))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn clear_local_history(
+    studio: State<'_, Arc<Studio>>,
+    tab_key: Option<String>,
+) -> AppResult<()> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.clear_local_history(tab_key.as_deref()))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn find_sql_usages(
+    studio: State<'_, Arc<Studio>>,
+    request: SqlFindUsagesRequest,
+) -> AppResult<SqlFindUsagesReport> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.find_sql_usages(request))
+        .await
+        .map_err(join_error)?
+}
+
+#[tauri::command]
+pub async fn query_result_view(
+    studio: State<'_, Arc<Studio>>,
+    request: ResultViewRequest,
+) -> AppResult<ResultViewResponse> {
+    let studio = studio.inner().clone();
+    tokio::task::spawn_blocking(move || studio.query_result_view(request))
+        .await
+        .map_err(join_error)?
+}

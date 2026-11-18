@@ -254,6 +254,7 @@ fn prepare_inner(
     let dialect: Box<dyn Dialect> = match profile.engine {
         EngineKind::Postgres => Box::new(PostgreSqlDialect {}),
         EngineKind::Mysql => Box::new(MySqlDialect {}),
+        EngineKind::Sqlite => Box::new(sqlparser::dialect::SQLiteDialect {}),
         EngineKind::Snowflake => Box::new(SnowflakeDialect {}),
         EngineKind::Redis => {
             return Err(AppError::new(
@@ -266,15 +267,28 @@ fn prepare_inner(
     let mut parser_error_location: Option<ErrorLocation> = None;
     let statements = match Parser::parse_sql(dialect.as_ref(), parse_sql) {
         Ok(ast) => {
-            let ranges = split_sql_byte_ranges(dialect.as_ref(), parse_sql)?;
+            let mut ranges = split_sql_byte_ranges(dialect.as_ref(), parse_sql)?;
             if ast.is_empty() {
                 return Err(AppError::invalid("The query contains only comments"));
             }
             if ranges.len() != ast.len() {
-                return Err(AppError::new(
-                    ErrorCode::Unsupported,
-                    "This procedural batch cannot be split safely. Execute supported statements separately.",
-                ));
+                if ast.len() == 1
+                    && ranges.len() > 1
+                    && profile.engine != EngineKind::Snowflake
+                    && matches!(
+                        ast[0],
+                        Statement::CreateTrigger { .. }
+                            | Statement::CreateProcedure { .. }
+                            | Statement::CreateFunction { .. }
+                    )
+                {
+                    ranges = vec![(ranges[0].0, ranges[ranges.len() - 1].1)];
+                } else {
+                    return Err(AppError::new(
+                        ErrorCode::Unsupported,
+                        "This procedural batch cannot be split safely. Execute supported statements separately.",
+                    ));
+                }
             }
             ast.iter()
                 .zip(ranges)
@@ -742,11 +756,53 @@ impl Visitor for Classification {
                     "utc_timestamp",
                 ]
                 .contains(&builtin);
+            let sqlite_builtin = self.engine == Some(EngineKind::Sqlite)
+                && [
+                    "sqlite_version",
+                    "sqlite_source_id",
+                    "instr",
+                    "substr",
+                    "replace",
+                    "ltrim",
+                    "rtrim",
+                    "typeof",
+                    "ifnull",
+                    "iif",
+                    "hex",
+                    "unhex",
+                    "quote",
+                    "unicode",
+                    "char",
+                    "printf",
+                    "format",
+                    "date",
+                    "time",
+                    "datetime",
+                    "julianday",
+                    "unixepoch",
+                    "strftime",
+                    "total",
+                    "group_concat",
+                    "json",
+                    "json_extract",
+                    "json_type",
+                    "json_valid",
+                    "json_array",
+                    "json_object",
+                    "json_group_array",
+                    "json_group_object",
+                ]
+                .contains(&builtin);
             let snowflake_observer = self.engine == Some(EngineKind::Snowflake)
                 && is_snowflake_zero_argument_observer(function);
             let snowflake_data =
                 self.engine == Some(EngineKind::Snowflake) && is_snowflake_data_function(function);
-            if !(common_builtin || mysql_builtin || snowflake_observer || snowflake_data) {
+            if !(common_builtin
+                || mysql_builtin
+                || sqlite_builtin
+                || snowflake_observer
+                || snowflake_data)
+            {
                 self.raise(StatementKind::Unknown);
             }
         }
@@ -891,10 +947,12 @@ pub enum ProvenanceResolution {
 fn dialect_for_provenance(engine: EngineKind) -> &'static dyn Dialect {
     static PG: PostgreSqlDialect = PostgreSqlDialect {};
     static MYSQL: MySqlDialect = MySqlDialect {};
+    static SQLITE: sqlparser::dialect::SQLiteDialect = sqlparser::dialect::SQLiteDialect {};
     static SNOWFLAKE: SnowflakeDialect = SnowflakeDialect {};
     match engine {
         EngineKind::Postgres | EngineKind::Redis => &PG,
         EngineKind::Mysql => &MYSQL,
+        EngineKind::Sqlite => &SQLITE,
         EngineKind::Snowflake => &SNOWFLAKE,
     }
 }
@@ -916,7 +974,7 @@ fn ident_matches_target(engine: EngineKind, ident: &Ident, target: &str) -> bool
                 ident.value.eq_ignore_ascii_case(target)
             }
         }
-        EngineKind::Mysql => ident.value.eq_ignore_ascii_case(target),
+        EngineKind::Mysql | EngineKind::Sqlite => ident.value.eq_ignore_ascii_case(target),
         _ => false,
     }
 }
@@ -929,7 +987,7 @@ fn ident_matches_ident(engine: EngineKind, left: &Ident, right: &Ident) -> bool 
             (false, true) => left.value.to_ascii_lowercase() == right.value,
             (false, false) => left.value.eq_ignore_ascii_case(&right.value),
         },
-        EngineKind::Mysql => left.value.eq_ignore_ascii_case(&right.value),
+        EngineKind::Mysql | EngineKind::Sqlite => left.value.eq_ignore_ascii_case(&right.value),
         _ => false,
     }
 }
@@ -1024,7 +1082,10 @@ pub fn analyze_single_table_select(
     sql: &str,
     default_schema: Option<&str>,
 ) -> Result<SingleTableSelectCandidate, String> {
-    if !matches!(engine, EngineKind::Postgres | EngineKind::Mysql) {
+    if !matches!(
+        engine,
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Sqlite
+    ) {
         return Err("Engine does not support query result editing".into());
     }
 
@@ -1133,7 +1194,11 @@ pub fn analyze_single_table_select(
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned)
-                .or_else(|| (engine == EngineKind::Postgres).then(|| "public".to_owned()))
+                .or_else(|| match engine {
+                    EngineKind::Postgres => Some("public".to_owned()),
+                    EngineKind::Sqlite => Some("main".to_owned()),
+                    _ => None,
+                })
                 .ok_or_else(|| {
                     "Unqualified table requires an active schema or database".to_string()
                 })?;
@@ -1297,12 +1362,14 @@ pub fn verify_result_provenance(
     let mut seen_names = std::collections::HashSet::with_capacity(expanded_live_cols.len());
     let mut enriched_columns = Vec::with_capacity(expanded_live_cols.len());
 
+    let case_insensitive_cols = matches!(candidate.engine, EngineKind::Mysql | EngineKind::Sqlite);
+
     for (index, (live_col, reported_col)) in expanded_live_cols
         .iter()
         .zip(result_columns.iter())
         .enumerate()
     {
-        let same_name = if candidate.engine == EngineKind::Mysql {
+        let same_name = if case_insensitive_cols {
             reported_col.name.eq_ignore_ascii_case(&live_col.name)
         } else {
             reported_col.name == live_col.name
@@ -1316,7 +1383,7 @@ pub fn verify_result_provenance(
             };
         }
 
-        let dedup_key = if candidate.engine == EngineKind::Mysql {
+        let dedup_key = if case_insensitive_cols {
             live_col.name.to_ascii_lowercase()
         } else {
             live_col.name.clone()
@@ -1335,7 +1402,7 @@ pub fn verify_result_provenance(
     for pk in &live_schema.primary_key {
         let has_pk = enriched_columns.iter().any(|col| {
             col.primary_key
-                && if candidate.engine == EngineKind::Mysql {
+                && if case_insensitive_cols {
                     col.name.eq_ignore_ascii_case(pk)
                 } else {
                     &col.name == pk
@@ -1356,7 +1423,7 @@ pub fn verify_result_provenance(
 
     let omits_required_insert_column = live_schema.columns.iter().any(|table_col| {
         let is_projected = enriched_columns.iter().any(|proj_col| {
-            if candidate.engine == EngineKind::Mysql {
+            if case_insensitive_cols {
                 proj_col.name.eq_ignore_ascii_case(&table_col.name)
             } else {
                 proj_col.name == table_col.name
@@ -2193,6 +2260,44 @@ mod tests {
             ProvenanceResolution::ReadOnly {
                 reason: "Projection repeats column \"status\"".into(),
             }
+        );
+    }
+
+    #[test]
+    fn sqlite_readonly_allows_pure_scalar_builtins_and_blocks_load_extension() {
+        let mut p = profile(SafeMode::ReadOnly, Environment::Local);
+        p.engine = EngineKind::Sqlite;
+        p.database = ":memory:".into();
+
+        let plan = prepare(
+            "sqlite-ro",
+            &p,
+            "SELECT sqlite_version(), datetime('now'), instr('Ada', 'A'), substr('Ada', 1, 2);",
+        )
+        .unwrap();
+        assert!(!plan.requires_approval);
+        assert_eq!(plan.statements[0].kind, StatementKind::Read);
+
+        let blocked = prepare("sqlite-ro", &p, "SELECT load_extension('./evil');").unwrap_err();
+        assert_eq!(blocked.code, ErrorCode::PolicyBlocked);
+
+        // Single-statement SQLite CREATE TRIGGER is blocked in ReadOnly, allowed as DDL in Confirm,
+        // while multi-statement procedural batches remain rejected as Unsupported.
+        let single_trg = "CREATE TRIGGER trg_demo AFTER INSERT ON orders BEGIN SELECT 1; END;";
+        assert_eq!(
+            prepare("sqlite-ro", &p, single_trg).unwrap_err().code,
+            ErrorCode::PolicyBlocked
+        );
+        p.safe_mode = SafeMode::Confirm;
+        let trg_plan = prepare("sqlite-rw", &p, single_trg).unwrap();
+        assert_eq!(trg_plan.statements.len(), 1);
+        assert_eq!(trg_plan.statements[0].kind, StatementKind::Ddl);
+        assert!(trg_plan.requires_approval);
+
+        let batch_trg = "CREATE TRIGGER trg_demo AFTER INSERT ON orders BEGIN SELECT 1; END; DROP TABLE orders;";
+        assert_eq!(
+            prepare("sqlite-rw", &p, batch_trg).unwrap_err().code,
+            ErrorCode::Unsupported
         );
     }
 }

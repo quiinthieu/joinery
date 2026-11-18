@@ -15,6 +15,7 @@ pub(crate) use outcomes::{
     OutcomeReservation, VolatileRollbackToken,
 };
 mod library;
+mod local_history;
 mod recovery;
 pub(crate) mod recovery_crypto;
 pub(crate) mod recovery_stream;
@@ -62,6 +63,10 @@ impl Persistence {
         })
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn profiles(&self) -> AppResult<Vec<ConnectionProfile>> {
         self.json_rows("SELECT json FROM profiles_v8 ORDER BY id")
     }
@@ -105,6 +110,7 @@ impl Persistence {
         if !profile.store_drafts {
             workspace::purge_drafts(&tx, &profile.id)?;
         }
+        local_history::enforce_profile_privacy(&tx, profile)?;
         tx.commit().map_err(db_error)
     }
 
@@ -129,6 +135,7 @@ impl Persistence {
         history::lifecycle::redact_profile(&tx, id)?;
         workspace::purge_connection(&tx, id)?;
         library::purge_connection(&tx, id, purge_bound_queries)?;
+        local_history::purge_connection(&tx, id)?;
         tx.commit().map_err(db_error)
     }
 
@@ -219,6 +226,7 @@ impl Persistence {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(db_error)?;
         history::lifecycle::clear(&tx)?;
+        local_history::clear_all(&tx)?;
         tx.commit().map_err(db_error)
     }
 

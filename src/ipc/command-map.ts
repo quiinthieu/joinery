@@ -28,6 +28,8 @@ import type {
   CsvImportOptions,
   CsvImportPreview,
   DataCompareReport,
+  DataSearchReport,
+  DataSearchRequest,
   DatabaseObjectRef,
   DatabaseObjectSummary,
   DdlStatement,
@@ -41,6 +43,8 @@ import type {
   InboundForeignKey,
   IndexConstraintAction,
   IndexConstraintPreview,
+  LocalHistoryEntry,
+  LocalHistoryInput,
   LockWaitSnapshot,
   RecoveryBackup,
   RecoveryOperation,
@@ -56,6 +60,8 @@ import type {
   ResourceUsage,
   ResultChanges,
   ResultInfo,
+  ResultViewRequest,
+  ResultViewResponse,
   SavedBookmark,
   SavedQuery,
   SavedQueryInput,
@@ -74,6 +80,10 @@ import type {
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
+  VirtualForeignKey,
+  VirtualForeignKeyInput,
+  WorkspaceSqlRequest,
+  WorkspaceSqlResponse,
   SshHostKey,
   TableChanges,
   TableInfo,
@@ -108,6 +118,12 @@ import type {
   SnowflakeConsoleReceiptArchiveResult,
   SnowflakeConsolePending,
   SnowflakeConsoleStorage,
+  SnowflakeOperatorProfile,
+  SnowflakeOperatorProfileRequest,
+  SnowflakeQueryHistoryEntry,
+  SnowflakeQueryHistoryRequest,
+  SqlFindUsagesReport,
+  SqlFindUsagesRequest,
 } from "./generated";
 
 /**
@@ -675,6 +691,54 @@ export interface JoineryCommandMap {
   };
   delete_sql_snippet: {
     args: { id: string };
+    result: void;
+  };
+  save_virtual_foreign_key: {
+    args: { input: VirtualForeignKeyInput };
+    result: VirtualForeignKey;
+  };
+  delete_virtual_foreign_key: {
+    args: { id: string };
+    result: void;
+  };
+  run_workspace_sql: {
+    args: { request: WorkspaceSqlRequest };
+    result: WorkspaceSqlResponse;
+  };
+  search_database_data: {
+    args: { request: DataSearchRequest };
+    result: DataSearchReport;
+  };
+  snowflake_query_history: {
+    args: { request: SnowflakeQueryHistoryRequest };
+    result: SnowflakeQueryHistoryEntry[];
+  };
+  snowflake_query_operator_profile: {
+    args: { request: SnowflakeOperatorProfileRequest };
+    result: SnowflakeOperatorProfile;
+  };
+  find_sql_usages: {
+    args: { request: SqlFindUsagesRequest };
+    result: SqlFindUsagesReport;
+  };
+  query_result_view: {
+    args: { request: ResultViewRequest };
+    result: ResultViewResponse;
+  };
+  local_history_entries: {
+    args: { tabKey?: string | null };
+    result: LocalHistoryEntry[];
+  };
+  record_local_history: {
+    args: { input: LocalHistoryInput };
+    result: LocalHistoryEntry | null;
+  };
+  delete_local_history_entry: {
+    args: { id: string };
+    result: void;
+  };
+  clear_local_history: {
+    args: { tabKey?: string | null };
     result: void;
   };
   native_smoke_fixture: {

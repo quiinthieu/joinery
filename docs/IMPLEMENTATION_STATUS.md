@@ -1,5 +1,229 @@
 # Implementation and release status
 
+## DataGrip 2026.3 grid layouts, pinned results, local result filter/sort, sync SQL, virtual foreign keys, Workspace SQL/data search, SQL Local History, AST SQL refactoring & quick-fixes, Snowflake spatial/special-table/profiler workflows, and local SQLite engine (17 November 2026)
+
+Following PR #73 (`1cb44de`, shipped and installed on macOS ARM64 as GitHub
+pre-release `v0.1.0-preview.18`), branch `feat/datagrip-2026-3-workflows`
+implements and hardens the local DataGrip 2026.3 (`263.7307.216`) daily workflow
+surfaces across PostgreSQL, MySQL/MariaDB, local SQLite, and Snowflake SDK
+sessions (candidate for `v0.1.0-preview.19`):
+
+- **Column Pinning, Transpose & Record Views, Row Clone, Cell/Row Revert, and Detached Result Tabs (`32b2d15`)**:
+  Extended `SavedTableLayout` (`pinned_columns`, disjoint from `hidden_columns`,
+  persisted per `connectionId + schema + table` in `persistence/workspace.rs`),
+  `table-layout.ts` (`pinnedSet`, Glide `freezeColumns` `pinnedCount`,
+  `toggleColumnPin`, `showAllColumns`, `hideOptionalColumns`,
+  `fitColumnsToWindow`), and `TableColumnsDialog.tsx`. Added `TransposeGridView`
+  and `RecordCardView` (`GridAltViews.tsx`), `DirtyStore` `cloneInsertRow` /
+  `revertCell` / `revertRows`, Snowflake `RelationBrowser` `Clone` + `Transpose`
+  modes, and detached `"result"` tabs (`detachResultToTab` / `openOriginatingSql` /
+  `setResultLayout` in `studio.ts`, `Workbench.tsx`, and `App.tsx`) retaining
+  in-memory `ResultStore` snapshots until the last referencing tab closes.
+- **User-Defined Virtual Foreign Keys Across Diagrams, JOIN Completion, and Data Navigation (`4eba148`)**:
+  Added `virtual_relationship: bool` across `ForeignKey`, `InboundForeignKey`,
+  and `DiagramForeignKey`, plus bounded `'virtual-foreign-keys'` SQLite
+  persistence (`MAX_VIRTUAL_FOREIGN_KEYS = 256`, composite column pairing,
+  cascade purge on `delete_profile`, pre-allocation byte bounds in
+  `persistence/recovery_stream.rs`, clean-workspace verification in
+  `snowflake_table_qualification_profile.rs`, and backup/recovery validation in
+  `persistence/library.rs` and `persistence/recovery.rs`). Merged virtual FKs
+  into `Studio::schema` and `Studio::browse_with_approval` display columns (while
+  preserving pure physical `Studio::schema_for_session` provenance for
+  PostgreSQL/MySQL `browse_target` and `apply_target` edit-identity checks),
+  `Studio::editor_schema` (enabling live SQL `JOIN` completion & hover across
+  PostgreSQL, MySQL/MariaDB, and Snowflake without extra `completion_catalog`
+  database round-trips), `Studio::referencing_foreign_keys`, and
+  `Studio::schema_diagram` (`execution.rs`), with live open-tab reconciliation in
+  `studio.ts`, dashed `virtual` ER edges in `DiagramView.tsx`,
+  `VirtualForeignKeyDialog.tsx`, `LibraryModal.tsx` (`Relationships` tab),
+  `StructureView`, and Snowflake `RelationBrowser` outbound/inbound navigation.
+- **Cross-Source Workspace SQL & Bounded Full-Text Data Search (`8ec0477`, `ac7953d`)**:
+  Added `workspace_sql.rs`, a sandboxed read-only in-memory SQLite engine
+  (`PRAGMA temp_store=MEMORY`, `PRAGMA query_only=ON`, `SQLITE_LIMIT_LENGTH = 4 MiB`,
+  `NONE`-affinity lossless numeric preservation for >53-bit and >63-bit Snowflake
+  `NUMBER(38, s)` / PostgreSQL `NUMERIC` values, strict `conn.authorizer`
+  allowing only `SELECT`/`Read`/`Recursive`/safe scalar functions, 15s
+  `progress_handler` timeout, single-statement check, `<= 16` alias mounts,
+  `<= 100,000` rows / `32 MiB` total, blocking retained-console results) that
+  joins and aggregates retained `ResultStore` snapshots across engines and
+  publishes results as first-class `ResultInfo` snapshots (`WorkspaceSqlView.tsx`
+  with code-split `DatabaseGrid` and duplicate-column layout preservation in
+  `table-layout.ts`). Added `data_search.rs` and `Driver::search_data` across
+  `drivers/postgres.rs`, `drivers/mysql.rs`, and `drivers/snowflake_external.rs`
+  (`DataSearchView.tsx`), performing bounded parameterized substring scans
+  (`<= 50` tables, `<= 64` non-binary columns per table, `10` sample hits per
+  table, `<= 200` total hits / `2 MiB`, `!`-escaped `LIKE`/`ILIKE` and type-aware
+  Snowflake `TO_VARCHAR`/`TO_JSON`/`ST_ASEWKT` `CONTAINS`/`STARTSWITH` predicates
+  with zero SQL interpolation) with click-through to filtered table/SQL views.
+- **Privacy-Safe SQL Local History with Diff & Restore (`d8bbba8`)**:
+  Added `persistence/local_history.rs` (`'local-history'`, `<= 200` global
+  snapshots, `<= 30` per `tab_key`, `<= 128 KiB` per entry, `<= 2 MiB` total),
+  strictly gating `Executed` revisions on `store_query_text`, `Snapshot`/`Saved`
+  revisions on `store_drafts`, blocking reviewed Snowflake console sessions and
+  unconnected automatic `.sql` file saves, deduplicating consecutive identical
+  SQL per `tab_key`, automatically purging matching revisions on `save_profile`
+  privacy opt-outs, `delete_profile`, and `clear_history`, and validating in
+  `recovery::validate` and `recovery_stream::validate`. Added Myers line-diff
+  comparison (`local-diff.ts`) and `LocalHistoryModal.tsx` (`Restore to editor`
+  and `Open in new tab` without automatic execution).
+- **Round 1 Verification Hardening & E2E / Docker Specs (`8bad89f`, `49c9590`, `2493654`)**:
+  Fixed `DataSearchView.tsx` `openMatch` 3-part Snowflake database qualification
+  (resolving active Snowflake session database / `profile.snowflake?.database`)
+  and preserved multi-column PG/MySQL `OR` match filters (`FilterMode: "raw"`);
+  projected `ST_ASEWKT("col") AS "col"` for Snowflake `GEOGRAPHY`/`GEOMETRY`
+  columns in `data_search.rs` so WKT coordinate searches populate
+  `matched_columns`; replaced panicking `row.get` with fallible `row.try_get`
+  and added per-table session-closure / cancellation checks across
+  `Postgres::search_data`, `Mysql::search_rows`, and
+  `SnowflakeExternal::search_data`; quoted SQLite mount aliases in
+  `WorkspaceSqlView.tsx` `defaultSql` and subscribed `discoverMountableDatasets`
+  to reactive `sessions`/`consoleStates`; guarded `TransposeGridView`,
+  `RecordCardView`, and `DatabaseGrid` table editability with
+  `!readOnlyProfile && !consoleMode`; and added Playwright E2E coverage
+  (`tests/e2e/datagrip-2026-3-workflows.spec.ts`) plus disposable PostgreSQL and
+  MySQL integration tests (`src-tauri/tests/postgres.rs`,
+  `src-tauri/tests/mysql.rs`).
+- **Writable Snowflake Spatial `GEOGRAPHY` and `GEOMETRY` Grid Codecs (`44fcbac`)**:
+  Extended `drivers/snowflake_mutations.rs`, `drivers/snowflake_edit_codec.rs`,
+  `snowflake-grid-staging.ts`, and `RelationBrowser.tsx` (`SnowflakeCellInspectorModal`)
+  to validate WKT, EWKT (`SRID=n;...`), and RFC-7946 GeoJSON payloads, compute
+  canonical IEEE-754 + SRID fingerprints across GeoJSON vs WKT representations,
+  bind parameterized `TO_GEOGRAPHY(CAST(? AS VARCHAR))` /
+  `TO_GEOMETRY(CAST(? AS VARCHAR))` DML expressions, and verify exact whole-row
+  conflict predicates via `ST_ASEWKB(...) IS NOT DISTINCT FROM ST_ASEWKB(...)`.
+- **Snowflake Special-Table Inspector & Post-Execution Query Profiler (`8e1b5f1`)**:
+  Added `SnowflakeTableSubtype` (`Standard`, `Dynamic`, `External`, `Hybrid`,
+  `Event`, `Iceberg`, `Transient`, `Temporary`), `SnowflakeTableDetails`
+  (`SHOW DYNAMIC TABLES` `target_lag`/`warehouse`/`refresh_mode`/`scheduling_state`,
+  `SHOW EXTERNAL TABLES` `location`/`file_format_name`/`file_format_type` with
+  two-pass Snowflake string + `LIKE` escaping,
+  and Dynamic Table upstream `dynamic table source` dependency extraction via
+  `sqlparser` AST + top-level `AS` tokenizer fallback), and post-execution
+  `snowflake_query_history` (`INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION` with
+  wire-level `NULL::VARCHAR` SQL text redaction when `!store_query_text`) +
+  `snowflake_query_operator_profile`
+  (`GET_QUERY_OPERATOR_STATS(?)` operator DAG, row counts, partition pruning,
+  local/remote disk spill bytes, and `(step_id, operator_id)` bottleneck breakdown) surfaced in
+  `ObjectInspectorView.tsx`, `Workbench.tsx`, and
+  `SnowflakeQueryProfileModal.tsx`.
+- **AST-Aware SQL `Find Usages`, `Extract CTE`, and `Expand Wildcard` Refactorings (`a7a1e4e`)**:
+  Added `src-tauri/src/sql_refactor.rs` (`find_sql_usages` across PostgreSQL,
+  MySQL/MariaDB, Snowflake, and SQLite open tabs + persisted `saved_queries`,
+  resolving table/view/CTE shadowing, aliases, single-table unqualified columns,
+  `INSERT`/`UPDATE` targets, and routines while resiliently recovering from
+  broken sibling statements), plus `src/features/studio/sql-refactor.ts` and
+  `SqlRefactorDialog.tsx` (`Extract CTE` distinguishing `derivedTable` vs scalar
+  /`IN`/`EXISTS` `expressionSubquery` `(SELECT * FROM cte)` vs `wrapStatement`
+  and non-recursive CTE ordering, and `Expand Wildcard` for `*`, `alias.*`, and
+  local CTE projections), wired into `SqlEditor.tsx`,
+  `SqlNavigationOverlay.tsx`, and `ObjectInspectorView.tsx`.
+- **First-Class Local SQLite Database Engine, Internal-Path Isolation, and GUI DDL/Migration Parity (`b8a3d1d`, `02e5b36`, `f0bf846`)**:
+  Added `EngineKind::Sqlite` (`src-tauri/src/drivers/sqlite.rs` backed by
+  bundled `rusqlite`) supporting `:memory:` and local `.sqlite`/`.db` files,
+  canonical symlink-resolved path guards blocking Joinery's internal metadata and
+  temp directories, `SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only = ON` +
+  `SQLITE_LIMIT_ATTACHED = 0` in `SafeMode::ReadOnly`,
+  `PRAGMA foreign_keys = ON` + `busy_timeout = 5000` in writable sessions,
+  `sqlite_master` + `PRAGMA table_xinfo`/`index_list`/`index_info`/`foreign_key_list`
+  catalog/explorer/inspector/DDL (quoted keyword column `CHECK`/`GENERATED`
+  extraction, case-insensitive `sqlite_schema` lookup, schema-qualified trigger
+  header parsing, and single-statement `CREATE TRIGGER` console execution)/ER
+  `schema_diagram`/`schema_snapshot` diff, GUI DDL & migration builder
+  (`CREATE TABLE`, `ADD`/`RENAME`/`DROP COLUMN`, index create/drop,
+  `ANALYZE`/`VACUUM`/`REINDEX`), server-sorted/filtered/paged `TableView`
+  (explicit PK keyset pagination and single-page read-only preview on keyless
+  tables), conflict-checked `SAVEPOINT` grid edits/inserts/deletes, editable
+  `SELECT` query results, multi-batch CSV import, live `DataCompareDialog`,
+  manual `BEGIN`/`COMMIT`/`ROLLBACK` transactions, `EXPLAIN QUERY PLAN` tree
+  visualization, parameterized `search_data`, and live `inspection_schema` SQL
+  column diagnostics, verified end-to-end by `src-tauri/tests/sqlite.rs` (`4/4`).
+- **Multi-Format Data Extractors, Selection Summary Stats, Session Output Log, SQL Codegen, and `Inline CTE` (`0f3bcd8`, `f0bf846`, `e66dc75`)**:
+  Extended `copy-format.ts` (`CopyAsMenu.tsx` and Snowflake `RelationBrowser.tsx`
+  `Copy slice`) across 9 formats (`CSV`, `TSV`, `JSON`, `NDJSON`, `SQL INSERT`,
+  PK-targeted `SQL UPDATE`, `SQL IN (...)`, `Markdown`, and `HTML table`) while
+  fixing uncached query-result `⌘C` page loading in `DatabaseGrid.tsx`. Added
+  lossless `BigInt`-scaled `selection-stats.ts` footer metrics (`Cells`,
+  `Non-null`, `Sum`, `Avg`, `Min`, `Max`), bounded per-session
+  `DatabaseOutputPanel.tsx` (`<= 200` SQL-free execution metadata entries),
+  dialect-quoted `sql-codegen.ts` (`SELECT`, `INSERT`, `UPDATE`, `DELETE` with
+  `<= 64`-char / `<= 64`-slot collision-safe `:param` names and Snowflake
+  `VALUES (DEFAULT)` support across `StructureView`, Snowflake
+  `ObjectInspectorView`, and `Sidebar`), and AST-aware `Inline CTE` (supporting
+  `FROM`/`JOIN`/`MERGE ... USING` call sites while rejecting DML target CTEs and
+  recursive/chained CTE hazards).
+- **Pinned Console Result Subtabs, Rust-Backed Local Result Filter/Sort, Data Synchronization SQL, and Column Typo Quick-Fixes (`faff537`, `e66dc75`)**:
+  Added `src-tauri/src/result_view.rs` (`query_result_view`, computing compact
+  `Vec<u32>` display-to-actual row maps up to `100,000` rows / `32 MiB` with
+  exact `NULL` matching, explicit `ResultLimitReached` rejection on `>100,000`-row
+  in-memory sorts to prevent partial top-N distortion, zero-allocation exact
+  decimal comparison for 38-digit Snowflake `NUMBER` / 64-bit integers, and
+  `ASC NULLS LAST` / `DESC NULLS FIRST` multi-column sorting) plus
+  `result-view.tsx` (`ResultQuickFilterBar` match counts, inline error status,
+  pending-edit `lockedReason` guards, and header click / Shift+click sorting
+  across Grid, Transpose, Record, detached `"result"`, and `WorkspaceSqlView`
+  tabs without re-executing SQL). Added console result pinning
+  (`pinnedResultIds` / `pinnedResultLabels`, up to `8` pinned read-only snapshots
+  preserved across subsequent console runs and exposed to `DataCompareDialog` and
+  `WorkspaceSqlView`), bidirectional dialect-quoted Data Synchronization SQL
+  generation (`data-sync-sql.ts` + `DataCompareDialog.tsx` `INSERT missing` /
+  changed-columns-only `UPDATE modified` / opt-in `DELETE extra` with truncation
+  & anomaly warnings and review-first `Open Sync SQL in editor`), and
+  Damerau-Levenshtein `Did you mean:` column typo quick-fix chips in
+  `SqlColumnInspectionDialog.tsx` across PostgreSQL, MySQL/MariaDB, SQLite, and
+  Snowflake.
+
+Local and macOS ARM64 host verification recorded on `feat/datagrip-2026-3-workflows` (18 November 2026):
+
+- Frontend, formatting, contracts & build: `pnpm format:check` clean,
+  `pnpm contracts && tsc -b` clean, `vitest run` **`1,116/1,116` tests passed
+  across `84` test files** (`0` failed), and `pnpm build` + `pnpm build:smoke` clean
+  with `DatabaseGrid` and `SqlEditor` code-split (`0` errors).
+- Rust static analysis & unit/integration suites: `cargo fmt --check`,
+  `cargo check`, and strict
+  `cargo clippy --all-targets --all-features -- -D warnings` clean (`0` errors),
+  **`804/804` `--lib` unit tests passed** (`0` failed, `5` ignored — including all
+  loopback mock-socket, `snowflake_runtime` setuid/sticky-bit, `result_view`,
+  `safety`, `sql_refactor`, `snowflake_mutations`, `snowflake_explorer`,
+  `data_search`, `workspace_sql`, `local_history`, and
+  `datagrip_2026_3_profile_cleanup_and_sqlite_memory_explain_inspection_workflow`
+  tests), **`115/115` non-Docker integration tests passed** (`43/43`
+  `tests/snowflake_process.rs`, `33/33` `tests/snowflake_external.rs` including
+  real child-process `SnowflakeExternal::search_data` with spatial `ST_ASEWKT`,
+  `11/11` `tests/snowflake_profile.rs`, `9/9`
+  `tests/snowflake_table_qualification_cli.rs`, `8/8`
+  `tests/history_lifecycle.rs`, `4/4` end-to-end `tests/sqlite.rs` against a real
+  embedded SQLite 3 database, `2/2` `tests/groups.rs`, `2/2`
+  `tests/credential_store.rs`, `2/2` `tests/large_results.rs`, and `1/1`
+  `tests/recovery.rs`), plus live disposable Docker PostgreSQL 17
+  `datagrip_2026_3_data_search_virtual_fks_workspace_sql_and_local_history`
+  passed.
+- Node, Python, Native macOS WebView & Playwright E2E suites: **`443/443`**
+  `snowflake-helper` tests passed (`0` failed, including loopback HTTP/TLS
+  redirect-guard suites), `136/136` `pnpm test:snowflake:qualification`, `59/59`
+  `pnpm test:snowflake:runtime`, `11/11` `pnpm test:snowflake:canary`, `7/7`
+  `pnpm test:native:resources`, `6/6` `pnpm test:git`, `6/6`
+  `pnpm test:native:recovery:runner`, `11/11`
+  `pnpm test:native:encrypted-recovery:runner`,
+  `verify-snowflake-package.mjs` (`passed: true`, `entryCount: 15111`,
+  `symlinkCount: 5`), native macOS WKWebView smoke (`scripts/native-smoke.py`:
+  **`3/3` passed**, `30` cleanup cycles, `~110 MiB` peak RSS), native encrypted
+  metadata recovery (`scripts/native-encrypted-recovery.py`: **`errors: []`**),
+  and Playwright E2E (`tests/e2e/datagrip-2026-3-workflows.spec.ts` +
+  `tests/e2e/snowflake-datagrip-workflows.spec.ts`: **`5/5` passed**, verifying
+  responsive `.results-header` / `.table-view-actions` wrapping without pointer
+  interception, profile draft cleanup isolation across specs, PostgreSQL
+  Transpose/Record/Pinned/Detached/Workspace SQL/Data Search/Virtual FK/Local
+  History workflows, embedded SQLite `:memory:` `EXPLAIN QUERY PLAN` + `Extract
+  CTE` / `Inline CTE` + `Database output` + column typo quick-fix workflows, and
+  Snowflake E2E workflows).
+
+External replacement gates remain explicitly open: zero live Snowflake account
+queries have been executed pending owner approval of
+[`docs/snowflake-sandbox-qualification-plan.md`](snowflake-sandbox-qualification-plan.md);
+Apple Developer ID signing/notarization, Windows/Linux packaging, updater
+qualification, and external non-fixture database vendor qualification remain
+open.
+
 ## Snowflake schema diagrams, schema diff/migration DDL, and rich cell inspectors (15 November 2026)
 
 Following PR #72 (`33250cf`, `main` `Validate` run `43684009179`, published and

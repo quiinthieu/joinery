@@ -90,4 +90,25 @@ describe("dirty cell tracking", () => {
     expect(store.pendingCountForTab("tab-1", ["p1"])).toBe(0);
     expect(store.count).toBe(0);
   });
+
+  it("clones row values into a new draft insert and selectively reverts cells and rows", () => {
+    const store = new DirtyStore();
+    store.set({ resultId: "p1", row: 0, column: "c1", original: "Alice", value: "Alicia" });
+    store.set({ resultId: "p1", row: 0, column: "c2", original: "open", value: "closed" });
+    store.set({ resultId: "p1", row: 1, column: "c1", original: "Bob", value: "Robert" });
+    store.setDeleted("p1", [3], true);
+
+    expect(store.revertCell("p1", 0, "c2")).toBe(true);
+    expect(store.get("p1", 0, "c2")).toBeUndefined();
+    expect(store.get("p1", 0, "c1")?.value).toBe("Alicia");
+
+    expect(store.revertRows("p1", [0, 3])).toBe(2);
+    expect(store.get("p1", 0, "c1")).toBeUndefined();
+    expect(store.isDeleted("p1", 3)).toBe(false);
+    expect(store.get("p1", 1, "c1")?.value).toBe("Robert");
+
+    const cloned = store.cloneInsertRow("tab-1", { c1: "Robert", c2: null });
+    expect(store.insertsForTab("tab-1")).toHaveLength(1);
+    expect(cloned.values).toEqual({ c1: "Robert", c2: null });
+  });
 });

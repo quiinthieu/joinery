@@ -871,7 +871,10 @@ fn format_sql_cell(cell: Option<&str>, column: &ColumnInfo, engine: Option<Engin
         }
         ColumnKind::Binary => {
             if let Some(hex) = parse_hex_binary(raw.trim()) {
-                return if matches!(engine, Some(EngineKind::Mysql | EngineKind::Snowflake)) {
+                return if matches!(
+                    engine,
+                    Some(EngineKind::Mysql | EngineKind::Snowflake | EngineKind::Sqlite)
+                ) {
                     format!("X'{hex}'")
                 } else {
                     format!("'\\x{hex}'::bytea")

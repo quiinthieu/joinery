@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   History,
+  Link2,
   Lock,
   Plus,
   RefreshCw,
   Search,
   Trash2,
+  Wrench,
   ArrowUpRight,
 } from "lucide-react";
 import type {
@@ -32,6 +34,9 @@ import {
   isConstraintBackedIndex,
 } from "./IndexConstraintDialog";
 import { TableObjectDialog, type TableObjectDialogRequest } from "./TableObjectDialog";
+import { TableMaintenanceDialog } from "./TableMaintenanceDialog";
+import { VirtualForeignKeyDialog } from "./VirtualForeignKeyDialog";
+import { SQL_CODEGEN_TEMPLATES, generateTableSql, type SqlCodegenTemplate } from "./sql-codegen";
 import { DependencySection, StorageStatsSection } from "./ObjectInspectorView";
 import { summarizeLocks } from "./lock-chains";
 import { describeIndexUsage, formatStatCount, formatStorageBytes } from "./storage-stats";
@@ -716,10 +721,13 @@ export function StructureView({
   const catalogTables = useStudio((s) =>
     connectionId ? (s.catalog[connectionId] ?? EMPTY_CATALOG_TABLES) : EMPTY_CATALOG_TABLES,
   );
+  const virtualForeignKeys = useStudio((s) => s.virtualForeignKeys);
   const [editorMode, setEditorMode] = useState<IndexConstraintDialogMode | null>(null);
   const [tableObjectRequest, setTableObjectRequest] = useState<TableObjectDialogRequest | null>(
     null,
   );
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
+  const [virtualFkDialogOpen, setVirtualFkDialogOpen] = useState(false);
 
   const openObject =
     onOpenObject ??
@@ -738,10 +746,14 @@ export function StructureView({
   const isViewLike = details?.object.kind === "view" || details?.object.kind === "materializedView";
   const ddlEditingSupported =
     session?.capabilities.ddlEditing ??
-    (profile?.engine === "postgres" || profile?.engine === "mysql");
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const canManageSchema = Boolean(
     details && isTableLike && profile && session && ddlEditingSupported,
   );
+  const canAlterTableConstraints = canManageSchema && profile?.engine !== "sqlite";
+  const canMaintainTable =
+    canManageSchema &&
+    (profile?.engine === "postgres" || profile?.engine === "mysql" || profile?.engine === "sqlite");
   const canDropObject = Boolean(
     details && (isTableLike || isViewLike) && profile && session && ddlEditingSupported,
   );
@@ -749,9 +761,18 @@ export function StructureView({
   const tableRef = details
     ? { schema: details.object.schema, name: details.object.name }
     : schema.table;
+  const canGenerateSql = Boolean(connectionId && profile && profile.engine !== "redis");
+  const handleGenerateSql = (template: SqlCodegenTemplate) => {
+    if (!connectionId || !profile) return;
+    const generated = generateTableSql(template, profile.engine, {
+      ...schema,
+      table: tableRef,
+    });
+    useStudio.getState().openQuery(connectionId, generated);
+  };
   return (
     <div className="structure-scroll">
-      {(canManageSchema || canDropObject) && (
+      {(canGenerateSql || canManageSchema || canDropObject) && (
         <div
           className="structure-section-header"
           style={{
@@ -759,13 +780,37 @@ export function StructureView({
             alignItems: "center",
             justifyContent: "space-between",
             padding: "10px 14px 6px",
+            flexWrap: "wrap",
+            gap: 8,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <strong style={{ fontSize: 12 }}>Columns</strong>
             <span className="schema-count">{schema.columns.length}</span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {canGenerateSql && (
+              <div
+                role="group"
+                aria-label="Generate SQL"
+                style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+              >
+                {(isViewLike
+                  ? SQL_CODEGEN_TEMPLATES.filter((t) => t.id === "select")
+                  : SQL_CODEGEN_TEMPLATES
+                ).map((tmpl) => (
+                  <button
+                    key={tmpl.id}
+                    type="button"
+                    className="button ghost small"
+                    aria-label={`Generate ${tmpl.label} SQL`}
+                    onClick={() => handleGenerateSql(tmpl.id)}
+                  >
+                    {tmpl.label}
+                  </button>
+                ))}
+              </div>
+            )}
             {canManageSchema && (
               <button
                 type="button"
@@ -776,6 +821,18 @@ export function StructureView({
               >
                 <Plus size={12} />
                 Add column…
+              </button>
+            )}
+            {canMaintainTable && !details?.storage && (
+              <button
+                type="button"
+                className="button ghost small"
+                disabled={isReadOnly}
+                title={isReadOnly ? "Connection is in read-only safe mode" : undefined}
+                onClick={() => setMaintenanceOpen(true)}
+              >
+                <Wrench size={12} />
+                Maintenance…
               </button>
             )}
             {canDropObject && details && (
@@ -911,27 +968,98 @@ export function StructureView({
           })}
         </tbody>
       </table>
-      {schema.foreignKeys.length > 0 && (
-        <table className="structure-table" aria-label="Foreign keys">
-          <thead>
-            <tr>
-              <th>Foreign key</th>
-              <th>Columns</th>
-              <th>References</th>
-            </tr>
-          </thead>
-          <tbody>
-            {schema.foreignKeys.map((key) => (
-              <tr key={`${key.name}:${key.columns.join(",")}`}>
-                <td className="mono">{key.name}</td>
-                <td className="mono">{key.columns.join(", ")}</td>
-                <td className="mono">
-                  {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {(schema.foreignKeys.length > 0 || connectionId) && (
+        <section className="structure-section" aria-label="Foreign keys section">
+          {connectionId && (
+            <div
+              className="structure-section-header"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 14px 6px",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <strong style={{ fontSize: 12 }}>Foreign keys</strong>
+                <span className="schema-count">{schema.foreignKeys.length}</span>
+              </div>
+              <button
+                type="button"
+                className="button ghost small"
+                onClick={() => setVirtualFkDialogOpen(true)}
+              >
+                <Link2 size={12} />
+                Add virtual FK…
+              </button>
+            </div>
+          )}
+          {schema.foreignKeys.length > 0 && (
+            <table className="structure-table" aria-label="Foreign keys">
+              <thead>
+                <tr>
+                  <th>Foreign key</th>
+                  <th>Columns</th>
+                  <th>References</th>
+                  {connectionId && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {schema.foreignKeys.map((key) => {
+                  const matchingVfk =
+                    key.virtualRelationship && connectionId
+                      ? virtualForeignKeys.find(
+                          (v) =>
+                            v.connectionId === connectionId &&
+                            v.source.schema === tableRef.schema &&
+                            v.source.name === tableRef.name &&
+                            v.name === key.name,
+                        )
+                      : undefined;
+                  return (
+                    <tr key={`${key.name}:${key.columns.join(",")}`}>
+                      <td className="mono">
+                        {key.name}
+                        {key.virtualRelationship && (
+                          <span className="key-badge" style={{ marginLeft: 6 }}>
+                            VIRTUAL
+                          </span>
+                        )}
+                      </td>
+                      <td className="mono">{key.columns.join(", ")}</td>
+                      <td className="mono">
+                        {`${key.target.schema}.${key.target.name} (${key.targetColumns.join(", ")})`}
+                      </td>
+                      {connectionId && (
+                        <td>
+                          {matchingVfk ? (
+                            <button
+                              type="button"
+                              className="button ghost small danger-text"
+                              aria-label={`Delete virtual foreign key ${key.name}`}
+                              onClick={() =>
+                                void useStudio
+                                  .getState()
+                                  .deleteVirtualForeignKey(matchingVfk.id)
+                                  .then(() => onRefresh?.())
+                                  .catch((err) => useStudio.getState().notify(messageOf(err)))
+                              }
+                            >
+                              <Trash2 size={12} />
+                              Remove
+                            </button>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </section>
       )}
       {detailsError && (
         <div className="structure-details-error">
@@ -940,9 +1068,9 @@ export function StructureView({
           </div>
         </div>
       )}
-      {details && (details.constraints.length > 0 || canManageSchema) && (
+      {details && (details.constraints.length > 0 || canAlterTableConstraints) && (
         <section className="structure-section" aria-label="Constraints section">
-          {canManageSchema && (
+          {canAlterTableConstraints && (
             <div
               className="structure-section-header"
               style={{
@@ -977,13 +1105,13 @@ export function StructureView({
                   <th>Columns</th>
                   <th>References</th>
                   <th>Definition</th>
-                  {canManageSchema && <th>Actions</th>}
+                  {canAlterTableConstraints && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
                 {details.constraints.map((constraint) => {
                   const canDropConstraint =
-                    canManageSchema &&
+                    canAlterTableConstraints &&
                     !(profile?.engine === "mysql" && constraint.kind === "exclusion");
                   return (
                     <tr key={`${constraint.kind}:${constraint.name}`}>
@@ -1038,7 +1166,7 @@ export function StructureView({
                       <td>
                         <code>{constraint.definition}</code>
                       </td>
-                      {canManageSchema && (
+                      {canAlterTableConstraints && (
                         <td>
                           {canDropConstraint ? (
                             <button
@@ -1317,6 +1445,26 @@ export function StructureView({
               onRefresh?.();
             }
           }}
+        />
+      )}
+      {maintenanceOpen && connectionId && (
+        <TableMaintenanceDialog
+          connectionId={connectionId}
+          table={tableRef}
+          columns={schema.columns.map((c) => c.name)}
+          storage={details?.storage ?? null}
+          onClose={() => setMaintenanceOpen(false)}
+          onCompleted={() => onRefresh?.()}
+        />
+      )}
+      {virtualFkDialogOpen && connectionId && (
+        <VirtualForeignKeyDialog
+          connectionId={connectionId}
+          initialSource={tableRef}
+          sourceColumns={schema.columns.map((c) => c.name)}
+          knownTables={catalogTables.map((t) => t.table)}
+          onSaved={() => onRefresh?.()}
+          onClose={() => setVirtualFkDialogOpen(false)}
         />
       )}
     </div>

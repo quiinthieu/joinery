@@ -2,7 +2,11 @@ import { useState } from "react";
 import type { EditorState } from "@codemirror/state";
 import { InlineError, Modal } from "../../components/ui/Modal";
 import { messageOf } from "../../ipc/client";
-import type { MissingSqlColumn, SqlColumnInspection } from "./sql-inspections";
+import {
+  suggestColumnQuickFixes,
+  type MissingSqlColumn,
+  type SqlColumnInspection,
+} from "./sql-inspections";
 
 export function SqlColumnInspectionDialog({
   result,
@@ -18,6 +22,8 @@ export function SqlColumnInspectionDialog({
   const [index, setIndex] = useState(0);
   const [column, setColumn] = useState("");
   const issue = result.issues[index];
+  const candidateColumns = issue ? result.columnsFor(issue) : [];
+  const quickFixes = issue ? suggestColumnQuickFixes(issue.name, candidateColumns) : [];
   let preview: ReturnType<SqlColumnInspection["preview"]> | null = null;
   let error: string | null = null;
   if (issue && column) {
@@ -81,6 +87,34 @@ export function SqlColumnInspectionDialog({
                   </>
                 )}
               </p>
+              {quickFixes.length > 0 && (
+                <div
+                  role="group"
+                  aria-label="Column typo quick-fixes"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexWrap: "wrap",
+                    marginBottom: 8,
+                  }}
+                >
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Did you mean:
+                  </span>
+                  {quickFixes.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      className={`button ghost small mono ${column === suggestion ? "active" : ""}`}
+                      aria-pressed={column === suggestion}
+                      onClick={() => setColumn(suggestion)}
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
               <label>
                 {issue.outputOf ? "Replace with projected column" : "Replace with catalog column"}
                 <select
@@ -91,7 +125,7 @@ export function SqlColumnInspectionDialog({
                   onChange={(event) => setColumn(event.target.value)}
                 >
                   <option value="">Choose a column…</option>
-                  {result.columnsFor(issue).map((name) => (
+                  {candidateColumns.map((name) => (
                     <option key={name} value={name}>
                       {name}
                     </option>

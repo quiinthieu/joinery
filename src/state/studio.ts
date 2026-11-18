@@ -24,6 +24,9 @@ import type {
   SqlFormatSettings,
   SqlSnippet,
   SqlSnippetInput,
+  VirtualForeignKey,
+  VirtualForeignKeyInput,
+  WorkspaceSqlResponse,
   TableInfo,
   TableRef,
   TableSchema,
@@ -59,6 +62,10 @@ import {
   type SnowflakeConsoleReceipt,
 } from "../features/studio/SnowflakeConsole";
 import { DEFAULT_SQL_FORMAT_SETTINGS } from "../data/sql-format";
+import {
+  appendDatabaseOutputEntries,
+  type DatabaseOutputEntry,
+} from "../features/studio/DatabaseOutputPanel";
 import { resultCache } from "../data/result-cache";
 import { dirtyStore } from "../data/dirty-store";
 import {
@@ -92,7 +99,17 @@ import {
 } from "../features/studio/shortcuts";
 
 export type TabKind =
-  "query" | "table" | "object" | "benchmark" | "history" | "processes" | "diagram" | "schemaDiff";
+  | "query"
+  | "result"
+  | "table"
+  | "object"
+  | "benchmark"
+  | "history"
+  | "processes"
+  | "diagram"
+  | "schemaDiff"
+  | "workspaceSql"
+  | "dataSearch";
 export type TabStatus =
   | "idle"
   | "queued"
@@ -160,7 +177,25 @@ export interface StudioTab {
   pinned?: boolean;
   /** Schema shown by a diagram tab. */
   diagramSchema?: string;
+  /** Active display presentation for data grids (`grid` | `transpose` | `record`). */
+  gridMode?: "grid" | "transpose" | "record";
+  /** Transient column layouts keyed by `resultId` for query and detached result tabs. */
+  resultLayouts?: Record<string, SavedTableLayout>;
+  /** Originating query tab identifier for a detached result tab. */
+  originTabId?: string | null;
+  /** Originating tab kind (`query` or `workspaceSql`) for a detached result tab. */
+  originKind?: "query" | "workspaceSql" | null;
+  /** Originating SQL text captured when a query result was detached into its own tab. */
+  originSql?: string | null;
+  /** Session-only Database Output log entries (bounded in memory; never persisted). */
+  outputLog?: DatabaseOutputEntry[];
+  /** Result IDs pinned inside a SQL query console so re-running SQL keeps them alongside new results. */
+  pinnedResultIds?: string[];
+  /** Human-readable labels captured when a result subtab was pinned (keyed by result ID). */
+  pinnedResultLabels?: Record<string, string>;
 }
+
+export const MAX_PINNED_RESULTS_PER_TAB = 8;
 
 export const MAX_RECENT_LOCATIONS = 50;
 export const MAX_CLOSED_TABS = 10;
@@ -210,6 +245,8 @@ export interface NamedSession {
 }
 
 let sqlFormatSaveTail: Promise<void> = Promise.resolve();
+let outputEntrySeq = 0;
+let pinnedResultSeq = 0;
 let sqlFormatSaveSequence = 0;
 let sqlFormatPending = 0;
 let sqlFormatPersisted = DEFAULT_SQL_FORMAT_SETTINGS;
@@ -272,6 +309,7 @@ interface StudioState {
   bookmarks: SavedBookmark[];
   sqlFormatSettings: SqlFormatSettings;
   sqlSnippets: SqlSnippet[];
+  virtualForeignKeys: VirtualForeignKey[];
   recentLocations: RecentLocation[];
   shortcuts: Record<string, string>;
   theme: "dark" | "light" | "contrast";
@@ -289,6 +327,13 @@ interface StudioState {
   resetShortcuts(): void;
   setTableLayout(connectionId: string, table: TableRef, layout: SavedTableLayout | null): void;
   resetTableLayout(connectionId: string, table: TableRef): void;
+  setResultLayout(tabId: string, resultId: string, layout: SavedTableLayout | null): void;
+  togglePinResult(tabId: string, resultId?: string): boolean;
+  closeResultSubtab(tabId: string, resultId: string): void;
+  prepareQueryRunResults(tabId: string): Promise<void>;
+  detachResultToTab(tabId: string, resultId?: string): string | null;
+  openOriginatingSql(resultTabId: string): string | null;
+  setWorkspaceSqlResult(tabId: string, sql: string, response: WorkspaceSqlResponse): void;
   setSession(session: SessionInfo): void;
   bindQuerySession(tabId: string, session: SessionInfo, label?: string): boolean;
   attachQuerySession(tabId: string, sessionId: string | null): boolean;
@@ -342,9 +387,12 @@ interface StudioState {
   saveSqlFormatSettings(settings: SqlFormatSettings): Promise<SqlFormatSettings>;
   saveSqlSnippet(input: SqlSnippetInput): Promise<SqlSnippet>;
   deleteSqlSnippet(id: string): Promise<void>;
+  saveVirtualForeignKey(input: VirtualForeignKeyInput): Promise<VirtualForeignKey>;
+  deleteVirtualForeignKey(id: string): Promise<void>;
+  clearTabOutput(tabId: string): void;
   openLocation(target: RecentLocationTarget): Promise<OpenLocationOutcome>;
   recordRecentLocation(entry: Omit<RecentLocation, "visitedAtMs">): void;
-  openUtility(kind: "history" | "processes" | "benchmark"): void;
+  openUtility(kind: "history" | "processes" | "benchmark" | "workspaceSql" | "dataSearch"): void;
   openDiagram(connectionId: string, schema: string): void;
   openSchemaDiff(connectionId: string, schema: string): void;
   openTable(
@@ -454,7 +502,14 @@ export function isTabProtectedFromBulkClose(
   );
 }
 function snapshotClosedTab(candidate: StudioTab): ClosedTabSnapshot | null {
-  if (candidate.metadataOrigin) return null;
+  if (
+    candidate.metadataOrigin ||
+    candidate.kind === "result" ||
+    candidate.kind === "workspaceSql" ||
+    candidate.kind === "dataSearch"
+  ) {
+    return null;
+  }
   return {
     id: candidate.id,
     kind: candidate.kind,
@@ -580,27 +635,27 @@ export function sessionHasOpenTransaction(
   );
 }
 function sessionInfoById(
-  state: Pick<StudioState, "sessions" | "sessionPool" | "tabs">,
+  state: Partial<Pick<StudioState, "sessions" | "sessionPool" | "tabs">>,
   sessionId: string,
 ): SessionInfo | undefined {
   return (
-    Object.values(state.sessions).find((session) => session.id === sessionId) ??
-    Object.values(state.sessionPool)
+    Object.values(state.sessions ?? {}).find((session) => session.id === sessionId) ??
+    Object.values(state.sessionPool ?? {})
       .flat()
       .find((entry) => entry.info.id === sessionId)?.info ??
-    state.tabs.find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
+    (state.tabs ?? []).find((tab) => tab.querySession?.id === sessionId && !tab.querySessionClosed)
       ?.querySession ??
     undefined
   );
 }
 /** Retired console IDs remain sealed so stale mounted handlers cannot probe. */
 export function isSnowflakeConsoleSession(
-  state: Pick<StudioState, "consoleSessions" | "sessions" | "sessionPool" | "tabs">,
+  state: Partial<Pick<StudioState, "consoleSessions" | "sessions" | "sessionPool" | "tabs">>,
   sessionId: string | null | undefined,
 ): boolean {
   return (
     !!sessionId &&
-    (state.consoleSessions[sessionId] === true ||
+    (state.consoleSessions?.[sessionId] === true ||
       sessionInfoById(state, sessionId)?.consoleMode === true)
   );
 }
@@ -770,8 +825,106 @@ function retireAfterBrowseFailure(sessionId: string, error: AppError) {
   if (error.code === "connectionClosed" || error.code === "outcomeUnknown")
     useStudio.getState().retireSession(sessionId);
 }
+function samePhysicalColumnShape(
+  expected: TableSchema["columns"],
+  actual: ResultInfo["columns"],
+): boolean {
+  if (expected.length !== actual.length) return false;
+  return actual.every((col, idx) => {
+    const { foreignKey: _actualFk, ...actualRest } = col;
+    const { foreignKey: _expectedFk, ...expectedRest } = expected[idx]!;
+    return JSON.stringify(actualRest) === JSON.stringify(expectedRest);
+  });
+}
+
+export function isResultReferencedByOtherTabs(
+  tabs: readonly StudioTab[],
+  excludingTabIds: ReadonlySet<string>,
+  resultId: string,
+): boolean {
+  for (const t of tabs) {
+    if (excludingTabIds.has(t.id)) continue;
+    if (t.results.some((r) => r.id === resultId)) return true;
+    if (t.pages.some((p) => p.result.id === resultId)) return true;
+  }
+  return false;
+}
+
+export function reconcileTableSchemaVirtualFks(
+  schema: TableSchema,
+  vfks: readonly VirtualForeignKey[],
+  connectionId: string,
+): TableSchema {
+  const colNames = new Set(schema.columns.map((c) => c.name));
+  const foreignKeys = schema.foreignKeys.filter((fk) => !fk.virtualRelationship);
+  const inboundForeignKeys = (schema.inboundForeignKeys ?? []).filter(
+    (ifk) => !ifk.virtualRelationship,
+  );
+  for (const vfk of vfks) {
+    if (vfk.connectionId !== connectionId) continue;
+    if (
+      vfk.source.schema === schema.table.schema &&
+      vfk.source.name === schema.table.name &&
+      vfk.columns.every((c) => colNames.has(c))
+    ) {
+      const dup = foreignKeys.some(
+        (fk) =>
+          fk.target.schema === vfk.target.schema &&
+          fk.target.name === vfk.target.name &&
+          fk.columns.length === vfk.columns.length &&
+          fk.columns.every((c, i) => c === vfk.columns[i]) &&
+          fk.targetColumns.length === vfk.targetColumns.length &&
+          fk.targetColumns.every((c, i) => c === vfk.targetColumns[i]),
+      );
+      if (!dup) {
+        foreignKeys.push({
+          name: vfk.name,
+          columns: [...vfk.columns],
+          target: vfk.target,
+          targetColumns: [...vfk.targetColumns],
+          virtualRelationship: true,
+        });
+      }
+    }
+    if (
+      vfk.target.schema === schema.table.schema &&
+      vfk.target.name === schema.table.name &&
+      vfk.targetColumns.every((c) => colNames.has(c))
+    ) {
+      const dup = inboundForeignKeys.some(
+        (ifk) =>
+          ifk.source.schema === vfk.source.schema &&
+          ifk.source.name === vfk.source.name &&
+          ifk.columns.length === vfk.columns.length &&
+          ifk.columns.every((c, i) => c === vfk.columns[i]) &&
+          ifk.targetColumns.length === vfk.targetColumns.length &&
+          ifk.targetColumns.every((c, i) => c === vfk.targetColumns[i]),
+      );
+      if (!dup) {
+        inboundForeignKeys.push({
+          name: vfk.name,
+          source: vfk.source,
+          columns: [...vfk.columns],
+          targetColumns: [...vfk.targetColumns],
+          virtualRelationship: true,
+        });
+      }
+    }
+  }
+  const fkCols = new Set(foreignKeys.flatMap((fk) => fk.columns));
+  return {
+    ...schema,
+    foreignKeys,
+    inboundForeignKeys,
+    columns: schema.columns.map((col) => ({
+      ...col,
+      foreignKey: fkCols.has(col.name),
+    })),
+  };
+}
+
 function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
-  if (schema && JSON.stringify(schema.columns) === JSON.stringify(result.columns))
+  if (schema && samePhysicalColumnShape(schema.columns, result.columns))
     return result.editability?.status === "readOnly" ? { ...schema, editable: false } : schema;
   // A completed page may lose its edit lease while rows are fetched. Preserve
   // that known result, but narrow the whole table view until explicit refresh.
@@ -782,10 +935,16 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
     JSON.stringify(schema.table) === JSON.stringify(result.table) &&
     schema.columns.length === result.columns.length &&
     result.columns.every((column, index) => {
-      const { editable: _actualEdit, insertable: _actualInsert, ...actual } = column;
+      const {
+        editable: _actualEdit,
+        insertable: _actualInsert,
+        foreignKey: _actualFk,
+        ...actual
+      } = column;
       const {
         editable: _expectedEdit,
         insertable: _expectedInsert,
+        foreignKey: _expectedFk,
         ...expected
       } = schema.columns[index];
       return (
@@ -795,7 +954,14 @@ function verifyPageColumns(schema: TableSchema | null, result: ResultInfo) {
       );
     })
   )
-    return { ...schema, editable: false, columns: result.columns };
+    return {
+      ...schema,
+      editable: false,
+      columns: result.columns.map((col, idx) => ({
+        ...col,
+        foreignKey: schema.columns[idx]?.foreignKey ?? col.foreignKey,
+      })),
+    };
   if (!isConsoleOwnedResult(result))
     void client.call("release_result", { resultId: result.id }).catch(() => {});
   throw new Error("The table schema changed. Refresh the table before continuing.");
@@ -891,6 +1057,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   bookmarks: [],
   sqlFormatSettings: DEFAULT_SQL_FORMAT_SETTINGS,
   sqlSnippets: [],
+  virtualForeignKeys: [],
   recentLocations: [],
   shortcuts: {},
   theme: storedTheme === "light" || storedTheme === "contrast" ? storedTheme : "dark",
@@ -940,6 +1107,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         bookmarks: bootstrap.bookmarks ?? [],
         sqlFormatSettings: bootstrap.sqlFormatSettings ?? DEFAULT_SQL_FORMAT_SETTINGS,
         sqlSnippets: bootstrap.sqlSnippets ?? [],
+        virtualForeignKeys: bootstrap.virtualForeignKeys ?? [],
         error: null,
         ...(workspace
           ? {
@@ -1021,6 +1189,331 @@ export const useStudio = create<StudioState>((set, get) => ({
   resetTableLayout(connectionId, table) {
     get().setTableLayout(connectionId, table, null);
   },
+  setResultLayout(tabId, resultId, layout) {
+    set((state) => ({
+      tabs: state.tabs.map((entry) => {
+        if (entry.id !== tabId) return entry;
+        const currentLayouts = { ...(entry.resultLayouts ?? {}) };
+        if (!layout || isDefaultTableLayout(layout)) {
+          delete currentLayouts[resultId];
+        } else {
+          currentLayouts[resultId] = layout;
+        }
+        return {
+          ...entry,
+          resultLayouts: Object.keys(currentLayouts).length > 0 ? currentLayouts : undefined,
+        };
+      }),
+    }));
+  },
+  togglePinResult(tabId, resultId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return false;
+    if (["queued", "running"].includes(current.status)) {
+      get().notify("Wait for the query to finish before pinning its result.");
+      return false;
+    }
+    const target = resultId
+      ? current.results.find((r) => r.id === resultId)
+      : (current.results.find((r) => r.id === current.activeResultId) ?? current.results[0]);
+    if (!target) {
+      get().notify("Run a query first to pin its result.");
+      return false;
+    }
+    if (isConsoleOwnedResult(target)) {
+      get().notify("Retained Snowflake console results stay managed by their console receipt.");
+      return false;
+    }
+    const existingPinned = current.pinnedResultIds ?? [];
+    if (existingPinned.includes(target.id)) {
+      const nextIds = existingPinned.filter((id) => id !== target.id);
+      const nextLabels = current.pinnedResultLabels ? { ...current.pinnedResultLabels } : undefined;
+      if (nextLabels) delete nextLabels[target.id];
+      set((state) => ({
+        tabs: state.tabs.map((entry) =>
+          entry.id === tabId
+            ? {
+                ...entry,
+                pinnedResultIds: nextIds.length > 0 ? nextIds : undefined,
+                pinnedResultLabels:
+                  nextLabels && Object.keys(nextLabels).length > 0 ? nextLabels : undefined,
+              }
+            : entry,
+        ),
+      }));
+      return false;
+    }
+    if (existingPinned.length >= MAX_PINNED_RESULTS_PER_TAB) {
+      get().notify(
+        `Pin at most ${MAX_PINNED_RESULTS_PER_TAB} results per query console, or open a result in its own tab.`,
+      );
+      return false;
+    }
+    dirtyStore.clearTab(target.id, [target.id]);
+    const label = `Pinned #${++pinnedResultSeq} (Q${target.statementIndex + 1})`;
+    const nextIds = [...existingPinned, target.id];
+    const nextLabels = { ...(current.pinnedResultLabels ?? {}), [target.id]: label };
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              results: entry.results.map((r) =>
+                r.id === target.id
+                  ? {
+                      ...r,
+                      columns: r.columns.map((c) => ({ ...c, editable: false, insertable: false })),
+                      editability: {
+                        status: "readOnly",
+                        reason: "Pinned result snapshot is preserved read-only across console runs",
+                      },
+                    }
+                  : r,
+              ),
+              pinnedResultIds: nextIds,
+              pinnedResultLabels: nextLabels,
+            }
+          : entry,
+      ),
+    }));
+    return true;
+  },
+  closeResultSubtab(tabId, resultId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return;
+    const target = current.results.find((r) => r.id === resultId);
+    if (!target) return;
+    dirtyStore.clearTab(target.id, [target.id]);
+    if (!isResultReferencedByOtherTabs(snapshot.tabs, new Set([tabId]), target.id)) {
+      resultCache.release(target.id);
+      if (!isConsoleOwnedResult(target)) {
+        void client.call("release_result", { resultId: target.id }).catch(() => {});
+      }
+    }
+    const idx = current.results.findIndex((r) => r.id === resultId);
+    const remaining = current.results.filter((r) => r.id !== resultId);
+    const nextPinned = current.pinnedResultIds?.filter((id) => id !== resultId);
+    const nextLabels = current.pinnedResultLabels ? { ...current.pinnedResultLabels } : undefined;
+    if (nextLabels) delete nextLabels[resultId];
+    const nextLayouts = current.resultLayouts ? { ...current.resultLayouts } : undefined;
+    if (nextLayouts) delete nextLayouts[resultId];
+    const nextActive =
+      current.activeResultId === resultId
+        ? (remaining[Math.min(idx, remaining.length - 1)]?.id ?? null)
+        : current.activeResultId;
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              results: remaining,
+              activeResultId: nextActive,
+              pinnedResultIds: nextPinned && nextPinned.length > 0 ? nextPinned : undefined,
+              pinnedResultLabels:
+                nextLabels && Object.keys(nextLabels).length > 0 ? nextLabels : undefined,
+              resultLayouts:
+                nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
+            }
+          : entry,
+      ),
+    }));
+  },
+  async prepareQueryRunResults(tabId) {
+    const snapshot = get();
+    const current = snapshot.tabs.find((entry) => entry.id === tabId && entry.kind === "query");
+    if (!current) return;
+    const pinnedSet = new Set(current.pinnedResultIds ?? []);
+    const keptResults = current.results.filter((r) => pinnedSet.has(r.id));
+    const excluding = new Set([tabId]);
+    for (const previous of current.results) {
+      if (pinnedSet.has(previous.id)) continue;
+      dirtyStore.clearTab(previous.id, [previous.id]);
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, previous.id)) {
+        resultCache.release(previous.id);
+        if (!isConsoleOwnedResult(previous)) {
+          await client.call("release_result", { resultId: previous.id });
+        }
+      }
+    }
+    const nextLayouts = current.resultLayouts
+      ? Object.fromEntries(
+          Object.entries(current.resultLayouts).filter(([rid]) => pinnedSet.has(rid)),
+        )
+      : undefined;
+    get().updateTab(tabId, {
+      results: keptResults,
+      activeResultId: null,
+      resultLayouts: nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
+    });
+  },
+  detachResultToTab(tabId, resultId) {
+    const state = get();
+    const sourceTab = state.tabs.find(
+      (entry) => entry.id === tabId && (entry.kind === "query" || entry.kind === "workspaceSql"),
+    );
+    if (!sourceTab) return null;
+    if (["queued", "running"].includes(sourceTab.status)) {
+      get().notify("Wait for the query to finish before opening its result in a tab.");
+      return null;
+    }
+    const targetResult = resultId
+      ? sourceTab.results.find((r) => r.id === resultId)
+      : (sourceTab.results.find((r) => r.id === sourceTab.activeResultId) ?? sourceTab.results[0]);
+    if (!targetResult) {
+      get().notify("Run a query first to open its result in a tab.");
+      return null;
+    }
+    if (isConsoleOwnedResult(targetResult)) {
+      get().notify("Retained Snowflake console results stay managed by their console receipt.");
+      return null;
+    }
+    dirtyStore.clearTab(targetResult.id, [targetResult.id]);
+    const detachedResult: ResultInfo = {
+      ...targetResult,
+      columns: targetResult.columns.map((c) => ({ ...c, editable: false, insertable: false })),
+      editability: {
+        status: "readOnly",
+        reason: "Detached result snapshot is read-only; open originating SQL or table to edit",
+      },
+    };
+    const next = tab(
+      "result",
+      `${sourceTab.title} · Query ${targetResult.statementIndex + 1}`,
+      sourceTab.connectionId,
+    );
+    next.results = [detachedResult];
+    next.activeResultId = detachedResult.id;
+    next.status = "completed";
+    next.originTabId = sourceTab.id;
+    next.originKind = sourceTab.kind === "workspaceSql" ? "workspaceSql" : "query";
+    next.originSql = sourceTab.sql;
+    if (sourceTab.resultLayouts?.[targetResult.id]) {
+      next.resultLayouts = { [targetResult.id]: sourceTab.resultLayouts[targetResult.id] };
+    }
+    const remainingResults = sourceTab.results.filter((r) => r.id !== targetResult.id);
+    const nextSourceLayouts = sourceTab.resultLayouts ? { ...sourceTab.resultLayouts } : undefined;
+    if (nextSourceLayouts) delete nextSourceLayouts[targetResult.id];
+    const nextPinnedIds = sourceTab.pinnedResultIds?.filter((id) => id !== targetResult.id);
+    const nextPinnedLabels = sourceTab.pinnedResultLabels
+      ? { ...sourceTab.pinnedResultLabels }
+      : undefined;
+    if (nextPinnedLabels) delete nextPinnedLabels[targetResult.id];
+    set((prev) => ({
+      tabs: orderPinnedFirst([
+        ...prev.tabs.map((entry) =>
+          entry.id === sourceTab.id
+            ? {
+                ...entry,
+                results: remainingResults,
+                activeResultId:
+                  entry.activeResultId === targetResult.id
+                    ? (remainingResults[0]?.id ?? null)
+                    : entry.activeResultId,
+                resultLayouts:
+                  nextSourceLayouts && Object.keys(nextSourceLayouts).length > 0
+                    ? nextSourceLayouts
+                    : undefined,
+                pinnedResultIds:
+                  nextPinnedIds && nextPinnedIds.length > 0 ? nextPinnedIds : undefined,
+                pinnedResultLabels:
+                  nextPinnedLabels && Object.keys(nextPinnedLabels).length > 0
+                    ? nextPinnedLabels
+                    : undefined,
+              }
+            : entry,
+        ),
+        next,
+      ]),
+      activeTabId: next.id,
+    }));
+    get().recordRecentLocation({
+      key: `tab:${next.id}`,
+      label: next.title,
+      subtitle: "Detached query result",
+      target: { kind: "tab", tabId: next.id },
+    });
+    return next.id;
+  },
+  openOriginatingSql(resultTabId) {
+    const state = get();
+    const resultTab = state.tabs.find(
+      (entry) => entry.id === resultTabId && entry.kind === "result",
+    );
+    if (!resultTab) return null;
+    if (resultTab.originTabId) {
+      const origin = state.tabs.find(
+        (entry) =>
+          entry.id === resultTab.originTabId &&
+          (entry.kind === "query" || entry.kind === "workspaceSql"),
+      );
+      if (origin && (resultTab.originSql == null || origin.sql === resultTab.originSql)) {
+        set({ activeTabId: origin.id });
+        return origin.id;
+      }
+    }
+    if (resultTab.originKind === "workspaceSql") {
+      const existingWs = state.tabs.find((entry) => entry.kind === "workspaceSql");
+      if (existingWs) {
+        set((prev) => ({
+          tabs: prev.tabs.map((t) =>
+            t.id === existingWs.id ? { ...t, sql: resultTab.originSql ?? "" } : t,
+          ),
+          activeTabId: existingWs.id,
+        }));
+        return existingWs.id;
+      }
+      const next = tab("workspaceSql", "Workspace SQL", resultTab.connectionId);
+      next.sql = resultTab.originSql ?? "";
+      set((prev) => ({ tabs: [...prev.tabs, next], activeTabId: next.id }));
+      return next.id;
+    }
+    return get().openQuery(resultTab.connectionId, resultTab.originSql ?? "");
+  },
+  setWorkspaceSqlResult(tabId, sql, response) {
+    const snapshot = get();
+    const current = snapshot.tabs.find(
+      (entry) => entry.id === tabId && entry.kind === "workspaceSql",
+    );
+    if (!current) {
+      if (
+        !isConsoleOwnedResult(response.result) &&
+        !isResultReferencedByOtherTabs(snapshot.tabs, new Set(), response.result.id)
+      ) {
+        void client.call("release_result", { resultId: response.result.id }).catch(() => {});
+      }
+      return;
+    }
+    const excluding = new Set([tabId]);
+    for (const old of current.results) {
+      if (
+        old.id !== response.result.id &&
+        !isResultReferencedByOtherTabs(snapshot.tabs, excluding, old.id)
+      ) {
+        dirtyStore.clearTab(old.id, [old.id]);
+        resultCache.release(old.id);
+        if (!isConsoleOwnedResult(old)) {
+          void client.call("release_result", { resultId: old.id }).catch(() => {});
+        }
+      }
+    }
+    set((state) => ({
+      tabs: state.tabs.map((entry) =>
+        entry.id === tabId
+          ? {
+              ...entry,
+              sql,
+              results: [response.result],
+              activeResultId: response.result.id,
+              status: "completed",
+              elapsedMs: response.elapsedMs,
+              error: null,
+            }
+          : entry,
+      ),
+    }));
+  },
   async startSnowflakeConsole(tabId, plan, approval) {
     const storageProblem = consoleReceiptStorageProblem();
     if (storageProblem) throw new Error(storageProblem);
@@ -1051,15 +1544,27 @@ export const useStudio = create<StudioState>((set, get) => ({
     const receipts = { ...get().snowflakeConsoleReceipts, [clientRequestId]: receipt };
     rememberConsoleReceipts(receipts); // Fails before any remote admission.
     set({ snowflakeConsoleReceipts: receipts });
+    const pinnedSet = new Set(active.pinnedResultIds ?? []);
+    const keptResults = active.results.filter((r) => pinnedSet.has(r.id));
+    const excluding = new Set([tabId]);
     for (const result of active.results) {
-      resultCache.release(result.id);
+      if (pinnedSet.has(result.id)) continue;
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
+    const nextLayouts = active.resultLayouts
+      ? Object.fromEntries(
+          Object.entries(active.resultLayouts).filter(([rid]) => pinnedSet.has(rid)),
+        )
+      : undefined;
     get().updateTab(tabId, {
-      results: [],
+      results: keptResults,
       activeResultId: null,
+      resultLayouts: nextLayouts && Object.keys(nextLayouts).length > 0 ? nextLayouts : undefined,
       status: "queued",
       runId: null,
       revision,
@@ -1354,13 +1859,18 @@ export const useStudio = create<StudioState>((set, get) => ({
         (entry) => entry.id === current.tabId && entry.revision === current.tabRevision,
       );
       if (tab && querySessionForTab(tab, get().sessions)?.id === next.sessionId) {
+        const pinnedSet = new Set(tab.pinnedResultIds ?? []);
+        const keptPinned = tab.results.filter(
+          (r) => pinnedSet.has(r.id) && !liveIds.has(r.id) && !releasedIds.has(r.id),
+        );
+        const mergedResults = keptPinned.length > 0 ? [...keptPinned, ...results] : results;
         get().updateTab(tab.id, {
           status: consoleRunStatus(view),
           runId: consoleReceiptHeld(next) ? next.runId! : null,
-          results,
-          activeResultId: results.some((r) => r.id === tab.activeResultId)
+          results: mergedResults,
+          activeResultId: mergedResults.some((r) => r.id === tab.activeResultId)
             ? tab.activeResultId
-            : (results[0]?.id ?? null),
+            : (results[0]?.id ?? keptPinned[0]?.id ?? null),
         });
       }
       if (current.cancellationRequested && !view.run.terminal)
@@ -1550,11 +2060,14 @@ export const useStudio = create<StudioState>((set, get) => ({
         .catch((error) => get().notify(messageOf(error)));
       return false;
     }
+    const excluding = new Set([tabId]);
     for (const result of current.results) {
-      resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     set((state) => {
       const existing = (state.sessionPool[session.connectionId] ?? []).filter(
@@ -1574,6 +2087,9 @@ export const useStudio = create<StudioState>((set, get) => ({
                 querySession: session,
                 querySessionClosed: false,
                 results: [],
+                pinnedResultIds: undefined,
+                pinnedResultLabels: undefined,
+                resultLayouts: undefined,
                 planSource: undefined,
                 activeResultId: null,
                 dataSessionId: null,
@@ -1616,11 +2132,14 @@ export const useStudio = create<StudioState>((set, get) => ({
       return true;
     }
     if (targetInfo) sealConsoleSession(targetInfo);
+    const excluding = new Set([tabId]);
     for (const result of current.results) {
-      resultCache.release(result.id);
       dirtyStore.clearTab(result.id, [result.id]);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(get().tabs, excluding, result.id)) {
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     get().updateTab(tabId, {
       querySession: targetInfo,
@@ -1628,6 +2147,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       snowflakeDdlResult: undefined,
       snowflakeDmlResult: undefined,
       results: [],
+      pinnedResultIds: undefined,
+      pinnedResultLabels: undefined,
+      resultLayouts: undefined,
       planSource: undefined,
       activeResultId: null,
       dataSessionId: null,
@@ -2852,7 +3374,9 @@ export const useStudio = create<StudioState>((set, get) => ({
           ? "-- A little space to think.\nSELECT CURRENT_DATABASE(), CURRENT_USER(), CURRENT_VERSION();"
           : engine === "mysql"
             ? "-- A little space to think.\nSELECT DATABASE(), CURRENT_USER(), VERSION();"
-            : "-- A little space to think.\nSELECT current_database(), current_user, version();");
+            : engine === "sqlite"
+              ? "-- A little space to think.\nSELECT sqlite_version(), datetime('now');"
+              : "-- A little space to think.\nSELECT current_database(), current_user, version();");
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
     return next.id;
   },
@@ -2928,6 +3452,22 @@ export const useStudio = create<StudioState>((set, get) => ({
       subtitle: "SQL file",
       target: { kind: "tab", tabId },
     });
+    if (contentToSave.trim() && current.connectionId) {
+      const boundProfile = get().bootstrap?.profiles.find((p) => p.id === current.connectionId);
+      if (boundProfile && !boundProfile.snowflake?.reviewedConsole && boundProfile.storeDrafts) {
+        void Promise.resolve(
+          client.call("record_local_history", {
+            input: {
+              tabKey: `file:${saved.fileName}`.slice(0, 160),
+              title: saved.fileName,
+              connectionId: current.connectionId,
+              trigger: "saved",
+              sql: contentToSave,
+            },
+          }),
+        ).catch(() => {});
+      }
+    }
     get().notify(`Saved ${saved.fileName}`);
     return true;
   },
@@ -3119,6 +3659,63 @@ export const useStudio = create<StudioState>((set, get) => ({
       };
     });
   },
+  async saveVirtualForeignKey(input) {
+    const saved = await client.call<VirtualForeignKey>("save_virtual_foreign_key", { input });
+    set((state) => {
+      const virtualForeignKeys = [
+        saved,
+        ...state.virtualForeignKeys.filter((entry) => entry.id !== saved.id),
+      ].sort(
+        (a, b) =>
+          a.source.schema.localeCompare(b.source.schema) ||
+          a.source.name.localeCompare(b.source.name) ||
+          a.name.toLowerCase().localeCompare(b.name.toLowerCase()) ||
+          a.id.localeCompare(b.id),
+      );
+      return {
+        virtualForeignKeys,
+        tabs: state.tabs.map((t) =>
+          t.kind === "table" && t.schema && t.connectionId === saved.connectionId
+            ? {
+                ...t,
+                schema: reconcileTableSchemaVirtualFks(
+                  t.schema,
+                  virtualForeignKeys,
+                  t.connectionId,
+                ),
+              }
+            : t,
+        ),
+        bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
+      };
+    });
+    return saved;
+  },
+  async deleteVirtualForeignKey(id) {
+    await client.call("delete_virtual_foreign_key", { id });
+    set((state) => {
+      const removed = state.virtualForeignKeys.find((entry) => entry.id === id);
+      const virtualForeignKeys = state.virtualForeignKeys.filter((entry) => entry.id !== id);
+      return {
+        virtualForeignKeys,
+        tabs: removed
+          ? state.tabs.map((t) =>
+              t.kind === "table" && t.schema && t.connectionId === removed.connectionId
+                ? {
+                    ...t,
+                    schema: reconcileTableSchemaVirtualFks(
+                      t.schema,
+                      virtualForeignKeys,
+                      t.connectionId,
+                    ),
+                  }
+                : t,
+            )
+          : state.tabs,
+        bootstrap: state.bootstrap ? { ...state.bootstrap, virtualForeignKeys } : null,
+      };
+    });
+  },
   async openLocation(target) {
     const state = get();
     if (target.kind === "savedQuery") {
@@ -3160,7 +3757,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     }
     const next = tab(
       kind,
-      { history: "Query history", processes: "Processes", benchmark: "Grid benchmark" }[kind],
+      {
+        history: "Query history",
+        processes: "Processes",
+        benchmark: "Grid benchmark",
+        workspaceSql: "Workspace SQL",
+        dataSearch: "Data search",
+      }[kind],
       get().selectedConnectionId,
     );
     set((state) => ({ tabs: [...state.tabs, next], activeTabId: next.id }));
@@ -3643,11 +4246,14 @@ export const useStudio = create<StudioState>((set, get) => ({
     else if (current.runId && ["queued", "running"].includes(current.status))
       void client.call("cancel_run", { runId: current.runId }).catch(() => {});
     dirtyStore.clearInserts(current.id);
+    const closingSet = new Set([id]);
     for (const result of [...current.results, ...current.pages.map((p) => p.result)]) {
-      dirtyStore.clearTab(result.id, [result.id]);
-      resultCache.release(result.id);
-      if (!isConsoleOwnedResult(result))
-        void client.call("release_result", { resultId: result.id }).catch(() => {});
+      if (!isResultReferencedByOtherTabs(stateSnapshot.tabs, closingSet, result.id)) {
+        dirtyStore.clearTab(result.id, [result.id]);
+        resultCache.release(result.id);
+        if (!isConsoleOwnedResult(result))
+          void client.call("release_result", { resultId: result.id }).catch(() => {});
+      }
     }
     set((state) => {
       const index = state.tabs.findIndex((t) => t.id === id),
@@ -3836,6 +4442,9 @@ export const useStudio = create<StudioState>((set, get) => ({
           return false;
         return true;
       });
+      const virtualForeignKeys = state.virtualForeignKeys.filter(
+        (entry) => entry.connectionId !== id,
+      );
       const recentLocations = state.recentLocations.filter((entry) => {
         if (
           (entry.target.kind === "table" || entry.target.kind === "object") &&
@@ -3850,6 +4459,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         catalog,
         savedQueries,
         bookmarks,
+        virtualForeignKeys,
         recentLocations,
         closedTabs: state.closedTabs.filter((entry) => entry.connectionId !== id),
         tabs:
@@ -3866,6 +4476,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               profiles: state.bootstrap.profiles.filter((p) => p.id !== id),
               savedQueries,
               bookmarks,
+              virtualForeignKeys,
             }
           : null,
         tableLayouts: state.tableLayouts.filter((layout) => layout.connectionId !== id),
@@ -3917,6 +4528,9 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
       get().updateTab(tab.id, {
         results: [],
+        pinnedResultIds: undefined,
+        pinnedResultLabels: undefined,
+        resultLayouts: undefined,
         snowflakeDdlResult: undefined,
         snowflakeDmlResult: undefined,
         planSource: undefined,
@@ -3986,11 +4600,29 @@ export const useStudio = create<StudioState>((set, get) => ({
         return {};
       }
       const next = { ...current, results: [...current.results] };
+      const newOutput: DatabaseOutputEntry[] = [];
+      const nowMs = Date.now();
       for (const event of events) {
         if (event.type === "started") {
           next.runId = event.runId;
           next.status = "running";
           next.executionSummary = undefined;
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "info",
+            runId: event.runId,
+            message: "Execution started",
+          });
+        }
+        if (event.type === "notice") {
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "warning",
+            runId: next.runId,
+            message: event.message,
+          });
         }
         if (event.type === "result") {
           const at = next.results.findIndex((r) => r.id === event.result.id);
@@ -4003,18 +4635,47 @@ export const useStudio = create<StudioState>((set, get) => ({
             next.results.push(event.result);
           }
           if (!next.activeResultId) next.activeResultId = event.result.id;
+          if (event.result.status !== "streaming" && event.result.columns.length > 0) {
+            newOutput.push({
+              id: `out-${++outputEntrySeq}`,
+              timestampMs: nowMs,
+              level: event.result.status === "truncated" ? "warning" : "success",
+              runId: next.runId,
+              statementIndex: event.result.statementIndex,
+              message: `Result #${event.result.statementIndex + 1}: ${event.result.retainedRows.toLocaleString()} row${event.result.retainedRows === 1 ? "" : "s"}${event.result.status === "truncated" ? " (retention limit reached)" : ""}`,
+            });
+          }
         }
         if (event.type === "progress")
           next.results = next.results.map((r) =>
             r.id === event.resultId ? { ...r, retainedRows: event.retainedRows } : r,
           );
-        if (event.type === "error") next.error = event.error;
+        if (event.type === "error") {
+          next.error = event.error;
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "error",
+            runId: next.runId,
+            code: event.error.code,
+            message: event.error.message,
+          });
+        }
         if (event.type === "statementCompleted") {
           next.elapsedMs += event.elapsedMs;
           next.metrics = {
             ...next.metrics,
             [event.index]: { affectedRows: event.affectedRows, elapsedMs: event.elapsedMs },
           };
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level: "success",
+            runId: next.runId,
+            statementIndex: event.index,
+            elapsedMs: event.elapsedMs,
+            message: `Statement #${event.index + 1} completed · ${event.affectedRows} affected`,
+          });
         }
         if (event.type === "runMetrics" && event.runId === next.runId) next.runMetrics = event;
         if (event.type === "finished" && event.runId === next.runId) {
@@ -4024,10 +4685,34 @@ export const useStudio = create<StudioState>((set, get) => ({
           next.executionSummary = event.executionSummary;
           next.elapsedMs = event.elapsedMs;
           next.runId = null;
+          if (!next.activeResultId && next.results.length > 0) {
+            next.activeResultId = next.results[next.results.length - 1].id;
+          }
+          newOutput.push({
+            id: `out-${++outputEntrySeq}`,
+            timestampMs: nowMs,
+            level:
+              event.status === "completed"
+                ? "info"
+                : event.status === "cancelled"
+                  ? "warning"
+                  : "error",
+            runId: event.runId,
+            elapsedMs: event.elapsedMs,
+            message: `Run ${event.status} in ${event.elapsedMs} ms`,
+          });
         }
+      }
+      if (newOutput.length > 0) {
+        next.outputLog = appendDatabaseOutputEntries(current.outputLog, newOutput);
       }
       return { tabs: state.tabs.map((t) => (t.id === tabId ? next : t)) };
     });
+  },
+  clearTabOutput(tabId) {
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, outputLog: [] } : t)),
+    }));
   },
 }));
 

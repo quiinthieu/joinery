@@ -2674,11 +2674,100 @@ it("inspects VARIANT :path trees, BINARY hex dumps, and GEOGRAPHY spatial previe
   expect(hexViewer.textContent).toContain("|Joinery|");
   fireEvent.click(screen.getByRole("button", { name: "Back to preview" }));
 
-  // 3. Read-only GEOGRAPHY spatial 2D SVG preview
+  // 3. Writable GEOGRAPHY spatial 2D SVG preview and staged WKT edit
   fireEvent.click(screen.getByRole("button", { name: "Inspect row 1 REGION_GEO" }));
   const spatialViewer = await screen.findByTestId("spatial-viewer");
   expect(within(spatialViewer).getByText("Polygon")).toBeTruthy();
   expect(screen.getByTestId("spatial-svg-preview")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Raw" }));
+  fireEvent.change(screen.getByLabelText("Cell value"), {
+    target: { value: "SRID=4326;POINT(-122.4194 37.7749)" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Apply to staged cell" }));
+  await screen.findByRole("button", { name: "Review 1 change…" });
   expect(screen.getByRole("table", { name: "Editable Snowflake preview" })).toBeTruthy();
+});
+
+it("copies Snowflake preview slices across multi-format extractors honoring PK mappings and staged edits", async () => {
+  setupWritableSnowflakeGrid();
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText },
+  });
+
+  const extractorInspection: RelationInspection = {
+    ...inspection,
+    columns: [
+      { ...inspection.columns[0], name: "ID", ordinal: 1 },
+      {
+        ...inspection.columns[0],
+        name: "STATUS",
+        ordinal: 2,
+        fullType: "VARCHAR(32)",
+        dataType: "TEXT",
+        resultKind: "text",
+      },
+    ],
+  };
+  const extractorPreview: RelationPreview = {
+    columns: [
+      { ...column, id: "c0", name: "ID", databaseType: "NUMBER(38,0)", kind: "integer" },
+      { ...column, id: "c1", name: "STATUS", databaseType: "VARCHAR(32)", kind: "text" },
+    ],
+    rows: [["9007199254740993", "pending"]],
+    truncated: false,
+    editSnapshotId: "snap-ext-1",
+  };
+  const extractorMappings: RelationConstraintMappings = {
+    revision: catalog.revision,
+    targetId: catalog.relations[0].targetId,
+    database: catalog.database,
+    table: catalog.relations[0].table,
+    mappings: [
+      {
+        catalog: "DB",
+        schema: "S",
+        name: "PK_ORDERS",
+        kind: "primaryKey",
+        status: "available",
+        columns: [{ ordinal: 1, columnName: "ID", referencedColumnName: null }],
+        referencedTable: null,
+      },
+    ],
+  };
+
+  vi.mocked(client.call).mockImplementation(async (method) => {
+    if (method === "relation_catalog") return catalog;
+    if (method === "inspect_relation") return extractorInspection;
+    if (method === "inspect_relation_constraint_mappings") return extractorMappings;
+    if (method === "preview_relation") return extractorPreview;
+    throw new Error(`Unexpected ${method}`);
+  });
+
+  render(<RelationBrowser sessionId="s" onClose={vi.fn()} />);
+  await screen.findByText("1 visible relations · DB");
+  fireEvent.change(screen.getByLabelText("Relation"), { target: { value: "opaque-target" } });
+  fireEvent.click(screen.getByRole("button", { name: "Inspect relation" }));
+  await screen.findByText("2 columns");
+  fireEvent.click(screen.getByRole("button", { name: "View key column mappings" }));
+  await screen.findByText(/PK_ORDERS/);
+  fireEvent.click(screen.getByRole("button", { name: "Preview rows" }));
+  await screen.findByRole("table", { name: "Editable Snowflake preview" });
+
+  // Stage an inline edit on STATUS ("pending" -> "shipped")
+  fireEvent.change(screen.getByLabelText("Row 1 STATUS"), { target: { value: "shipped" } });
+  await screen.findByRole("button", { name: "Review 1 change…" });
+
+  // Select SQL UPDATE format and copy slice -> uses PK column ID in WHERE and staged value in SET
+  fireEvent.change(screen.getByLabelText("Copy Snowflake preview format"), {
+    target: { value: "sqlUpdate" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Copy Snowflake preview slice" }));
+
+  await waitFor(() => {
+    expect(writeText).toHaveBeenCalledWith(
+      'UPDATE "S"."Quoted Table" SET "STATUS" = \'shipped\' WHERE "ID" = 9007199254740993;',
+    );
+  });
 });
