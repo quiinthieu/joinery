@@ -661,7 +661,9 @@ async fn sqlite_security_blocks_internal_metadata_symlinks_attach_and_readonly_l
 
     // 1. Direct internal metadata files, backup subpaths, non-existent files inside Persistence::root,
     //    files named `joinery.sqlite*`, and Snowflake state directories must all be blocked!
+    #[cfg(unix)]
     let symlink_to_app_db = user_dir.join("sneaky_link.db");
+    #[cfg(unix)]
     let symlink_to_app_dir = user_dir.join("sneaky_dir");
     #[cfg(unix)]
     {
